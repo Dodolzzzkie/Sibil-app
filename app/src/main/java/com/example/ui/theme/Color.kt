@@ -2,16 +2,16 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Canva-Inspired Light Palette
+// Canva-Inspired Warm Cream & Indigo Light Palette
 val MutedIndigoPrimary = Color(0xFF4F46E5)
 val SlateBlueSecondary = Color(0xFF475569)
 val SoftIndigoContainer = Color(0xFFEEF2FF)
 val DeepIndigoOnContainer = Color(0xFF3730A3)
-val OffWhiteBackground = Color(0xFFF8F9FA)
-val SoftCardTint = Color(0xFFF1F5F9)
-val PureWhiteSurface = Color(0xFFFFFFFF)
+val OffWhiteBackground = Color(0xFFFDFBF7)
+val SoftCardTint = Color(0xFFEFECE1)
+val PureWhiteSurface = Color(0xFFFFFBF0)
 val DarkCharcoalText = Color(0xFF1E293B)
-val MutedSlateSubtext = Color(0xFF64748B)
+val MutedSlateSubtext = Color(0xFF57534E)
 val SoftSageTertiary = Color(0xFF0D9488)
 val SoftSageContainer = Color(0xFFCCFBF1)
 
