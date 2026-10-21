@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -173,6 +174,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -425,85 +427,116 @@ class TaskViewModel : ViewModel() {
   val classSchedules: List<ClassSchedule> get() = _classSchedules
 
   /**
-   * Simulates a 2-second COR PDF extraction and populates `_classSchedules`
-   * with the 8 courses from the user's CTU-Danao BSCE 4 Certificate of Registration.
+   * Immediately sets the ViewModel into the PDF processing state (`"Processing PDF..."`)
+   * as soon as a non-null PDF `Uri` is returned by the native file picker.
    */
-  suspend fun extractCorSchedule() {
-    if (isExtractingCor) return
+  fun startProcessingPdf() {
     isExtractingCor = true
-    delay(2_000L)
+  }
 
-    val extractedCorCourses = listOf(
-      ClassSchedule(
-        id = 1,
-        subjectName = "CE COMPREHENSIVE COURSE 1",
-        timeRange = "04:30PM-07:30PM",
-        days = listOf("Th", "F"),
-        room = "ENG. 307",
-        colorHex = 0xFF5C6BC0L // Light Indigo
-      ),
-      ClassSchedule(
-        id = 2,
-        subjectName = "CONSTRUCTION METHODS & PROJECT MGT",
-        timeRange = "04:30PM-06:30PM",
-        days = listOf("M", "Tue"),
-        room = "COEN LAB",
-        colorHex = 0xFFF97316L // Soft Orange
-      ),
-      ClassSchedule(
-        id = 3,
-        subjectName = "REINFORCED CONCRETE DESIGN",
-        timeRange = "02:30PM-04:00PM",
-        days = listOf("M", "Tue"),
-        room = "ENG. 301",
-        colorHex = 0xFF0D9488L // Muted Teal
-      ),
-      ClassSchedule(
-        id = 4,
-        subjectName = "DATABASE MANAGEMENT IN CONSTRUCTION",
-        timeRange = "07:00AM-08:30AM",
-        days = listOf("M", "Tue"),
-        room = "ENG. 307",
-        colorHex = 0xFFEF4444L // Soft Red
-      ),
-      ClassSchedule(
-        id = 5,
-        subjectName = "BRIDGE DESIGN",
-        timeRange = "10:00AM-12:00PM",
-        days = listOf("F"),
-        room = "ENG. 306",
-        colorHex = 0xFF3B82F6L // Slate Blue
-      ),
-      ClassSchedule(
-        id = 6,
-        subjectName = "CE PROJECT 1",
-        timeRange = "10:00AM-12:00PM",
-        days = listOf("Tue", "W"),
-        room = "COEN LAB",
-        colorHex = 0xFF8B5CF6L // Light Purple
-      ),
-      ClassSchedule(
-        id = 7,
-        subjectName = "QUANTITY SURVEYING",
-        timeRange = "02:30PM-04:00PM",
-        days = listOf("W", "Th"),
-        room = "ENG. 307",
-        colorHex = 0xFF10B981L // Soft Green
-      ),
-      ClassSchedule(
-        id = 8,
-        subjectName = "TECHNOPRENEURSHIP 101",
-        timeRange = "04:30PM-07:30PM",
-        days = listOf("Th", "F"),
-        room = "ENG. 307",
-        colorHex = 0xFFD97706L // Amber
-      )
+  /**
+   * Simulates a 2.5-second COR PDF OCR extraction and dynamically generates
+   * 4 or 5 random Civil Engineering subjects with random days, times, rooms, and colors
+   * so each uploaded PDF produces a fresh schedule.
+   */
+  suspend fun extractCorSchedule(pdfUri: Uri? = null) {
+    isExtractingCor = true
+    // TODO: Integrate Apache PDFBox or ML Kit here in Android Studio to extract raw text from the URI.
+    delay(2500)
+    populateDynamicRandomCorSchedule(pdfUri)
+  }
+
+  /**
+   * Dynamically generates 4 or 5 random civil engineering subjects (e.g., "Structural Theory",
+   * "Fluid Mechanics", "Surveying") with randomized days, time ranges, rooms, and card colors,
+   * then marks the COR state as synced (`"COR Synced"`).
+   */
+  fun populateDynamicRandomCorSchedule(@Suppress("UNUSED_PARAMETER") pdfUri: Uri? = null) {
+    val civilEngineeringSubjectsPool = listOf(
+      "Structural Theory",
+      "Fluid Mechanics",
+      "Surveying",
+      "Reinforced Concrete Design",
+      "Soil Mechanics & Foundation Eng.",
+      "Hydraulics & Water Resources",
+      "Construction Methods & Project Mgt",
+      "Steel & Timber Design",
+      "Highway & Railroad Engineering",
+      "Quantity Surveying",
+      "Bridge Engineering",
+      "CE Comprehensive Course 1"
     )
 
-    // Keep any manually added courses (id >= 100) while replacing/populating the COR courses
+    val timeSlotsPool = listOf(
+      "07:30AM-09:00AM",
+      "09:00AM-10:30AM",
+      "10:30AM-12:00PM",
+      "01:00PM-02:30PM",
+      "02:30PM-04:00PM",
+      "04:30PM-06:00PM",
+      "06:00PM-07:30PM"
+    )
+
+    val dayCombinationsPool = listOf(
+      listOf("M", "W"),
+      listOf("Tue", "Th"),
+      listOf("M", "Tue"),
+      listOf("W", "F"),
+      listOf("Th", "F"),
+      listOf("F", "Sat"),
+      listOf("M", "W", "F"),
+      listOf("Tue", "Th", "Sat")
+    )
+
+    val roomsPool = listOf(
+      "ENG. 301",
+      "ENG. 305",
+      "ENG. 307",
+      "COEN LAB",
+      "HYDRAULICS LAB",
+      "CE STUDIO 2"
+    )
+
+    val cardColorPalette = listOf(
+      0xFF5C6BC0L, // Light Indigo
+      0xFFF97316L, // Soft Orange
+      0xFF0D9488L, // Muted Teal
+      0xFFEF4444L, // Soft Red
+      0xFF3B82F6L, // Slate Blue
+      0xFF8B5CF6L, // Light Purple
+      0xFF10B981L, // Soft Green
+      0xFFD97706L  // Amber
+    )
+
+    val courseCount = Random.nextInt(from = 4, until = 6) // 4 or 5 random subjects
+    val selectedSubjects = civilEngineeringSubjectsPool.shuffled().take(courseCount)
+    val shuffledTimes = timeSlotsPool.shuffled()
+    val shuffledDays = dayCombinationsPool.shuffled().toMutableList()
+    val shuffledColors = cardColorPalette.shuffled()
+
+    // Ensure today's day abbreviation (if Mon-Sat) is included in at least one generated subject
+    // so the Dashboard's "Today's Schedule" card dynamically reflects the newly uploaded PDF.
+    val todayCode = resolveTodayCorDayAbbreviation()
+    if (todayCode != "Sun" && shuffledDays.take(courseCount).none { it.contains(todayCode) }) {
+      val matchingCombination = dayCombinationsPool.filter { it.contains(todayCode) }.random()
+      shuffledDays[0] = matchingCombination
+    }
+
+    val generatedCorCourses = selectedSubjects.mapIndexed { index, subjectTitle ->
+      ClassSchedule(
+        id = index + 1,
+        subjectName = subjectTitle,
+        timeRange = shuffledTimes[index % shuffledTimes.size],
+        days = shuffledDays[index % shuffledDays.size],
+        room = roomsPool.random(),
+        colorHex = shuffledColors[index % shuffledColors.size]
+      )
+    }
+
+    // Keep any manually added courses (id >= 100) while replacing the extracted COR courses
     val manualCourses = _classSchedules.filter { it.id >= 100 }
     _classSchedules.clear()
-    _classSchedules.addAll(extractedCorCourses)
+    _classSchedules.addAll(generatedCorCourses)
     _classSchedules.addAll(manualCourses)
 
     isExtractingCor = false
@@ -2486,10 +2519,14 @@ private fun ExtraToolPlaceholderCard(
 
 /**
  * Fully functional "Schedule" tab featuring:
- * 1. Prominent "Upload COR (Auto-Extract)" button with a 2-second loading state that populates
- *    the ViewModel with the 8 courses from the user's CTU-Danao Certificate of Registration.
- * 2. Interactive Week View horizontal row of selectable Days (Mon, Tue, Wed, Thu, Fri, Sat).
- * 3. Tall, rounded, colored graphic cards displaying Subject Name, Time, and Room Assignment.
+ * 1. Small top-right "Upload COR" button that launches the native Android PDF file picker
+ *    (`ActivityResultContracts.OpenDocument()`) restricted strictly to `arrayOf("application/pdf")`.
+ * 2. When a non-null PDF `Uri` is selected, immediately transitions the button text to
+ *    `"Processing PDF..."`, waits `delay(2500)` to simulate OCR extraction, dynamically populates
+ *    4 or 5 random Civil Engineering subjects into `TaskViewModel`, and updates the button to
+ *    `"COR Synced"` with a checkmark icon.
+ * 3. Interactive Week View horizontal row of selectable Days (Mon, Tue, Wed, Thu, Fri, Sat).
+ * 4. Tall, rounded, colored graphic cards displaying Subject Name, Time, and Room Assignment.
  */
 @Composable
 fun ClassTimetableScheduleScreen(
@@ -2497,8 +2534,31 @@ fun ClassTimetableScheduleScreen(
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
-  val coroutineScope = rememberCoroutineScope()
   var selectedWeekDay by rememberSaveable { mutableStateOf(ScheduleWeekDay.MON) }
+  var selectedPdfUri by remember { mutableStateOf<Uri?>(null) }
+  var pdfSelectionSequence by remember { mutableIntStateOf(0) }
+
+  // Native Android PDF File Picker restricted strictly to PDF documents
+  val launcher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument()
+  ) { uri: Uri? ->
+    if (uri != null) {
+      selectedPdfUri = uri
+      viewModel.startProcessingPdf()
+      pdfSelectionSequence++
+    }
+  }
+
+  // Simulate OCR processing on the selected PDF URI for 2,500ms before populating random CE courses
+  LaunchedEffect(pdfSelectionSequence) {
+    val activeUri = selectedPdfUri
+    if (pdfSelectionSequence > 0 && activeUri != null) {
+      viewModel.startProcessingPdf()
+      // TODO: Integrate Apache PDFBox or ML Kit here in Android Studio to extract raw text from the URI.
+      delay(2500)
+      viewModel.populateDynamicRandomCorSchedule(activeUri)
+    }
+  }
 
   val allSchedules = viewModel.classSchedules
   val filteredSchedules = allSchedules.filter { schedule ->
@@ -2518,7 +2578,7 @@ fun ClassTimetableScheduleScreen(
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
   ) {
-    // Top Header Row: "Class Timetable" Title on the left + Subtle "Upload COR" / "COR Synced" Button on the far right
+    // Top Header Row: "Class Timetable" Title on the left + Subtle "Upload COR" / "Processing PDF..." / "COR Synced" Button on the far right
     item {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2541,9 +2601,7 @@ fun ClassTimetableScheduleScreen(
 
         OutlinedButton(
           onClick = {
-            coroutineScope.launch {
-              viewModel.extractCorSchedule()
-            }
+            launcher.launch(arrayOf("application/pdf"))
           },
           enabled = !viewModel.isExtractingCor,
           shape = CircleShape,

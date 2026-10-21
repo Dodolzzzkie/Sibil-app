@@ -31,7 +31,7 @@
     <string name="schedule_screen_title">Class Timetable</string>
     <string name="upload_cor_button">Upload COR</string>
     <string name="cor_synced_button">COR Synced</string>
-    <string name="extracting_cor_label">Syncing...</string>
+    <string name="extracting_cor_label">Processing PDF...</string>
     <string name="add_schedule_fab_label">Add Class</string>
     <string name="add_schedule_dialog_title">Add Class Schedule</string>
     <string name="subject_name_label">Subject Name</string>
