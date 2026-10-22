@@ -1,8 +1,10 @@
 <resources>
     <string name="app_name">Sibil App</string>
     <string name="login_subtitle">CE Student Command Center</string>
-    <string name="email_label">Email</string>
-    <string name="email_placeholder">alberto@civil.edu</string>
+    <string name="username_label">Username</string>
+    <string name="username_placeholder">Enter your username</string>
+    <string name="email_label">Username</string>
+    <string name="email_placeholder">Enter your username</string>
     <string name="password_label">Password</string>
     <string name="password_placeholder">Enter your password</string>
     <string name="login_button">Log In</string>
@@ -11,6 +13,7 @@
     <string name="nav_tasks">Tasks</string>
     <string name="nav_schedule">Schedule</string>
     <string name="nav_clock">Clock</string>
+    <string name="nav_extras">Extras</string>
     <string name="nav_calendar">Calendar</string>
     <string name="dashboard_weather_fetching">Fetching Weather...</string>
     <string name="dashboard_weather_offline">Weather Offline</string>
@@ -26,6 +29,8 @@
     <string name="add_task_input_placeholder">e.g., Design Footing Plate 4</string>
     <string name="due_date_label">Due Date (e.g., Oct 25)</string>
     <string name="due_date_placeholder">Oct 25</string>
+    <string name="task_subject_category_label">Subject Category</string>
+    <string name="general_folder_label">General</string>
     <string name="add_button">Add</string>
     <string name="cancel_button">Cancel</string>
     <string name="schedule_screen_title">Class Timetable</string>
@@ -52,7 +57,7 @@
     <string name="tool_boq_estimator">BOQ Estimator</string>
     <string name="tool_ai_study_assistant">AI Study Assistant</string>
     <string name="account_section_title">Account</string>
-    <string name="guest_account_label">Guest Account</string>
+    <string name="guest_account_label">Guest User</string>
     <string name="display_section_title">Display</string>
     <string name="dark_mode_label">Dark Mode</string>
     <string name="about_section_title">About</string>

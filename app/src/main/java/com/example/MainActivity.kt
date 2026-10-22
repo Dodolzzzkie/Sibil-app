@@ -5,7 +5,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -22,6 +26,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +49,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -54,13 +60,16 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AvTimer
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
@@ -71,24 +80,34 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.EventNote
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -115,10 +134,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -127,6 +151,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -143,6 +168,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -178,6 +204,7 @@ import java.net.URL
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -241,8 +268,8 @@ private fun rememberResponsiveMetrics(): ResponsiveMetrics {
 }
 
 /**
- * Five main navigation tabs:
- * Dashboard, Tasks, Schedule, Clock, Calendar.
+ * Five main navigation tabs ordered Left to Right:
+ * Clock, Extras, Dashboard, Tasks, Schedule.
  */
 enum class CeNavTab(
   val title: String,
@@ -250,6 +277,18 @@ enum class CeNavTab(
   val selectedIcon: ImageVector,
   val unselectedIcon: ImageVector
 ) {
+  CLOCK(
+    title = "Clock",
+    routeTag = "nav_tab_clock",
+    selectedIcon = Icons.Filled.Schedule,
+    unselectedIcon = Icons.Outlined.Schedule
+  ),
+  EXTRAS(
+    title = "Extras",
+    routeTag = "nav_tab_extras",
+    selectedIcon = Icons.Filled.GridView,
+    unselectedIcon = Icons.Outlined.GridView
+  ),
   DASHBOARD(
     title = "Dashboard",
     routeTag = "nav_tab_dashboard",
@@ -267,29 +306,20 @@ enum class CeNavTab(
     routeTag = "nav_tab_schedule",
     selectedIcon = Icons.Filled.EventNote,
     unselectedIcon = Icons.Outlined.EventNote
-  ),
-  CLOCK(
-    title = "Clock",
-    routeTag = "nav_tab_clock",
-    selectedIcon = Icons.Filled.Schedule,
-    unselectedIcon = Icons.Outlined.Schedule
-  ),
-  CALENDAR(
-    title = "Calendar",
-    routeTag = "nav_tab_calendar",
-    selectedIcon = Icons.Filled.CalendarMonth,
-    unselectedIcon = Icons.Outlined.CalendarMonth
   )
 }
 
+const val DEFAULT_TASK_CATEGORY = "General"
+
 /**
- * Shared Task Data Model including `id`, `title`, `dueDate`, and `isCompleted`.
+ * Shared Task Data Model including `id`, `title`, `dueDate`, `isCompleted`, and `subjectCategory`.
  */
 data class Task(
   val id: Int,
   val title: String,
   val dueDate: String,
-  val isCompleted: Boolean = false
+  val isCompleted: Boolean = false,
+  val subjectCategory: String = DEFAULT_TASK_CATEGORY
 )
 
 /**
@@ -357,55 +387,119 @@ data class ExtraToolItem(
  */
 enum class LoginValidationResult {
   SUCCESS,
-  INVALID_EMAIL_FORMAT,
+  INVALID_USERNAME,
   NO_ACCOUNT_FOUND,
   INCORRECT_PASSWORD
 }
 
 /**
- * Strictly validates an email string before login or sign-up using Android's native
- * `android.util.Patterns.EMAIL_ADDRESS` matcher with a standard Regex fallback.
+ * Validates that a username is not blank and has at least 3 characters.
  */
-fun isValidEmailFormat(email: String): Boolean {
-  val trimmed = email.trim()
-  if (trimmed.isEmpty()) return false
-  val nativePattern = android.util.Patterns.EMAIL_ADDRESS
-  return nativePattern?.matcher(trimmed)?.matches()
-    ?: Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$").matches(trimmed)
+fun isValidUsername(username: String): Boolean {
+  val trimmed = username.trim()
+  return trimmed.isNotBlank() && trimmed.length >= 3
 }
 
 /**
  * Lightweight offline data manager wrapping Android's native `SharedPreferences`.
  * Acts as a local mock backend that persists:
- * 1. Registered user accounts (`email` -> `password` map).
- * 2. Account-segregated `Task` lists (`tasks_<email>` or `tasks_guest`).
- * 3. Account-segregated `ClassSchedule` lists (`schedules_<email>` or `schedules_guest`).
- * 4. Active user session (`userName`, `userEmail`) and `isDarkMode`.
+ * 1. Registered user accounts (`username` -> `password` map).
+ * 2. Account-segregated `Task` lists (`tasks_[username]` or `tasks_guest`).
+ * 3. Account-segregated `ClassSchedule` lists (`schedules_[username]` or `schedules_guest`).
+ * 4. Active user session (`username`) and `isDarkMode`.
  * 5. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
  */
 class LocalStorageManager(context: Context) {
   private val prefs: SharedPreferences =
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-  fun normalizeAccountKey(emailOrGuest: String?): String {
-    val trimmed = emailOrGuest?.trim().orEmpty()
-    return if (trimmed.isEmpty() || trimmed.equals(GUEST_ACCOUNT_KEY, ignoreCase = true)) {
+  init {
+    migrateTaskSchemaIfNeeded()
+  }
+
+  /**
+   * Safely migrates saved task lists to the v2 `Task` schema (`subjectCategory` field)
+   * and clears legacy hardcoded starter placeholder tasks so old data never causes JSON
+   * parsing crashes or unwanted placeholder clutter.
+   */
+  private fun migrateTaskSchemaIfNeeded() {
+    val savedSchemaVersion = prefs.getInt(KEY_TASK_SCHEMA_VERSION, 1)
+    if (savedSchemaVersion >= CURRENT_TASK_SCHEMA_VERSION) return
+
+    val legacyStarterTitles = setOf(
+      "Reinforced Concrete Design - Plate 3",
+      "Hydraulics Quiz",
+      "Complete Surveying Field Report",
+      "Read Steel Design Chapter 4",
+      "Prepare Soil Mechanics Sieve Analysis Data"
+    )
+
+    val editor = prefs.edit()
+    val allEntries = prefs.all
+    for ((key, value) in allEntries) {
+      if (!key.startsWith(KEY_TASKS_PREFIX)) continue
+      val rawJson = value as? String
+      if (rawJson.isNullOrBlank()) {
+        editor.remove(key)
+        continue
+      }
+      try {
+        val jsonArray = JSONArray(rawJson)
+        val migratedArray = JSONArray()
+        for (i in 0 until jsonArray.length()) {
+          val obj = jsonArray.optJSONObject(i) ?: continue
+          val title = obj.optString("title", "").trim()
+          if (title.isEmpty() || title in legacyStarterTitles) {
+            continue
+          }
+          val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
+            .trim()
+            .ifEmpty { DEFAULT_TASK_CATEGORY }
+          val migratedObj = JSONObject().apply {
+            put("id", obj.optInt("id", i + 1))
+            put("title", title)
+            put("dueDate", obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" })
+            put("isCompleted", obj.optBoolean("isCompleted", false))
+            put("subjectCategory", category)
+          }
+          migratedArray.put(migratedObj)
+        }
+        editor.putString(key, migratedArray.toString())
+      } catch (_: Exception) {
+        editor.remove(key)
+      }
+    }
+    editor.putInt(KEY_TASK_SCHEMA_VERSION, CURRENT_TASK_SCHEMA_VERSION)
+    editor.apply()
+  }
+
+  fun normalizeAccountKey(usernameOrGuest: String?): String {
+    val trimmed = usernameOrGuest?.trim().orEmpty()
+    return if (
+      trimmed.isEmpty() ||
+      trimmed.equals(GUEST_ACCOUNT_KEY, ignoreCase = true) ||
+      trimmed.equals(GUEST_DISPLAY_NAME, ignoreCase = true)
+    ) {
       GUEST_ACCOUNT_KEY
     } else {
       trimmed.lowercase(Locale.US)
     }
   }
 
-  private fun tasksKeyFor(accountKey: String): String {
-    return "${KEY_TASKS_PREFIX}${normalizeAccountKey(accountKey)}"
+  private fun tasksKeyFor(username: String): String {
+    return "${KEY_TASKS_PREFIX}${normalizeAccountKey(username)}"
   }
 
-  private fun schedulesKeyFor(accountKey: String): String {
-    return "${KEY_SCHEDULES_PREFIX}${normalizeAccountKey(accountKey)}"
+  private fun schedulesKeyFor(username: String): String {
+    return "${KEY_SCHEDULES_PREFIX}${normalizeAccountKey(username)}"
+  }
+
+  private fun alarmsKeyFor(username: String): String {
+    return "${KEY_ALARMS_PREFIX}${normalizeAccountKey(username)}"
   }
 
   /**
-   * Returns all registered users stored in `SharedPreferences` (normalized lowercase email -> password).
+   * Returns all registered users stored in `SharedPreferences` (normalized lowercase username -> password).
    */
   fun getRegisteredUsers(): Map<String, String> {
     val rawJson = prefs.getString(KEY_REGISTERED_USERS, null) ?: return emptyMap()
@@ -414,8 +508,8 @@ class LocalStorageManager(context: Context) {
       val map = mutableMapOf<String, String>()
       val keys = jsonObject.keys()
       while (keys.hasNext()) {
-        val emailKey = keys.next()
-        map[emailKey.trim().lowercase(Locale.US)] = jsonObject.optString(emailKey, "")
+        val usernameKey = keys.next()
+        map[usernameKey.trim().lowercase(Locale.US)] = jsonObject.optString(usernameKey, "")
       }
       map
     } catch (_: Exception) {
@@ -424,38 +518,38 @@ class LocalStorageManager(context: Context) {
   }
 
   /**
-   * Checks whether the given email is already registered in `SharedPreferences`.
+   * Checks whether the given username is already registered in `SharedPreferences`.
    */
-  fun isEmailRegistered(email: String): Boolean {
-    val normalizedEmail = email.trim().lowercase(Locale.US)
-    if (normalizedEmail.isEmpty() || normalizedEmail == GUEST_ACCOUNT_KEY) return false
-    return getRegisteredUsers().containsKey(normalizedEmail)
+  fun isUsernameRegistered(username: String): Boolean {
+    val normalizedUsername = normalizeAccountKey(username)
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return false
+    return getRegisteredUsers().containsKey(normalizedUsername)
   }
 
   /**
-   * Verifies that the email exists and its stored password matches `password`.
+   * Verifies that the username exists and its stored password matches `password`.
    */
-  fun verifyUserPassword(email: String, password: String): Boolean {
-    val normalizedEmail = email.trim().lowercase(Locale.US)
-    if (normalizedEmail.isEmpty()) return false
-    val savedPassword = getRegisteredUsers()[normalizedEmail] ?: return false
+  fun verifyUserPassword(username: String, password: String): Boolean {
+    val normalizedUsername = normalizeAccountKey(username)
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return false
+    val savedPassword = getRegisteredUsers()[normalizedUsername] ?: return false
     return savedPassword == password
   }
 
   /**
-   * Registers a new user account (`email` -> `password`) in `SharedPreferences`.
+   * Registers a new user account (`username` -> `password`) in `SharedPreferences`.
    */
-  fun registerUser(email: String, password: String) {
-    val normalizedEmail = email.trim().lowercase(Locale.US)
-    if (normalizedEmail.isEmpty() || normalizedEmail == GUEST_ACCOUNT_KEY) return
+  fun registerUser(username: String, password: String) {
+    val normalizedUsername = normalizeAccountKey(username)
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return
     val currentUsers = getRegisteredUsers().toMutableMap()
-    currentUsers[normalizedEmail] = password
+    currentUsers[normalizedUsername] = password
     val jsonObject = JSONObject()
     currentUsers.forEach { (k, v) -> jsonObject.put(k, v) }
     prefs.edit().putString(KEY_REGISTERED_USERS, jsonObject.toString()).apply()
   }
 
-  fun saveTasks(tasks: List<Task>, accountKey: String = GUEST_ACCOUNT_KEY) {
+  fun saveTasks(tasks: List<Task>, username: String = GUEST_ACCOUNT_KEY) {
     val jsonArray = JSONArray()
     for (task in tasks) {
       val obj = JSONObject().apply {
@@ -463,14 +557,15 @@ class LocalStorageManager(context: Context) {
         put("title", task.title)
         put("dueDate", task.dueDate)
         put("isCompleted", task.isCompleted)
+        put("subjectCategory", task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY })
       }
       jsonArray.put(obj)
     }
-    prefs.edit().putString(tasksKeyFor(accountKey), jsonArray.toString()).apply()
+    prefs.edit().putString(tasksKeyFor(username), jsonArray.toString()).apply()
   }
 
-  fun loadTasks(accountKey: String = GUEST_ACCOUNT_KEY): List<Task>? {
-    val storageKey = tasksKeyFor(accountKey)
+  fun loadTasks(username: String = GUEST_ACCOUNT_KEY): List<Task>? {
+    val storageKey = tasksKeyFor(username)
     if (!prefs.contains(storageKey)) return null
     val rawJson = prefs.getString(storageKey, null) ?: return null
     return try {
@@ -478,22 +573,30 @@ class LocalStorageManager(context: Context) {
       val loaded = mutableListOf<Task>()
       for (i in 0 until jsonArray.length()) {
         val obj = jsonArray.optJSONObject(i) ?: continue
+        val title = obj.optString("title", "").trim()
+        if (title.isEmpty()) continue
+        val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
+          .trim()
+          .ifEmpty { DEFAULT_TASK_CATEGORY }
         loaded.add(
           Task(
             id = obj.optInt("id", i + 1),
-            title = obj.optString("title", ""),
-            dueDate = obj.optString("dueDate", "Upcoming"),
-            isCompleted = obj.optBoolean("isCompleted", false)
+            title = title,
+            dueDate = obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" },
+            isCompleted = obj.optBoolean("isCompleted", false),
+            subjectCategory = category
           )
         )
       }
       loaded
     } catch (_: Exception) {
-      null
+      // Safely clear corrupted or incompatible task entries so JSON parsing never crashes
+      prefs.edit().remove(storageKey).apply()
+      emptyList()
     }
   }
 
-  fun saveSchedules(schedules: List<ClassSchedule>, accountKey: String = GUEST_ACCOUNT_KEY) {
+  fun saveSchedules(schedules: List<ClassSchedule>, username: String = GUEST_ACCOUNT_KEY) {
     val jsonArray = JSONArray()
     for (schedule in schedules) {
       val daysArray = JSONArray()
@@ -510,11 +613,11 @@ class LocalStorageManager(context: Context) {
       }
       jsonArray.put(obj)
     }
-    prefs.edit().putString(schedulesKeyFor(accountKey), jsonArray.toString()).apply()
+    prefs.edit().putString(schedulesKeyFor(username), jsonArray.toString()).apply()
   }
 
-  fun loadSchedules(accountKey: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
-    val storageKey = schedulesKeyFor(accountKey)
+  fun loadSchedules(username: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
+    val storageKey = schedulesKeyFor(username)
     if (!prefs.contains(storageKey)) return null
     val rawJson = prefs.getString(storageKey, null) ?: return null
     return try {
@@ -553,14 +656,83 @@ class LocalStorageManager(context: Context) {
     }
   }
 
+  fun saveAlarms(alarms: List<AlarmItem>, username: String = GUEST_ACCOUNT_KEY) {
+    val jsonArray = JSONArray()
+    for (alarm in alarms) {
+      val daysArray = JSONArray()
+      alarm.activeDays.distinct().sorted().forEach { dayIndex ->
+        if (dayIndex in 0..6) {
+          daysArray.put(dayIndex)
+        }
+      }
+      val obj = JSONObject().apply {
+        put("id", alarm.id)
+        put("name", alarm.name.trim().ifEmpty { "Alarm" })
+        put("hour", alarm.hour)
+        put("minute", alarm.minute)
+        put("amPm", alarm.amPm)
+        put("activeDays", daysArray)
+        put("isActive", alarm.isActive)
+      }
+      jsonArray.put(obj)
+    }
+    prefs.edit().putString(alarmsKeyFor(username), jsonArray.toString()).apply()
+  }
+
+  fun loadAlarms(username: String = GUEST_ACCOUNT_KEY): List<AlarmItem>? {
+    val storageKey = alarmsKeyFor(username)
+    if (!prefs.contains(storageKey)) return null
+    val rawJson = prefs.getString(storageKey, null) ?: return null
+    return try {
+      val jsonArray = JSONArray(rawJson)
+      val loaded = mutableListOf<AlarmItem>()
+      for (i in 0 until jsonArray.length()) {
+        val obj = jsonArray.optJSONObject(i) ?: continue
+        val daysArray = obj.optJSONArray("activeDays")
+        val activeDays = mutableListOf<Int>()
+        if (daysArray != null) {
+          for (j in 0 until daysArray.length()) {
+            val dayIndex = daysArray.optInt(j, -1)
+            if (dayIndex in 0..6 && !activeDays.contains(dayIndex)) {
+              activeDays.add(dayIndex)
+            }
+          }
+        }
+        val rawHour = obj.optString("hour", "07").trim()
+        val parsedHour = (rawHour.toIntOrNull() ?: 7).coerceIn(1, 12)
+        val rawMinute = obj.optString("minute", "00").trim()
+        val parsedMinute = (rawMinute.toIntOrNull() ?: 0).coerceIn(0, 59)
+        val rawAmPm = obj.optString("amPm", "AM").trim().uppercase(Locale.US)
+        val normalizedAmPm = if (rawAmPm == "PM") "PM" else "AM"
+        val name = obj.optString("name", "Alarm").trim().ifEmpty { "Alarm" }
+        loaded.add(
+          AlarmItem(
+            id = obj.optInt("id", i + 1),
+            name = name,
+            hour = String.format(Locale.US, "%02d", parsedHour),
+            minute = String.format(Locale.US, "%02d", parsedMinute),
+            amPm = normalizedAmPm,
+            activeDays = activeDays.sorted(),
+            isActive = obj.optBoolean("isActive", true)
+          )
+        )
+      }
+      loaded
+    } catch (_: Exception) {
+      prefs.edit().remove(storageKey).apply()
+      emptyList()
+    }
+  }
+
   /**
    * Explicitly deletes all temporary data associated with the `"guest"` keys
-   * (`tasks_guest` and `schedules_guest`) when logging out of Guest mode.
+   * (`tasks_guest`, `schedules_guest`, and `alarms_guest`) when logging out of Guest mode.
    */
   fun clearGuestData() {
     val editor = prefs.edit()
       .remove(tasksKeyFor(GUEST_ACCOUNT_KEY))
       .remove(schedulesKeyFor(GUEST_ACCOUNT_KEY))
+      .remove(alarmsKeyFor(GUEST_ACCOUNT_KEY))
     prefs.all.keys
       .filter { key ->
         key.endsWith("_$GUEST_ACCOUNT_KEY")
@@ -571,10 +743,9 @@ class LocalStorageManager(context: Context) {
     editor.apply()
   }
 
-  fun saveUserProfile(userName: String, userEmail: String) {
+  fun saveUserProfile(username: String) {
     prefs.edit()
-      .putString(KEY_USER_NAME, userName)
-      .putString(KEY_USER_EMAIL, userEmail)
+      .putString(KEY_USER_NAME, username.trim())
       .apply()
   }
 
@@ -583,14 +754,9 @@ class LocalStorageManager(context: Context) {
     return saved?.takeIf { it.isNotBlank() }
   }
 
-  fun loadUserEmail(): String? {
-    return prefs.getString(KEY_USER_EMAIL, null)
-  }
-
   fun clearUserProfile() {
     prefs.edit()
       .remove(KEY_USER_NAME)
-      .remove(KEY_USER_EMAIL)
       .apply()
   }
 
@@ -604,25 +770,28 @@ class LocalStorageManager(context: Context) {
 
   companion object {
     const val GUEST_ACCOUNT_KEY = "guest"
+    const val GUEST_DISPLAY_NAME = "Guest User"
     private const val PREFS_NAME = "sibil_app_offline_storage"
     private const val KEY_REGISTERED_USERS = "registered_users_json"
     private const val KEY_TASKS_PREFIX = "tasks_"
     private const val KEY_SCHEDULES_PREFIX = "schedules_"
+    private const val KEY_ALARMS_PREFIX = "alarms_"
     private const val KEY_USER_NAME = "saved_user_name"
-    private const val KEY_USER_EMAIL = "saved_user_email"
     private const val KEY_DARK_MODE = "saved_dark_mode"
+    private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
+    private const val CURRENT_TASK_SCHEMA_VERSION = 2
   }
 }
 
 /**
  * Shared ViewModel storing and managing:
  * 1. Global theme state (`isDarkMode`, default `false`).
- * 2. User session data (`userName`, `userEmail`, and `hasSavedSession`).
+ * 2. User session data (`username` and `hasSavedSession`, displaying `"Guest User"` when in guest mode).
  * 3. Live Open-Meteo weather summary (`weatherText`, starting at `"Fetching Weather..."`).
- * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager.
+ * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager (`tasks_[username]`).
  * 5. Today's Schedule list on the Dashboard.
- * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View.
- * 7. Simulated Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
+ * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View (`schedules_[username]`).
+ * 7. Simulated Username Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
  */
 class TaskViewModel(
   private var storageManager: LocalStorageManager? = null
@@ -630,11 +799,18 @@ class TaskViewModel(
   var isDarkMode by mutableStateOf(false)
     private set
 
-  var userName by mutableStateOf("Alberto Jr. M. Manzo")
+  var username by mutableStateOf(LocalStorageManager.GUEST_DISPLAY_NAME)
     private set
 
-  var userEmail by mutableStateOf("alberto@civil.edu")
-    private set
+  val userName: String
+    get() = displayUsername
+
+  val displayUsername: String
+    get() = if (isGuestMode) {
+      LocalStorageManager.GUEST_DISPLAY_NAME
+    } else {
+      username
+    }
 
   var hasSavedSession by mutableStateOf(false)
     private set
@@ -645,83 +821,55 @@ class TaskViewModel(
   var hasRequestedInitialWeather by mutableStateOf(false)
     private set
 
-  private var nextId by mutableIntStateOf(6)
+  private var nextId by mutableIntStateOf(1)
   private var nextScheduleId by mutableIntStateOf(100)
+  private var nextAlarmId by mutableIntStateOf(1)
   private var hasLoadedFromStorage = false
 
+  var selectedTaskFolder by mutableStateOf(DEFAULT_TASK_CATEGORY)
+    private set
+
+  fun selectTaskFolder(folderName: String) {
+    selectedTaskFolder = folderName.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+  }
+
   val isGuestMode: Boolean
-    get() = userName.equals("Guest", ignoreCase = true) ||
-      userEmail.isBlank() ||
-      userEmail.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true)
+    get() = username.isBlank() ||
+      username.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
+      username.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
 
   val currentAccountKey: String
     get() = if (isGuestMode) {
       LocalStorageManager.GUEST_ACCOUNT_KEY
     } else {
-      userEmail.trim().lowercase(Locale.US)
+      username.trim().lowercase(Locale.US)
     }
 
-  private fun buildDefaultStarterTasks(): List<Task> = listOf(
-    Task(
-      id = 1,
-      title = "Reinforced Concrete Design - Plate 3",
-      dueDate = "Oct 22",
-      isCompleted = false
-    ),
-    Task(
-      id = 2,
-      title = "Hydraulics Quiz",
-      dueDate = "Oct 24",
-      isCompleted = false
-    ),
-    Task(
-      id = 3,
-      title = "Complete Surveying Field Report",
-      dueDate = "Oct 25",
-      isCompleted = false
-    ),
-    Task(
-      id = 4,
-      title = "Read Steel Design Chapter 4",
-      dueDate = "Oct 27",
-      isCompleted = true
-    ),
-    Task(
-      id = 5,
-      title = "Prepare Soil Mechanics Sieve Analysis Data",
-      dueDate = "Oct 29",
-      isCompleted = true
-    )
-  )
-
-  private val _tasks = mutableStateListOf<Task>().apply {
-    addAll(buildDefaultStarterTasks())
-  }
+  // Default state of the Task list is completely empty (no hardcoded placeholder tasks)
+  private val _tasks = mutableStateListOf<Task>()
   val tasks: List<Task> get() = _tasks
 
-  val todaysSchedule: List<ClassScheduleItem> = listOf(
-    ClassScheduleItem(
-      id = "sched_rcd",
-      subject = "Reinforced Concrete Design",
-      timeRange = "7:00 AM - 9:00 AM",
-      room = "Room 307"
-    ),
-    ClassScheduleItem(
-      id = "sched_foundation",
-      subject = "Foundation Design",
-      timeRange = "9:30 AM - 12:30 PM",
-      room = "Room 402"
-    ),
-    ClassScheduleItem(
-      id = "sched_techno",
-      subject = "Technopreneurship",
-      timeRange = "1:30 PM - 3:30 PM",
-      room = "Room 305"
-    )
-  )
+  val todaysSchedule: List<ClassScheduleItem> = emptyList()
 
   private val _classSchedules = mutableStateListOf<ClassSchedule>()
   val classSchedules: List<ClassSchedule> get() = _classSchedules
+
+  // Default state of the Alarm list is completely empty (no hardcoded mock alarms)
+  private val _alarms = mutableStateListOf<AlarmItem>()
+  val alarms: List<AlarmItem> get() = _alarms
+
+  /**
+   * Dynamically builds the list of Subject Folders:
+   * Starts with a permanent `"General"` folder, then appends unique `subjectName`s
+   * extracted directly from the `ClassSchedule` list.
+   */
+  fun getSubjectFolders(): List<String> {
+    val uniqueScheduleSubjects = _classSchedules
+      .map { it.subjectName.trim() }
+      .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
+      .distinctBy { it.lowercase(Locale.US) }
+    return listOf(DEFAULT_TASK_CATEGORY) + uniqueScheduleSubjects
+  }
 
   init {
     storageManager?.let { loadFromStorage(it) }
@@ -747,8 +895,14 @@ class TaskViewModel(
 
     val savedUserName = manager.loadUserName()
     if (!savedUserName.isNullOrBlank()) {
-      userName = savedUserName
-      userEmail = manager.loadUserEmail() ?: ""
+      username = if (
+        savedUserName.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
+        savedUserName.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
+      ) {
+        LocalStorageManager.GUEST_DISPLAY_NAME
+      } else {
+        savedUserName.trim()
+      }
       hasSavedSession = true
       loadAccountDataForKey(manager, currentAccountKey)
     } else {
@@ -758,16 +912,12 @@ class TaskViewModel(
 
   private fun loadAccountDataForKey(manager: LocalStorageManager, accountKey: String) {
     val savedTasks = manager.loadTasks(accountKey)
+    _tasks.clear()
     if (savedTasks != null) {
-      _tasks.clear()
       _tasks.addAll(savedTasks)
       nextId = (savedTasks.maxOfOrNull { it.id } ?: 0) + 1
     } else {
-      val starterTasks = buildDefaultStarterTasks()
-      _tasks.clear()
-      _tasks.addAll(starterTasks)
-      nextId = 6
-      manager.saveTasks(_tasks, accountKey)
+      nextId = 1
     }
 
     val savedSchedules = manager.loadSchedules(accountKey)
@@ -779,6 +929,20 @@ class TaskViewModel(
     } else {
       _classSchedules.clear()
       nextScheduleId = 100
+    }
+
+    val savedAlarms = manager.loadAlarms(accountKey)
+    _alarms.clear()
+    if (savedAlarms != null) {
+      _alarms.addAll(savedAlarms)
+      nextAlarmId = (savedAlarms.maxOfOrNull { it.id } ?: 0) + 1
+    } else {
+      nextAlarmId = 1
+    }
+
+    val validFolders = getSubjectFolders()
+    if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
+      selectedTaskFolder = DEFAULT_TASK_CATEGORY
     }
   }
 
@@ -937,62 +1101,60 @@ class TaskViewModel(
   }
 
   /**
-   * Validates `typedEmail` and `typedPassword` against the `SharedPreferences` registered users map.
-   * - Validates email format first and returns `INVALID_EMAIL_FORMAT` if invalid.
-   * - Returns `NO_ACCOUNT_FOUND` if the email is not registered.
-   * - Returns `INCORRECT_PASSWORD` if the email is registered but the password does not match.
+   * Validates `typedUsername` and `typedPassword` against the `SharedPreferences` registered users map.
+   * - Checks that the username is not blank and has at least 3 characters (`INVALID_USERNAME`).
+   * - Returns `NO_ACCOUNT_FOUND` if the username is not registered.
+   * - Returns `INCORRECT_PASSWORD` if the username is registered but the password does not match.
    * - Logs the user in and returns `SUCCESS` when valid.
    */
-  fun attemptLogin(typedEmail: String, typedPassword: String): LoginValidationResult {
-    val cleanEmail = typedEmail.trim().lowercase(Locale.US)
-    if (!isValidEmailFormat(cleanEmail)) {
-      return LoginValidationResult.INVALID_EMAIL_FORMAT
+  fun attemptLogin(typedUsername: String, typedPassword: String): LoginValidationResult {
+    val cleanUsername = typedUsername.trim()
+    if (!isValidUsername(cleanUsername)) {
+      return LoginValidationResult.INVALID_USERNAME
     }
     val manager = storageManager
-    if (manager == null || !manager.isEmailRegistered(cleanEmail)) {
+    if (manager == null || !manager.isUsernameRegistered(cleanUsername)) {
       return LoginValidationResult.NO_ACCOUNT_FOUND
     }
-    if (!manager.verifyUserPassword(cleanEmail, typedPassword)) {
+    if (!manager.verifyUserPassword(cleanUsername, typedPassword)) {
       return LoginValidationResult.INCORRECT_PASSWORD
     }
-    loginWithEmail(cleanEmail)
+    loginWithUsername(cleanUsername)
     return LoginValidationResult.SUCCESS
   }
 
   /**
-   * Checks whether `email` is already registered in `SharedPreferences`.
+   * Checks whether `username` is already registered in `SharedPreferences`.
    */
-  fun isEmailRegistered(email: String): Boolean {
-    return storageManager?.isEmailRegistered(email.trim()) == true
+  fun isUsernameRegistered(username: String): Boolean {
+    return storageManager?.isUsernameRegistered(username.trim()) == true
   }
 
   /**
-   * Saves a newly registered account (`email` -> `password`) to `SharedPreferences`
-   * and immediately logs the user in with their segregated storage keys.
+   * Saves a newly registered account (`username` -> `password`) to `SharedPreferences`
+   * and immediately logs the user in with their segregated storage keys (`tasks_[username]`).
    */
-  fun completeSignUp(email: String, password: String) {
-    val cleanEmail = email.trim().lowercase(Locale.US)
-    storageManager?.registerUser(cleanEmail, password)
-    loginWithEmail(cleanEmail)
+  fun completeSignUp(usernameToRegister: String, password: String) {
+    val cleanUsername = usernameToRegister.trim()
+    storageManager?.registerUser(cleanUsername, password)
+    loginWithUsername(cleanUsername)
   }
 
-  fun loginWithEmail(typedEmail: String) {
-    val cleanEmail = typedEmail.trim().lowercase(Locale.US).ifEmpty { "alberto@civil.edu" }
-    userName = "Alberto Jr. M. Manzo"
-    userEmail = cleanEmail
+  fun loginWithUsername(typedUsername: String) {
+    val cleanUsername = typedUsername.trim()
+    username = if (cleanUsername.isEmpty()) LocalStorageManager.GUEST_DISPLAY_NAME else cleanUsername
     hasSavedSession = true
     storageManager?.let { manager ->
-      manager.saveUserProfile(userName, userEmail)
+      manager.saveUserProfile(username)
       loadAccountDataForKey(manager, currentAccountKey)
     }
   }
 
   fun loginAsGuest() {
-    userName = "Guest"
-    userEmail = ""
+    username = LocalStorageManager.GUEST_DISPLAY_NAME
     hasSavedSession = true
     storageManager?.let { manager ->
-      manager.saveUserProfile(userName, userEmail)
+      manager.saveUserProfile(username)
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
   }
@@ -1014,16 +1176,81 @@ class TaskViewModel(
     }
     if (wasGuest) {
       _tasks.clear()
-      _tasks.addAll(buildDefaultStarterTasks())
       _classSchedules.clear()
-      nextId = 6
+      _alarms.clear()
+      nextId = 1
       nextScheduleId = 100
+      nextAlarmId = 1
+    }
+    selectedTaskFolder = DEFAULT_TASK_CATEGORY
+  }
+
+  fun addAlarm(
+    name: String,
+    hour: String,
+    minute: String,
+    amPm: String,
+    activeDays: List<Int>,
+    isActive: Boolean = true
+  ) {
+    val cleanName = name.trim().ifEmpty { "Alarm" }
+    val parsedHour = (hour.trim().toIntOrNull() ?: 7).coerceIn(1, 12)
+    val parsedMinute = (minute.trim().toIntOrNull() ?: 0).coerceIn(0, 59)
+    val normalizedHour = String.format(Locale.US, "%02d", parsedHour)
+    val normalizedMinute = String.format(Locale.US, "%02d", parsedMinute)
+    val normalizedAmPm = if (amPm.trim().equals("PM", ignoreCase = true)) "PM" else "AM"
+    val normalizedDays = activeDays.filter { it in 0..6 }.distinct().sorted()
+
+    _alarms.add(
+      AlarmItem(
+        id = nextAlarmId++,
+        name = cleanName,
+        hour = normalizedHour,
+        minute = normalizedMinute,
+        amPm = normalizedAmPm,
+        activeDays = normalizedDays,
+        isActive = isActive
+      )
+    )
+    storageManager?.saveAlarms(_alarms, currentAccountKey)
+  }
+
+  fun toggleAlarmActive(alarmId: Int, isActive: Boolean) {
+    val index = _alarms.indexOfFirst { it.id == alarmId }
+    if (index != -1) {
+      _alarms[index] = _alarms[index].copy(isActive = isActive)
+      storageManager?.saveAlarms(_alarms, currentAccountKey)
     }
   }
 
-  fun addTask(title: String, dueDate: String) {
+  fun toggleAlarmDay(alarmId: Int, dayIndex: Int) {
+    if (dayIndex !in 0..6) return
+    val index = _alarms.indexOfFirst { it.id == alarmId }
+    if (index != -1) {
+      val current = _alarms[index]
+      val updatedDays = if (current.activeDays.contains(dayIndex)) {
+        current.activeDays - dayIndex
+      } else {
+        (current.activeDays + dayIndex).sorted()
+      }
+      _alarms[index] = current.copy(activeDays = updatedDays)
+      storageManager?.saveAlarms(_alarms, currentAccountKey)
+    }
+  }
+
+  fun deleteAlarm(alarmId: Int) {
+    _alarms.removeAll { it.id == alarmId }
+    storageManager?.saveAlarms(_alarms, currentAccountKey)
+  }
+
+  fun addTask(
+    title: String,
+    dueDate: String,
+    subjectCategory: String = DEFAULT_TASK_CATEGORY
+  ) {
     val trimmedTitle = title.trim()
     val trimmedDueDate = dueDate.trim().ifEmpty { "Upcoming" }
+    val trimmedCategory = subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
     if (trimmedTitle.isNotEmpty()) {
       _tasks.add(
         0,
@@ -1031,7 +1258,8 @@ class TaskViewModel(
           id = nextId++,
           title = trimmedTitle,
           dueDate = trimmedDueDate,
-          isCompleted = false
+          isCompleted = false,
+          subjectCategory = trimmedCategory
         )
       )
       storageManager?.saveTasks(_tasks, currentAccountKey)
@@ -1049,6 +1277,7 @@ class TaskViewModel(
 
   fun deleteTask(taskId: Int) {
     _tasks.removeAll { it.id == taskId }
+    storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
   }
 
@@ -1446,18 +1675,18 @@ fun CivilEngineeringProductivityApp(
     ) { loggedIn ->
       if (!loggedIn) {
         StartupLoginScreen(
-          onAttemptLogin = { typedEmail, typedPassword ->
-            val result = resolvedViewModel.attemptLogin(typedEmail, typedPassword)
+          onAttemptLogin = { typedUsername, typedPassword ->
+            val result = resolvedViewModel.attemptLogin(typedUsername, typedPassword)
             if (result == LoginValidationResult.SUCCESS) {
               isLoggedIn = true
             }
             result
           },
-          onCheckEmailRegistered = { emailToCheck ->
-            resolvedViewModel.isEmailRegistered(emailToCheck)
+          onCheckUsernameRegistered = { usernameToCheck ->
+            resolvedViewModel.isUsernameRegistered(usernameToCheck)
           },
-          onCompleteSignUp = { registeredEmail, createdPassword ->
-            resolvedViewModel.completeSignUp(registeredEmail, createdPassword)
+          onCompleteSignUp = { registeredUsername, createdPassword ->
+            resolvedViewModel.completeSignUp(registeredUsername, createdPassword)
             isLoggedIn = true
           },
           onContinueAsGuest = {
@@ -1479,23 +1708,24 @@ fun CivilEngineeringProductivityApp(
 }
 
 /**
- * Canva-Inspired Startup / Login Screen with Simulated Authentication & Sign-Up Verification Flow:
+ * Canva-Inspired Startup / Login Screen with Simulated Username Authentication & Sign-Up Flow:
  * - Validates "Log In" against `SharedPreferences` registered accounts:
- *   * Displays bold red `"No account found"` if email is not in `SharedPreferences`.
- *   * Displays bold red `"Incorrect password"` if email exists but password does not match.
- * - Includes a `"Sign Up"` button opening the 4-step Sign-Up & Verification Dialog.
- * - Includes `"Continue as Guest"` which loads segregated `tasks_guest` and `schedules_guest` keys.
+ *   * Checks that the username is not blank and has at least 3 characters.
+ *   * Displays bold red `"No account found"` if username is not in `SharedPreferences`.
+ *   * Displays bold red `"Incorrect password"` if username exists but password does not match.
+ * - Includes a `"Sign Up"` button opening the Sign-Up & Verification Dialog.
+ * - Includes `"Continue as Guest"` which opens the Guest Mode Warning Dialog and loads segregated `tasks_guest` and `schedules_guest` keys.
  */
 @Composable
 fun StartupLoginScreen(
   onAttemptLogin: (String, String) -> LoginValidationResult,
-  onCheckEmailRegistered: (String) -> Boolean,
+  onCheckUsernameRegistered: (String) -> Boolean,
   onCompleteSignUp: (String, String) -> Unit,
   onContinueAsGuest: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
-  var email by rememberSaveable { mutableStateOf("") }
+  var username by rememberSaveable { mutableStateOf("") }
   var password by rememberSaveable { mutableStateOf("") }
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1506,13 +1736,13 @@ fun StartupLoginScreen(
   val baseBackground = MaterialTheme.colorScheme.background
 
   fun handleLoginClick() {
-    if (!isValidEmailFormat(email)) {
-      loginErrorMessage = "Invalid email format"
+    if (!isValidUsername(username)) {
+      loginErrorMessage = "Username must be at least 3 characters"
       return
     }
-    when (onAttemptLogin(email, password)) {
-      LoginValidationResult.INVALID_EMAIL_FORMAT -> {
-        loginErrorMessage = "Invalid email format"
+    when (onAttemptLogin(username, password)) {
+      LoginValidationResult.INVALID_USERNAME -> {
+        loginErrorMessage = "Username must be at least 3 characters"
       }
       LoginValidationResult.NO_ACCOUNT_FOUND -> {
         loginErrorMessage = "No account found"
@@ -1624,16 +1854,16 @@ fun StartupLoginScreen(
             ),
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
-          // Email OutlinedTextField
+          // Username OutlinedTextField
           OutlinedTextField(
-            value = email,
+            value = username,
             onValueChange = {
-              email = it
+              username = it
               if (loginErrorMessage != null) loginErrorMessage = null
             },
             label = {
               Text(
-                text = stringResource(R.string.email_label),
+                text = stringResource(R.string.username_label),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1641,7 +1871,7 @@ fun StartupLoginScreen(
             },
             placeholder = {
               Text(
-                text = stringResource(R.string.email_placeholder),
+                text = stringResource(R.string.username_placeholder),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 maxLines = 1,
@@ -1650,7 +1880,7 @@ fun StartupLoginScreen(
             },
             leadingIcon = {
               Icon(
-                imageVector = Icons.Outlined.Email,
+                imageVector = Icons.Outlined.Person,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(24.dp)
@@ -1670,12 +1900,12 @@ fun StartupLoginScreen(
               cursorColor = MaterialTheme.colorScheme.primary
             ),
             keyboardOptions = KeyboardOptions(
-              keyboardType = KeyboardType.Email,
+              keyboardType = KeyboardType.Text,
               imeAction = ImeAction.Next
             ),
             modifier = Modifier
               .fillMaxWidth()
-              .testTag("login_email_input")
+              .testTag("login_username_input")
           )
 
           // Password OutlinedTextField (visually obscured)
@@ -1782,7 +2012,7 @@ fun StartupLoginScreen(
 
           Spacer(modifier = Modifier.height(2.dp))
 
-          // Row / Column of Primary "Log In" and Secondary "Sign Up" Buttons
+          // Row of Primary "Log In" and Secondary "Sign Up" Buttons
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
@@ -1876,12 +2106,12 @@ fun StartupLoginScreen(
 
     if (isSignUpDialogOpen) {
       SignUpVerificationDialog(
-        initialEmail = email,
-        onCheckEmailRegistered = onCheckEmailRegistered,
+        initialUsername = username,
+        onCheckUsernameRegistered = onCheckUsernameRegistered,
         onDismiss = { isSignUpDialogOpen = false },
-        onCompleteSignUp = { registeredEmail, createdPassword ->
+        onCompleteSignUp = { registeredUsername, createdPassword ->
           isSignUpDialogOpen = false
-          onCompleteSignUp(registeredEmail, createdPassword)
+          onCompleteSignUp(registeredUsername, createdPassword)
         }
       )
     }
@@ -2003,19 +2233,19 @@ private fun GuestModeWarningDialog(
 
 /**
  * 4-Step Sign-Up & Verification Dialog:
- * - Step 1: User enters email. Strictly validates email format first (`"Invalid email format"`).
+ * - Step 1: User enters Username. Validates that the username is not blank and has at least 3 characters.
  *   If valid and already registered in `SharedPreferences`, displays `"Account already exists, please log in"`.
- * - Step 2: If the email is valid and new, clicking `"Send Verification Code"` simulates a 2-second
+ * - Step 2: If the username is valid and new, clicking `"Send Verification Code"` simulates a 2-second
  *   loading state (`delay(2000)`), dynamically generates a 4-digit code via `(1000..9999).random().toString()`,
- *   and displays `"Mock email sent! Code: [RANDOM_CODE]"` on-screen and via Toast.
+ *   and displays `"Verification code generated! Code: [RANDOM_CODE]"` on-screen and via Toast.
  * - Step 3: Shows a text field for the verification code. Requires the exact generated 4-digit code to unlock Step 4.
  * - Step 4: Shows a `"Create Password"` field and `"Complete Sign Up"` button that saves the
  *   account to `SharedPreferences` and logs the user in.
  */
 @Composable
 private fun SignUpVerificationDialog(
-  initialEmail: String,
-  onCheckEmailRegistered: (String) -> Boolean,
+  initialUsername: String,
+  onCheckUsernameRegistered: (String) -> Boolean,
   onDismiss: () -> Unit,
   onCompleteSignUp: (String, String) -> Unit
 ) {
@@ -2023,7 +2253,7 @@ private fun SignUpVerificationDialog(
   val metrics = rememberResponsiveMetrics()
   val coroutineScope = rememberCoroutineScope()
 
-  var signUpEmail by rememberSaveable { mutableStateOf(initialEmail.trim()) }
+  var signUpUsername by rememberSaveable { mutableStateOf(initialUsername.trim()) }
   var signUpError by rememberSaveable { mutableStateOf<String?>(null) }
   var isSendingCode by rememberSaveable { mutableStateOf(false) }
   var isCodeSent by rememberSaveable { mutableStateOf(false) }
@@ -2100,17 +2330,17 @@ private fun SignUpVerificationDialog(
           }
         }
 
-        // Step 1: Email Field
+        // Step 1: Username Field
         OutlinedTextField(
-          value = signUpEmail,
+          value = signUpUsername,
           onValueChange = { updated ->
-            signUpEmail = updated
+            signUpUsername = updated
             isCodeSent = false
             generatedVerificationCode = ""
             verificationCode = ""
             newPassword = ""
             val trimmed = updated.trim()
-            signUpError = if (trimmed.isNotEmpty() && isValidEmailFormat(trimmed) && onCheckEmailRegistered(trimmed)) {
+            signUpError = if (trimmed.isNotEmpty() && isValidUsername(trimmed) && onCheckUsernameRegistered(trimmed)) {
               "Account already exists, please log in"
             } else {
               null
@@ -2119,14 +2349,14 @@ private fun SignUpVerificationDialog(
           enabled = !isSendingCode,
           label = {
             Text(
-              text = stringResource(R.string.email_label),
+              text = stringResource(R.string.username_label),
               style = MaterialTheme.typography.bodyMedium,
               maxLines = 1
             )
           },
           placeholder = {
             Text(
-              text = "student@civil.edu",
+              text = stringResource(R.string.username_placeholder),
               style = MaterialTheme.typography.bodyMedium,
               color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
               maxLines = 1
@@ -2134,7 +2364,7 @@ private fun SignUpVerificationDialog(
           },
           leadingIcon = {
             Icon(
-              imageVector = Icons.Outlined.Email,
+              imageVector = Icons.Outlined.Person,
               contentDescription = null,
               tint = MaterialTheme.colorScheme.primary,
               modifier = Modifier.size(22.dp)
@@ -2150,15 +2380,15 @@ private fun SignUpVerificationDialog(
             cursorColor = MaterialTheme.colorScheme.primary
           ),
           keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Email,
+            keyboardType = KeyboardType.Text,
             imeAction = ImeAction.Done
           ),
           modifier = Modifier
             .fillMaxWidth()
-            .testTag("signup_email_input")
+            .testTag("signup_username_input")
         )
 
-        // Error message (e.g., "Invalid email format" or "Account already exists, please log in")
+        // Error message (e.g., "Username must be at least 3 characters" or "Account already exists, please log in")
         signUpError?.let { errorText ->
           Text(
             text = errorText,
@@ -2177,10 +2407,10 @@ private fun SignUpVerificationDialog(
         // Step 2: "Send Verification Code" Button + 2-second simulated loading state
         Button(
           onClick = {
-            val trimmedEmail = signUpEmail.trim()
-            if (!isValidEmailFormat(trimmedEmail)) {
-              signUpError = "Invalid email format"
-            } else if (onCheckEmailRegistered(trimmedEmail)) {
+            val trimmedUsername = signUpUsername.trim()
+            if (!isValidUsername(trimmedUsername)) {
+              signUpError = "Username must be at least 3 characters"
+            } else if (onCheckUsernameRegistered(trimmedUsername)) {
               signUpError = "Account already exists, please log in"
             } else {
               signUpError = null
@@ -2195,7 +2425,7 @@ private fun SignUpVerificationDialog(
                 isCodeSent = true
                 Toast.makeText(
                   context,
-                  "Mock email sent! Code: $dynamicCode",
+                  "Verification code sent! Code: $dynamicCode",
                   Toast.LENGTH_SHORT
                 ).show()
               }
@@ -2253,7 +2483,7 @@ private fun SignUpVerificationDialog(
               .testTag("mock_code_sent_banner")
           ) {
             Text(
-              text = "Mock email sent! Code: $generatedVerificationCode",
+              text = "Verification code sent! Code: $generatedVerificationCode",
               style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = metrics.scaledSp(14),
                 fontWeight = FontWeight.Bold
@@ -2305,7 +2535,7 @@ private fun SignUpVerificationDialog(
 
           if (verificationCode.isNotEmpty() && !isCodeVerified) {
             Text(
-              text = "Enter $generatedVerificationCode to verify your email",
+              text = "Enter $generatedVerificationCode to verify your account",
               style = MaterialTheme.typography.labelMedium.copy(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.SemiBold
@@ -2396,15 +2626,15 @@ private fun SignUpVerificationDialog(
 
           Button(
             onClick = {
-              val trimmedEmail = signUpEmail.trim()
-              if (!isValidEmailFormat(trimmedEmail)) {
-                signUpError = "Invalid email format"
-              } else if (onCheckEmailRegistered(trimmedEmail)) {
+              val trimmedUsername = signUpUsername.trim()
+              if (!isValidUsername(trimmedUsername)) {
+                signUpError = "Username must be at least 3 characters"
+              } else if (onCheckUsernameRegistered(trimmedUsername)) {
                 signUpError = "Account already exists, please log in"
               } else if (newPassword.isBlank()) {
                 signUpError = "Please create a password"
               } else {
-                onCompleteSignUp(trimmedEmail, newPassword)
+                onCompleteSignUp(trimmedUsername, newPassword)
               }
             },
             shape = CircleShape,
@@ -2503,45 +2733,11 @@ private fun MainProductivityScaffold(
       }
     },
     bottomBar = {
-      NavigationBar(
-        modifier = Modifier.testTag("bottom_navigation_bar"),
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 4.dp
-      ) {
-        CeNavTab.entries.forEach { tab ->
-          val isSelected = selectedTab == tab
-          NavigationBarItem(
-            selected = isSelected,
-            onClick = { selectedTab = tab },
-            modifier = Modifier.testTag(tab.routeTag),
-            icon = {
-              Icon(
-                imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                contentDescription = tab.title,
-                modifier = Modifier.size(24.dp)
-              )
-            },
-            label = {
-              Text(
-                text = tab.title,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = metrics.scaledSp(11),
-                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            },
-            colors = NavigationBarItemDefaults.colors(
-              selectedIconColor = MaterialTheme.colorScheme.primary,
-              selectedTextColor = MaterialTheme.colorScheme.primary,
-              indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-              unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-              unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-          )
-        }
-      }
+      CustomDockedBottomTaskBar(
+        selectedTab = selectedTab,
+        onSelectTab = { selectedTab = it },
+        metrics = metrics
+      )
     }
   ) { innerPadding ->
     Box(
@@ -2552,9 +2748,20 @@ private fun MainProductivityScaffold(
       contentAlignment = Alignment.TopCenter
     ) {
       when (selectedTab) {
-        CeNavTab.DASHBOARD -> SwipeableDashboardAndExtrasPager(
+        CeNavTab.CLOCK -> ClockScreen(
           viewModel = taskViewModel,
-          onOpenProfileSettings = { isProfileSettingsDialogOpen = true },
+          modifier = Modifier
+            .fillMaxSize()
+            .widthIn(max = metrics.maxContentWidth)
+        )
+        CeNavTab.EXTRAS -> ExtrasScreen(
+          modifier = Modifier
+            .fillMaxSize()
+            .widthIn(max = metrics.maxContentWidth)
+        )
+        CeNavTab.DASHBOARD -> DashboardScreen(
+          viewModel = taskViewModel,
+          onProfileIconClick = { isProfileSettingsDialogOpen = true },
           modifier = Modifier.fillMaxSize()
         )
         CeNavTab.TASKS -> CourseworkTaskManagerScreen(
@@ -2575,22 +2782,36 @@ private fun MainProductivityScaffold(
             .fillMaxSize()
             .widthIn(max = metrics.maxContentWidth)
         )
-        CeNavTab.CLOCK -> PlaceholderScreen(
-          title = "Clock",
-          testTag = "placeholder_screen_clock"
-        )
-        CeNavTab.CALENDAR -> PlaceholderScreen(
-          title = "Calendar",
-          testTag = "placeholder_screen_calendar"
-        )
       }
     }
 
     if (isAddTaskDialogOpen) {
+      val schedulesSnapshot = taskViewModel.classSchedules.toList()
+      val availableCategories = remember(schedulesSnapshot) {
+        buildList {
+          add(DEFAULT_TASK_CATEGORY)
+          schedulesSnapshot
+            .map { it.subjectName.trim() }
+            .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
+            .distinctBy { it.lowercase(Locale.US) }
+            .forEach { add(it) }
+        }
+      }
+      val preselectedCategory = availableCategories.firstOrNull {
+        it.equals(taskViewModel.selectedTaskFolder, ignoreCase = true)
+      } ?: DEFAULT_TASK_CATEGORY
+
       AddTaskDialog(
+        availableCategories = availableCategories,
+        initialCategory = preselectedCategory,
         onDismiss = { isAddTaskDialogOpen = false },
-        onAddTask = { newTaskTitle, newTaskDueDate ->
-          taskViewModel.addTask(newTaskTitle, newTaskDueDate)
+        onAddTask = { newTaskTitle, newTaskDueDate, selectedCategory ->
+          taskViewModel.addTask(
+            title = newTaskTitle,
+            dueDate = newTaskDueDate,
+            subjectCategory = selectedCategory
+          )
+          taskViewModel.selectTaskFolder(selectedCategory)
           isAddTaskDialogOpen = false
         }
       )
@@ -2654,73 +2875,227 @@ private fun MainProductivityScaffold(
 }
 
 /**
- * Swipeable `HorizontalPager` on the Dashboard tab:
- * - Page 0: Main Academic Dashboard with a subtle geometric Canvas background,
- *   real Open-Meteo Weather Summary & live ticking `LocalDateTime` header,
- *   clickable upper-right Profile Icon opening the Settings Dialog, side-by-side
- *   "Daily Progress" ring + "Today's Schedule" interactive card, dynamic "Upcoming Deadlines",
- *   and a fixed-dimension vertical "Extras" tab anchored on the right edge that never overlaps cards.
- * - Page 1: Extras screen containing ONLY the engineering tool placeholders
- *   (Scientific Calculator, Unit Converter, BOQ Estimator, AI Study Assistant).
+ * Redesigned Custom Bottom Task Bar docked at the bottom of the Scaffold:
+ * - Uses the warm cream card palette (`#FFFBF0`) in Light Mode and dark surface in Dark Mode.
+ * - Arranges the 5 destinations horizontally from Left to Right:
+ *   Clock, Extras, [Spacer / Center Floating Dashboard Button], Tasks, Schedule.
+ * - Center Item (Dashboard): Prominent, floating-style button overlapping the center of the bar
+ *   with distinct depth (`elevation = 12.dp`), rounded-square/circular shape, colored with
+ *   `MaterialTheme.colorScheme.primary` and a high-contrast white/light icon (`onPrimary`).
+ * - 4 Side Items (Clock, Extras, Tasks, Schedule): Highlighted with subtle colors when active.
  */
 @Composable
-fun SwipeableDashboardAndExtrasPager(
-  viewModel: TaskViewModel,
-  onOpenProfileSettings: () -> Unit,
+private fun CustomDockedBottomTaskBar(
+  selectedTab: CeNavTab,
+  onSelectTab: (CeNavTab) -> Unit,
+  metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier
 ) {
-  val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
-  val coroutineScope = rememberCoroutineScope()
-
-  // When viewing Page 1 (Extras) inside the Dashboard pager, system Back returns to Page 0
-  if (pagerState.currentPage == 1) {
-    BackHandler {
-      coroutineScope.launch {
-        pagerState.animateScrollToPage(0)
-      }
-    }
+  val barContainerColor = dashboardCreamCardColor()
+  val isLight = MaterialTheme.colorScheme.background.red > 0.5f
+  val topBorderColor = if (isLight) {
+    Color(0xFFE6DEC8)
+  } else {
+    MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
   }
 
-  HorizontalPager(
-    state = pagerState,
+  Box(
     modifier = modifier
-      .fillMaxSize()
-      .testTag("dashboard_horizontal_pager")
-  ) { page ->
-    when (page) {
-      0 -> AcademicDashboardPage(
-        viewModel = viewModel,
-        onProfileIconClick = onOpenProfileSettings,
-        onOpenExtrasPage = {
-          coroutineScope.launch {
-            pagerState.animateScrollToPage(1)
-          }
+      .fillMaxWidth()
+      .testTag("bottom_navigation_bar"),
+    contentAlignment = Alignment.BottomCenter
+  ) {
+    // Docked Cream Bar Surface
+    Surface(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 18.dp),
+      color = barContainerColor,
+      tonalElevation = 6.dp,
+      shadowElevation = 10.dp,
+      shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+      border = BorderStroke(1.dp, topBorderColor)
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = metrics.maxContentWidth)
+          .padding(horizontal = metrics.scaledDp(8), vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        // Left Side: Clock & Extras
+        CustomSideBottomBarItem(
+          tab = CeNavTab.CLOCK,
+          isSelected = selectedTab == CeNavTab.CLOCK,
+          onClick = { onSelectTab(CeNavTab.CLOCK) },
+          metrics = metrics,
+          modifier = Modifier.weight(1f)
+        )
+        CustomSideBottomBarItem(
+          tab = CeNavTab.EXTRAS,
+          isSelected = selectedTab == CeNavTab.EXTRAS,
+          onClick = { onSelectTab(CeNavTab.EXTRAS) },
+          metrics = metrics,
+          modifier = Modifier.weight(1f)
+        )
+
+        // Center Spacer reserved for the overlapping Dashboard button
+        Spacer(modifier = Modifier.width(metrics.scaledDp(76)))
+
+        // Right Side: Tasks & Schedule
+        CustomSideBottomBarItem(
+          tab = CeNavTab.TASKS,
+          isSelected = selectedTab == CeNavTab.TASKS,
+          onClick = { onSelectTab(CeNavTab.TASKS) },
+          metrics = metrics,
+          modifier = Modifier.weight(1f)
+        )
+        CustomSideBottomBarItem(
+          tab = CeNavTab.SCHEDULE,
+          isSelected = selectedTab == CeNavTab.SCHEDULE,
+          onClick = { onSelectTab(CeNavTab.SCHEDULE) },
+          metrics = metrics,
+          modifier = Modifier.weight(1f)
+        )
+      }
+    }
+
+    // Prominent Floating Center Button for Dashboard overlapping the center of the bar
+    val isDashboardSelected = selectedTab == CeNavTab.DASHBOARD
+    Column(
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(bottom = 6.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+      Card(
+        onClick = { onSelectTab(CeNavTab.DASHBOARD) },
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary
+        ),
+        elevation = CardDefaults.cardElevation(
+          defaultElevation = 12.dp,
+          pressedElevation = 16.dp
+        ),
+        border = if (isDashboardSelected) {
+          BorderStroke(2.5.dp, barContainerColor)
+        } else {
+          BorderStroke(1.5.dp, barContainerColor.copy(alpha = 0.85f))
+        },
+        modifier = Modifier
+          .size(metrics.scaledDp(58))
+          .testTag(CeNavTab.DASHBOARD.routeTag)
+      ) {
+        Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = if (isDashboardSelected) {
+              CeNavTab.DASHBOARD.selectedIcon
+            } else {
+              CeNavTab.DASHBOARD.unselectedIcon
+            },
+            contentDescription = CeNavTab.DASHBOARD.title,
+            tint = Color.White,
+            modifier = Modifier.size(28.dp)
+          )
         }
-      )
-      1 -> ExtrasToolsOnlyPage(
-        onBackToDashboard = {
-          coroutineScope.launch {
-            pagerState.animateScrollToPage(0)
-          }
-        }
+      }
+
+      Text(
+        text = CeNavTab.DASHBOARD.title,
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontSize = metrics.scaledSp(11),
+          fontWeight = if (isDashboardSelected) FontWeight.Bold else FontWeight.SemiBold
+        ),
+        color = if (isDashboardSelected) {
+          MaterialTheme.colorScheme.primary
+        } else {
+          MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
       )
     }
   }
 }
 
+@Composable
+private fun CustomSideBottomBarItem(
+  tab: CeNavTab,
+  isSelected: Boolean,
+  onClick: () -> Unit,
+  metrics: ResponsiveMetrics,
+  modifier: Modifier = Modifier
+) {
+  val activePillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+  val iconTint = if (isSelected) {
+    MaterialTheme.colorScheme.primary
+  } else {
+    MaterialTheme.colorScheme.onSurfaceVariant
+  }
+  val textColor = if (isSelected) {
+    MaterialTheme.colorScheme.primary
+  } else {
+    MaterialTheme.colorScheme.onSurfaceVariant
+  }
+
+  Column(
+    modifier = modifier
+      .clip(RoundedCornerShape(16.dp))
+      .clickable(onClick = onClick)
+      .minimumInteractiveComponentSize()
+      .padding(vertical = 4.dp, horizontal = 4.dp)
+      .testTag(tab.routeTag),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(3.dp)
+  ) {
+    Box(
+      modifier = Modifier
+        .height(32.dp)
+        .width(52.dp)
+        .clip(CircleShape)
+        .background(if (isSelected) activePillColor else Color.Transparent),
+      contentAlignment = Alignment.Center
+    ) {
+      Icon(
+        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+        contentDescription = tab.title,
+        tint = iconTint,
+        modifier = Modifier.size(22.dp)
+      )
+    }
+
+    Text(
+      text = tab.title,
+      style = MaterialTheme.typography.labelSmall.copy(
+        fontSize = metrics.scaledSp(11),
+        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+      ),
+      color = textColor,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis
+    )
+  }
+}
+
 /**
- * Page 0 of the Dashboard HorizontalPager:
- * - Uses `LocalConfiguration.current.screenWidthDp` via `rememberResponsiveMetrics()` to scale
- *   fonts and padding by `1.2f` on tablets (`screenWidth > 600`) and keep proportional `weight(1f)`
- *   allocations on all rows and columns.
- * - Reserves dedicated right-side space (`end = 34.dp`) for the fixed `28.dp x 112.dp` vertical
- *   "Extras" pill indicator so it never overlaps any Dashboard card, regardless of screen width.
+ * Main Academic Dashboard Screen (single, static vertical scrolling screen without HorizontalPager or right-edge Extras pill):
+ * - Subtle geometric Canvas background behind dashboard content.
+ * - Real Open-Meteo Weather Summary & live ticking `LocalDateTime` header.
+ * - Clickable upper-right Profile Icon opening the Settings Dialog.
+ * - Side-by-side "Daily Progress" ring + "Today's Schedule" interactive card.
+ * - Dynamic "Upcoming Deadlines" Task List connected to `TaskViewModel`.
  */
 @Composable
-fun AcademicDashboardPage(
+fun DashboardScreen(
   viewModel: TaskViewModel,
   onProfileIconClick: () -> Unit,
-  onOpenExtrasPage: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -2728,9 +3103,10 @@ fun AcademicDashboardPage(
   val metrics = rememberResponsiveMetrics()
 
   val allTasks = viewModel.tasks
-  val totalTasks = allTasks.size
-  val completedTasks = allTasks.count { it.isCompleted }
-  val activeTasks = allTasks.filter { !it.isCompleted }
+  val tasksSnapshot = allTasks.toList()
+  val totalTasks = tasksSnapshot.size
+  val completedTasks = remember(tasksSnapshot) { tasksSnapshot.count { it.isCompleted } }
+  val activeTasks = remember(tasksSnapshot) { tasksSnapshot.filter { !it.isCompleted } }
 
   // Runtime permission launcher for ACCESS_COARSE_LOCATION
   val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -2786,10 +3162,6 @@ fun AcademicDashboardPage(
   val secondaryShapeColor = MaterialTheme.colorScheme.secondary
   val tertiaryShapeColor = MaterialTheme.colorScheme.tertiary
 
-  // Fixed width for the right-edge Extras pill so we guarantee non-overlapping clearance
-  val extrasPillWidth = 28.dp
-  val extrasPillHeight = 112.dp
-
   Box(
     modifier = modifier
       .fillMaxSize()
@@ -2844,22 +3216,19 @@ fun AcademicDashboardPage(
       )
     }
 
-    // Foreground Scrollable Dashboard Content with guaranteed right margin for the Extras pill
+    // Single, static vertical scrolling Dashboard Content
     LazyColumn(
       modifier = Modifier
         .fillMaxSize()
-        .padding(end = extrasPillWidth + 6.dp)
         .widthIn(max = metrics.maxContentWidth)
         .testTag("academic_dashboard_list"),
       contentPadding = PaddingValues(
-        start = metrics.scaledDp(16),
-        end = metrics.scaledDp(10),
-        top = metrics.scaledDp(20),
-        bottom = metrics.scaledDp(32)
+        horizontal = metrics.scaledDp(16),
+        vertical = metrics.scaledDp(20)
       ),
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(20))
     ) {
-      // 1. Dynamic Top Header: Weather Summary, Live LocalDateTime, and Profile Icon
+      // 1. Dynamic Top Header: Logged-in Username ("Guest User" if guest), Weather Summary, Live LocalDateTime, and Profile Icon
       item {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -2870,6 +3239,20 @@ fun AcademicDashboardPage(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
           ) {
+            Text(
+              text = viewModel.displayUsername,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(16),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.primary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("dashboard_username_header")
+            )
+
             Row(
               modifier = Modifier
                 .fillMaxWidth()
@@ -2950,8 +3333,11 @@ fun AcademicDashboardPage(
       // 2. Middle Section (Side-by-Side): Floating Daily Progress Card next to Dynamic Today's Schedule Card
       item {
         val middleRowHeight = metrics.scaledDp(276)
-        val todayAbbreviation = resolveTodayCorDayAbbreviation()
-        val todaysFilteredClasses = viewModel.getSchedulesForDayAbbreviation(todayAbbreviation)
+        val todayAbbreviation = remember { resolveTodayCorDayAbbreviation() }
+        val schedulesSnapshot = viewModel.classSchedules.toList()
+        val todaysFilteredClasses = remember(schedulesSnapshot, todayAbbreviation) {
+          viewModel.getSchedulesForDayAbbreviation(todayAbbreviation)
+        }
 
         Row(
           modifier = Modifier
@@ -2988,41 +3374,6 @@ fun AcademicDashboardPage(
           onToggleComplete = { taskId ->
             viewModel.toggleTaskCompletion(taskId)
           }
-        )
-      }
-    }
-
-    // Fixed-dimension vertical "Extras" tab safely anchored to the right edge without overlapping cards
-    Surface(
-      onClick = onOpenExtrasPage,
-      color = MaterialTheme.colorScheme.primary,
-      contentColor = MaterialTheme.colorScheme.onPrimary,
-      shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
-      shadowElevation = 10.dp,
-      modifier = Modifier
-        .align(Alignment.CenterEnd)
-        .width(extrasPillWidth)
-        .height(extrasPillHeight)
-        .testTag("extras_swipe_pill_indicator")
-    ) {
-      Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-      ) {
-        Text(
-          text = stringResource(R.string.extras_pill_label),
-          style = MaterialTheme.typography.labelMedium.copy(
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onPrimary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          softWrap = false,
-          modifier = Modifier
-            .requiredWidth(92.dp)
-            .graphicsLayer { rotationZ = -90f },
-          textAlign = TextAlign.Center
         )
       }
     }
@@ -3190,10 +3541,10 @@ private fun CompactDailyProgressCard(
 /**
  * Dynamic Floating "Today's Schedule" Card on the Main Dashboard:
  * - Styled with warm cream background (`#FFFBF0`) and `elevation = 8.dp`.
+ * - Uses `LazyColumn` to recycle schedule items efficiently on low-end devices.
  * - Displays classes from `ViewModel.classSchedules` filtered by `LocalDate.now().dayOfWeek`
  *   ("M", "Tue", "W", "Th", "F", "Sat").
- * - If the filtered list is empty (or COR hasn't been uploaded yet), displays a cleanly
- *   centered "Empty" label inside the card.
+ * - If the filtered list is empty, displays a cleanly centered "Empty" label inside the card.
  */
 @Composable
 private fun TodaysScheduleInteractiveCard(
@@ -3279,15 +3630,18 @@ private fun TodaysScheduleInteractiveCard(
           )
         }
       } else {
-        // Scrollable list of today's classes inside the card
-        Column(
+        // LazyColumn of today's classes inside the card for low-end device view recycling
+        LazyColumn(
           modifier = Modifier
             .weight(1f)
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState()),
+            .testTag("todays_schedule_lazy_list"),
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
         ) {
-          todaysClasses.forEach { item ->
+          items(
+            items = todaysClasses,
+            key = { it.id }
+          ) { item ->
             val isSelected = selectedClassId == item.id
             val accentColor = Color(item.colorHex)
             Surface(
@@ -3574,6 +3928,24 @@ private fun DashboardTaskMiniCard(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
           )
+          Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape
+          ) {
+            Text(
+              text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = metrics.scaledSp(10),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .widthIn(max = 110.dp)
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+          }
         }
       }
     }
@@ -3581,16 +3953,16 @@ private fun DashboardTaskMiniCard(
 }
 
 /**
- * Cleaned-up Page 1 of the Dashboard HorizontalPager (Extras Screen):
- * Contains ONLY the engineering tool placeholders arranged in a neat 2x2 grid with floating elevation:
+ * Dedicated Extras Screen (`ExtrasScreen`):
+ * Contains the engineering tool placeholders arranged in a neat 2x2 grid with floating elevation
+ * and cream card styling (`#FFFBF0`):
  * - Scientific Calculator
  * - Unit Converter
  * - BOQ Estimator
  * - AI Study Assistant
  */
 @Composable
-fun ExtrasToolsOnlyPage(
-  onBackToDashboard: () -> Unit,
+fun ExtrasScreen(
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
@@ -3637,72 +4009,35 @@ fun ExtrasToolsOnlyPage(
       .testTag("extras_tools_page"),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(20))
   ) {
-    // Top Header with Back to Dashboard Pill
-    Row(
+    // Top Header
+    Column(
       modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalAlignment = Alignment.CenterVertically
+      verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-      Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-      ) {
-        Text(
-          text = stringResource(R.string.extras_screen_title),
-          style = MaterialTheme.typography.headlineLarge.copy(
-            fontSize = metrics.scaledSp(26),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onBackground,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("extras_screen_title")
-        )
-        Text(
-          text = "Civil Engineering utilities & companion tools",
-          style = MaterialTheme.typography.bodyMedium.copy(
-            fontSize = metrics.scaledSp(14),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth()
-        )
-      }
-
-      Surface(
-        onClick = onBackToDashboard,
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = CircleShape,
-        shadowElevation = 4.dp,
-        modifier = Modifier.testTag("back_to_dashboard_pill")
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-            contentDescription = "Back to Dashboard",
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(20.dp)
-          )
-          Text(
-            text = stringResource(R.string.nav_dashboard),
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-        }
-      }
+      Text(
+        text = stringResource(R.string.extras_screen_title),
+        style = MaterialTheme.typography.headlineLarge.copy(
+          fontSize = metrics.scaledSp(26),
+          fontWeight = FontWeight.Bold
+        ),
+        color = MaterialTheme.colorScheme.onBackground,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("extras_screen_title")
+      )
+      Text(
+        text = "Civil Engineering utilities & companion tools",
+        style = MaterialTheme.typography.bodyMedium.copy(
+          fontSize = metrics.scaledSp(14),
+          fontWeight = FontWeight.SemiBold
+        ),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth()
+      )
     }
 
     // Neat 2x2 Grid of Floating Engineering Tool Placeholder Cards
@@ -3884,6 +4219,17 @@ private fun ExtraToolPlaceholderCard(
  *      * Top X-axis for MON, TUE, WED, THU, FRI, SAT.
  *      * Colored `ClassSchedule` blocks mapped into their corresponding Day columns and Time rows.
  */
+private data class PositionedGridClassBlock(
+  val classInfo: ClassSchedule,
+  val startFloat: Float,
+  val endFloat: Float,
+  val topOffset: Dp,
+  val cardHeight: Dp,
+  val blockColor: Color,
+  val primaryTextColor: Color,
+  val secondaryTextColor: Color
+)
+
 @Composable
 fun ClassTimetableScheduleScreen(
   viewModel: TaskViewModel,
@@ -3894,291 +4240,442 @@ fun ClassTimetableScheduleScreen(
 ) {
   val metrics = rememberResponsiveMetrics()
   var isGridView by rememberSaveable { mutableStateOf(false) }
+  var focusedClass by remember { mutableStateOf<ClassSchedule?>(null) }
 
-  val allSchedules = viewModel.classSchedules
-  // Actively filters AND chronologically sorts classes by Start Time via ViewModel
-  val filteredSchedules = viewModel.getSchedulesForDay(selectedWeekDay)
+  val allSchedules = viewModel.classSchedules.toList()
+  // Actively filters AND chronologically sorts classes by Start Time via ViewModel, memoized for low-end devices
+  val filteredSchedules = remember(allSchedules, selectedWeekDay) {
+    viewModel.getSchedulesForDay(selectedWeekDay)
+  }
+  val dayCountsMap = remember(allSchedules) {
+    ScheduleWeekDay.entries.associateWith { day ->
+      viewModel.getSchedulesForDay(day).size
+    }
+  }
 
-  LazyColumn(
-    modifier = modifier.testTag("schedule_screen_list"),
-    contentPadding = PaddingValues(
-      start = metrics.scaledDp(18),
-      end = metrics.scaledDp(18),
-      top = metrics.scaledDp(22),
-      bottom = metrics.scaledDp(108)
-    ),
-    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
+  if (focusedClass != null) {
+    BackHandler {
+      focusedClass = null
+    }
+  }
+
+  Box(
+    modifier = modifier.fillMaxSize()
   ) {
-    // 1. Top Header Row: "Class Timetable" Title + Top-Right Grid/List View Toggle Button
-    item {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Text(
-          text = stringResource(R.string.schedule_screen_title),
-          style = MaterialTheme.typography.headlineLarge.copy(
-            fontSize = metrics.scaledSp(26),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onBackground,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .weight(1f)
-            .testTag("schedule_screen_title")
-        )
-
-        Surface(
-          onClick = { isGridView = !isGridView },
-          shape = RoundedCornerShape(16.dp),
-          color = if (isGridView) {
-            MaterialTheme.colorScheme.primaryContainer
-          } else {
-            dashboardCreamCardColor()
-          },
-          border = BorderStroke(
-            width = 1.5.dp,
-            color = MaterialTheme.colorScheme.primary
-          ),
-          shadowElevation = 4.dp,
-          modifier = Modifier
-            .height(42.dp)
-            .testTag("schedule_view_toggle_button")
+    LazyColumn(
+      modifier = Modifier
+        .fillMaxSize()
+        .testTag("schedule_screen_list"),
+      contentPadding = PaddingValues(
+        start = metrics.scaledDp(18),
+        end = metrics.scaledDp(18),
+        top = metrics.scaledDp(22),
+        bottom = metrics.scaledDp(108)
+      ),
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
+    ) {
+      // 1. Top Header Row: "Class Timetable" Title + Top-Right Grid/List View Toggle Button
+      item {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          Text(
+            text = stringResource(R.string.schedule_screen_title),
+            style = MaterialTheme.typography.headlineLarge.copy(
+              fontSize = metrics.scaledSp(26),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .weight(1f)
+              .testTag("schedule_screen_title")
+          )
+
+          Surface(
+            onClick = {
+              isGridView = !isGridView
+              if (!isGridView) focusedClass = null
+            },
+            shape = RoundedCornerShape(16.dp),
+            color = if (isGridView) {
+              MaterialTheme.colorScheme.primaryContainer
+            } else {
+              dashboardCreamCardColor()
+            },
+            border = BorderStroke(
+              width = 1.5.dp,
+              color = MaterialTheme.colorScheme.primary
+            ),
+            shadowElevation = 4.dp,
+            modifier = Modifier
+              .height(42.dp)
+              .testTag("schedule_view_toggle_button")
           ) {
-            Icon(
-              imageVector = if (isGridView) {
-                Icons.AutoMirrored.Filled.ViewList
-              } else {
-                Icons.Filled.GridView
-              },
-              contentDescription = if (isGridView) {
-                stringResource(R.string.list_view_label)
-              } else {
-                stringResource(R.string.grid_view_label)
-              },
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(18.dp)
-            )
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = if (isGridView) {
+                  Icons.AutoMirrored.Filled.ViewList
+                } else {
+                  Icons.Filled.GridView
+                },
+                contentDescription = if (isGridView) {
+                  stringResource(R.string.list_view_label)
+                } else {
+                  stringResource(R.string.grid_view_label)
+                },
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+              )
+              Text(
+                text = if (isGridView) {
+                  stringResource(R.string.list_view_label)
+                } else {
+                  stringResource(R.string.grid_view_label)
+                },
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1
+              )
+            }
+          }
+        }
+      }
+
+      if (isGridView) {
+        // Graphic Table (Grid View) Mode
+        item {
+          ScheduleTimetableGridView(
+            schedules = allSchedules,
+            selectedWeekDay = selectedWeekDay,
+            onSelectWeekDay = onSelectWeekDay,
+            onLongPressClass = { longPressedSchedule ->
+              focusedClass = longPressedSchedule
+            },
+            metrics = metrics
+          )
+        }
+      } else {
+        // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
+        //    with distinct BorderStroke(2.dp, MaterialTheme.colorScheme.primary) on the selected day
+        item {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("schedule_week_day_selector"),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            ScheduleWeekDay.entries.forEach { day ->
+              val isSelected = selectedWeekDay == day
+              val countForDay = dayCountsMap[day] ?: 0
+
+              Surface(
+                onClick = { onSelectWeekDay(day) },
+                shape = RoundedCornerShape(18.dp),
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primaryContainer
+                } else {
+                  dashboardCreamCardColor()
+                },
+                border = if (isSelected) {
+                  BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                } else {
+                  BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                },
+                shadowElevation = if (isSelected) 8.dp else 4.dp,
+                modifier = Modifier
+                  .weight(1f)
+                  .height(metrics.scaledDp(66))
+                  .testTag("week_day_tab_${day.shortLabel.lowercase()}")
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                  Text(
+                    text = day.shortLabel,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = metrics.scaledSp(12),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (isSelected) {
+                      MaterialTheme.colorScheme.primary
+                    } else {
+                      MaterialTheme.colorScheme.onSurface
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+
+                  Surface(
+                    color = if (isSelected) {
+                      MaterialTheme.colorScheme.primary
+                    } else {
+                      MaterialTheme.colorScheme.primaryContainer
+                    },
+                    shape = CircleShape
+                  ) {
+                    Text(
+                      text = "$countForDay",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = metrics.scaledSp(10),
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                      } else {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                      },
+                      maxLines = 1,
+                      modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Selected Day Subheader
+        item {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
             Text(
-              text = if (isGridView) {
-                stringResource(R.string.list_view_label)
-              } else {
-                stringResource(R.string.grid_view_label)
-              },
+              text = "${selectedWeekDay.fullLabel} Classes",
+              style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = metrics.scaledSp(18),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.onBackground,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f)
+            )
+
+            Text(
+              text = "${filteredSchedules.size} scheduled",
               style = MaterialTheme.typography.labelMedium.copy(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.primary,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
               maxLines = 1
+            )
+          }
+        }
+
+        // 3. Visual Timetable Cards for the Selected Day (chronologically sorted)
+        if (filteredSchedules.isEmpty()) {
+          item {
+            Card(
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("empty_schedule_day_card"),
+              shape = RoundedCornerShape(24.dp),
+              colors = CardDefaults.cardColors(
+                containerColor = dashboardCreamCardColor()
+              ),
+              elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(metrics.scaledDp(28)),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Outlined.EventNote,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(36.dp)
+                )
+                Text(
+                  text = if (allSchedules.isEmpty()) {
+                    "No classes scheduled yet"
+                  } else {
+                    "No classes on ${selectedWeekDay.fullLabel}"
+                  },
+                  style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = metrics.scaledSp(18),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = MaterialTheme.colorScheme.onSurface,
+                  textAlign = TextAlign.Center,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                  text = if (allSchedules.isEmpty()) {
+                    "Tap the + button below to add your Civil Engineering classes to the timetable."
+                  } else {
+                    "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
+                  },
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = metrics.scaledSp(14)
+                  ),
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  textAlign = TextAlign.Center,
+                  maxLines = 3,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+            }
+          }
+        } else {
+          items(
+            items = filteredSchedules,
+            key = { "${selectedWeekDay.dayCode}_${it.id}" }
+          ) { scheduleItem ->
+            ColoredClassScheduleCard(
+              schedule = scheduleItem,
+              metrics = metrics,
+              onEdit = { onEditSchedule(scheduleItem) },
+              onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
             )
           }
         }
       }
     }
 
-    if (isGridView) {
-      // Graphic Table (Grid View) Mode
-      item {
-        ScheduleTimetableGridView(
-          schedules = allSchedules,
-          selectedWeekDay = selectedWeekDay,
-          onSelectWeekDay = onSelectWeekDay,
-          metrics = metrics
-        )
-      }
-    } else {
-      // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
-      //    with distinct BorderStroke(2.dp, MaterialTheme.colorScheme.primary) on the selected day
-      item {
-        Row(
+    // Full-screen Long-Press Details Overlay with performant 0.6f Black Scrim & large Cream Card
+    focusedClass?.let { detailedClass ->
+      val accentColor = Color(detailedClass.colorHex)
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.6f))
+          .clickable { focusedClass = null }
+          .testTag("schedule_long_press_scrim"),
+        contentAlignment = Alignment.Center
+      ) {
+        Card(
           modifier = Modifier
-            .fillMaxWidth()
-            .testTag("schedule_week_day_selector"),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          ScheduleWeekDay.entries.forEach { day ->
-            val isSelected = selectedWeekDay == day
-            val countForDay = viewModel.getSchedulesForDay(day).size
-
-            Surface(
-              onClick = { onSelectWeekDay(day) },
-              shape = RoundedCornerShape(18.dp),
-              color = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-              } else {
-                dashboardCreamCardColor()
-              },
-              border = if (isSelected) {
-                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
-              } else {
-                BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-              },
-              shadowElevation = if (isSelected) 8.dp else 4.dp,
-              modifier = Modifier
-                .weight(1f)
-                .height(metrics.scaledDp(66))
-                .testTag("week_day_tab_${day.shortLabel.lowercase()}")
-            ) {
-              Column(
-                modifier = Modifier
-                  .fillMaxSize()
-                  .padding(vertical = 8.dp, horizontal = 4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
-              ) {
-                Text(
-                  text = day.shortLabel,
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = if (isSelected) {
-                    MaterialTheme.colorScheme.primary
-                  } else {
-                    MaterialTheme.colorScheme.onSurface
-                  },
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-
-                Surface(
-                  color = if (isSelected) {
-                    MaterialTheme.colorScheme.primary
-                  } else {
-                    MaterialTheme.colorScheme.primaryContainer
-                  },
-                  shape = CircleShape
-                ) {
-                  Text(
-                    text = "$countForDay",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = metrics.scaledSp(10),
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = if (isSelected) {
-                      MaterialTheme.colorScheme.onPrimary
-                    } else {
-                      MaterialTheme.colorScheme.onPrimaryContainer
-                    },
-                    maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                  )
-                }
-              }
+            .fillMaxWidth(0.88f)
+            .widthIn(max = 460.dp)
+            .pointerInput(Unit) {
+              detectTapGestures(onTap = { /* Consume tap inside card so scrim doesn't dismiss */ })
             }
-          }
-        }
-      }
-
-      // Selected Day Subheader
-      item {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
+            .testTag("schedule_long_press_detail_card"),
+          shape = RoundedCornerShape(28.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = CreamCardColor
+          ),
+          elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
+          border = BorderStroke(2.dp, accentColor)
         ) {
-          Text(
-            text = "${selectedWeekDay.fullLabel} Classes",
-            style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = metrics.scaledSp(18),
-              fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-          )
-
-          Text(
-            text = "${filteredSchedules.size} scheduled",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1
-          )
-        }
-      }
-
-      // 3. Visual Timetable Cards for the Selected Day (chronologically sorted)
-      if (filteredSchedules.isEmpty()) {
-        item {
-          Card(
+          Column(
             modifier = Modifier
               .fillMaxWidth()
-              .testTag("empty_schedule_day_card"),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(
-              containerColor = dashboardCreamCardColor()
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+              .padding(metrics.scaledDp(26)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
           ) {
-            Column(
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(metrics.scaledDp(28)),
-              horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.spacedBy(8.dp)
+            // Color Accent & Scheduled Days Pill
+            Surface(
+              color = accentColor,
+              shape = CircleShape
             ) {
-              Icon(
-                imageVector = Icons.Outlined.EventNote,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp)
-              )
               Text(
-                text = if (allSchedules.isEmpty()) {
-                  "No classes scheduled yet"
-                } else {
-                  "No classes on ${selectedWeekDay.fullLabel}"
-                },
-                style = MaterialTheme.typography.titleLarge.copy(
-                  fontSize = metrics.scaledSp(18),
+                text = detailedClass.days.joinToString(" • "),
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = metrics.scaledSp(13),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
               )
+            }
+
+            // 1. Full, Untruncated Subject Name
+            Text(
+              text = detailedClass.subjectName,
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = metrics.scaledSp(24),
+                lineHeight = metrics.scaledSp(30),
+                fontWeight = FontWeight.Bold
+              ),
+              color = Color(0xFF1C1B1F),
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("focused_class_subject_text")
+            )
+
+            HorizontalDivider(
+              color = WarmCreamTrackColor,
+              thickness = 1.dp
+            )
+
+            // 2. Full, Untruncated Room Assignment
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.Center,
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.LocationOn,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(24.dp)
+              )
+              Spacer(modifier = Modifier.width(8.dp))
               Text(
-                text = if (allSchedules.isEmpty()) {
-                  "Tap the + button below to add your Civil Engineering classes to the timetable."
-                } else {
-                  "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
-                },
-                style = MaterialTheme.typography.bodyMedium.copy(
-                  fontSize = metrics.scaledSp(14)
+                text = detailedClass.room.ifBlank { "TBA" },
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(20),
+                  lineHeight = metrics.scaledSp(26),
+                  fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Color(0xFF1C1B1F),
                 textAlign = TextAlign.Center,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
+                modifier = Modifier.testTag("focused_class_room_text")
+              )
+            }
+
+            // 3. Full, Untruncated Time Duration
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.Center,
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Schedule,
+                contentDescription = null,
+                tint = accentColor,
+                modifier = Modifier.size(24.dp)
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+              Text(
+                text = detailedClass.timeRange,
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(19),
+                  lineHeight = metrics.scaledSp(25),
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = Color(0xFF3E3B32),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.testTag("focused_class_time_text")
               )
             }
           }
-        }
-      } else {
-        items(
-          items = filteredSchedules,
-          key = { "${selectedWeekDay.dayCode}_${it.id}" }
-        ) { scheduleItem ->
-          ColoredClassScheduleCard(
-            schedule = scheduleItem,
-            metrics = metrics,
-            onEdit = { onEditSchedule(scheduleItem) },
-            onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
-          )
         }
       }
     }
@@ -4190,15 +4687,16 @@ fun ClassTimetableScheduleScreen(
  * - Far-left edge: vertical "AM" and "PM" group indicators.
  * - Left Y-axis: hours from `7:00` down to `5:00` (`7:00, 8:00, 9:00, 10:00, 11:00` in AM;
  *   `12:00, 1:00, 2:00, 3:00, 4:00, 5:00` in PM).
- * - Prominent horizontal divider line at the `12:00` mark.
+ * - Prominent horizontal "LUNCH" divider block at the `12:00` mark.
  * - Top X-axis: `MON, TUE, WED, THU, FRI, SAT`.
- * - Colored `ClassSchedule` blocks mapped into the corresponding Day columns and Time rows.
+ * - Colored `ClassSchedule` blocks with memoized time-to-float layout math and long-press gesture detection.
  */
 @Composable
 private fun ScheduleTimetableGridView(
   schedules: List<ClassSchedule>,
   selectedWeekDay: ScheduleWeekDay,
   onSelectWeekDay: (ScheduleWeekDay) -> Unit,
+  onLongPressClass: (ClassSchedule) -> Unit = {},
   metrics: ResponsiveMetrics
 ) {
   val amHourLabels = remember { listOf("7:00", "8:00", "9:00", "10:00", "11:00") }
@@ -4219,6 +4717,56 @@ private fun ScheduleTimetableGridView(
   val lunchPurpleColor = MaterialTheme.colorScheme.primary
   val creamSurface = dashboardCreamCardColor()
   val ivoryCellSurface = dashboardIvoryInnerColor()
+
+  // Memoize all time-to-float calculations and layout positioning keyed to the schedule list
+  // so low-end devices do not recalculate math on every frame.
+  val positionedBlocksByDay = remember(schedules, hourHeight, lunchRowHeight) {
+    val minBlockHeight = metrics.scaledDp(26)
+    ScheduleWeekDay.entries.associateWith { day ->
+      schedules
+        .filter { sched -> sched.days.any { token -> day.matchesToken(token) } }
+        .map { classInfo ->
+          val startFloat = parseTimeToFloat(classInfo.startTime).coerceIn(7.0f, 17.5f)
+          val parsedEndFloat = parseTimeToFloat(classInfo.endTime)
+          val endFloat = (if (parsedEndFloat > startFloat) parsedEndFloat else startFloat + 1.0f)
+            .coerceIn(startFloat + 0.5f, 18.0f)
+
+          val rawTopOffset = hourHeight * (startFloat - 7.0f)
+          val topOffset = when {
+            startFloat >= 13.0f -> rawTopOffset - (hourHeight - lunchRowHeight)
+            startFloat > 12.0f -> amSectionHeight + lunchRowHeight * (startFloat - 12.0f)
+            else -> rawTopOffset
+          }.coerceAtLeast(0.dp)
+
+          val cardHeight = (hourHeight * (endFloat - startFloat))
+            .coerceAtLeast(minBlockHeight)
+          val blockColor = Color(classInfo.colorHex)
+
+          val blockLuminance =
+            0.299f * blockColor.red + 0.587f * blockColor.green + 0.114f * blockColor.blue
+          val primaryTextColor =
+            if (blockLuminance > 0.62f) Color(0xFF1C1B1F) else Color.White
+          val secondaryTextColor =
+            if (blockLuminance > 0.62f) {
+              Color(0xFF1C1B1F).copy(alpha = 0.88f)
+            } else {
+              Color.White.copy(alpha = 0.94f)
+            }
+
+          PositionedGridClassBlock(
+            classInfo = classInfo,
+            startFloat = startFloat,
+            endFloat = endFloat,
+            topOffset = topOffset,
+            cardHeight = cardHeight,
+            blockColor = blockColor,
+            primaryTextColor = primaryTextColor,
+            secondaryTextColor = secondaryTextColor
+          )
+        }
+        .sortedBy { it.startFloat }
+    }
+  }
 
   Card(
     modifier = Modifier
@@ -4410,10 +4958,8 @@ private fun ScheduleTimetableGridView(
           ) {
             Row(modifier = Modifier.fillMaxSize()) {
               ScheduleWeekDay.entries.forEach { day ->
-                val daySchedules = remember(schedules, day) {
-                  schedules
-                    .filter { sched -> sched.days.any { token -> day.matchesToken(token) } }
-                    .sortedBy { sched -> parseTimeToFloat(sched.startTime) }
+                val dayPositionedBlocks = remember(positionedBlocksByDay, day) {
+                  positionedBlocksByDay[day].orEmpty()
                 }
 
                 Box(
@@ -4436,47 +4982,29 @@ private fun ScheduleTimetableGridView(
                     }
                   }
 
-                  // Box overlay for class blocks positioned via parseTimeToFloat(startTime / endTime)
-                  daySchedules.forEach { classInfo ->
-                    val startFloat = parseTimeToFloat(classInfo.startTime).coerceIn(7.0f, 17.5f)
-                    val parsedEndFloat = parseTimeToFloat(classInfo.endTime)
-                    val endFloat = (if (parsedEndFloat > startFloat) parsedEndFloat else startFloat + 1.0f)
-                      .coerceIn(startFloat + 0.5f, 18.0f)
-
-                    val rawTopOffset = hourHeight * (startFloat - 7.0f)
-                    val topOffset = when {
-                      startFloat >= 13.0f -> rawTopOffset - (hourHeight - lunchRowHeight)
-                      startFloat > 12.0f -> amSectionHeight + lunchRowHeight * (startFloat - 12.0f)
-                      else -> rawTopOffset
-                    }.coerceAtLeast(0.dp)
-
-                    val cardHeight = (hourHeight * (endFloat - startFloat))
-                      .coerceAtLeast(metrics.scaledDp(26))
-                    val blockColor = Color(classInfo.colorHex)
-
-                    // High-contrast text color calculation based on block background luminance
-                    val blockLuminance =
-                      0.299f * blockColor.red + 0.587f * blockColor.green + 0.114f * blockColor.blue
-                    val primaryTextColor =
-                      if (blockLuminance > 0.62f) Color(0xFF1C1B1F) else Color.White
-                    val secondaryTextColor =
-                      if (blockLuminance > 0.62f) {
-                        Color(0xFF1C1B1F).copy(alpha = 0.88f)
-                      } else {
-                        Color.White.copy(alpha = 0.94f)
-                      }
+                  // Box overlay for class blocks using pre-remembered positions and long-press gesture
+                  dayPositionedBlocks.forEach { positioned ->
+                    val classInfo = positioned.classInfo
+                    val currentClassInfo by rememberUpdatedState(classInfo)
+                    val currentOnLongPress by rememberUpdatedState(onLongPressClass)
 
                     Surface(
-                      onClick = { onSelectWeekDay(day) },
                       shape = RoundedCornerShape(8.dp),
-                      color = blockColor,
+                      color = positioned.blockColor,
                       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
                       shadowElevation = 4.dp,
                       modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 2.dp, vertical = 1.dp)
-                        .offset(y = topOffset)
-                        .height(cardHeight)
+                        .offset(y = positioned.topOffset)
+                        .height(positioned.cardHeight)
+                        .pointerInput(Unit) {
+                          detectTapGestures(
+                            onLongPress = {
+                              currentOnLongPress(currentClassInfo)
+                            }
+                          )
+                        }
                         .testTag("grid_class_block_${day.shortLabel.lowercase(Locale.US)}_${classInfo.id}")
                     ) {
                       Column(
@@ -4494,7 +5022,7 @@ private fun ScheduleTimetableGridView(
                             lineHeight = metrics.scaledSp(10),
                             fontWeight = FontWeight.Bold
                           ),
-                          color = primaryTextColor,
+                          color = positioned.primaryTextColor,
                           textAlign = TextAlign.Center,
                           maxLines = 2,
                           overflow = TextOverflow.Ellipsis,
@@ -4511,7 +5039,7 @@ private fun ScheduleTimetableGridView(
                               lineHeight = metrics.scaledSp(9),
                               fontWeight = FontWeight.Normal
                             ),
-                            color = secondaryTextColor,
+                            color = positioned.secondaryTextColor,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -4528,7 +5056,7 @@ private fun ScheduleTimetableGridView(
                             lineHeight = metrics.scaledSp(8),
                             fontWeight = FontWeight.Normal
                           ),
-                          color = secondaryTextColor,
+                          color = positioned.secondaryTextColor,
                           textAlign = TextAlign.Center,
                           maxLines = 1,
                           overflow = TextOverflow.Ellipsis,
@@ -5190,15 +5718,16 @@ private fun AddClassScheduleDialog(
           }
         }
 
-        // 6. Card Accent Color Picker Row
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+        // 6. Card Accent Color Picker Row (LazyRow for low-end device smoothness)
+        LazyRow(
+          modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(10.dp),
           verticalAlignment = Alignment.CenterVertically
         ) {
-          availableColors.forEach { colorHex ->
+          items(
+            items = availableColors,
+            key = { it }
+          ) { colorHex ->
             val isColorSelected = selectedColorHex == colorHex
             Box(
               modifier = Modifier
@@ -5374,7 +5903,7 @@ private fun ProfileAndSettingsDialog(
   onSwitchAccount: () -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
-  val isGuest = viewModel.userName == "Guest" || viewModel.userEmail.isEmpty()
+  val isGuest = viewModel.isGuestMode
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -5484,7 +6013,7 @@ private fun ProfileAndSettingsDialog(
 
               if (isGuest) {
                 Text(
-                  text = stringResource(R.string.guest_account_label),
+                  text = "Guest User",
                   style = MaterialTheme.typography.titleLarge.copy(
                     fontSize = metrics.scaledSp(18),
                     fontWeight = FontWeight.Bold
@@ -5502,7 +6031,7 @@ private fun ProfileAndSettingsDialog(
                   verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                   Text(
-                    text = viewModel.userName,
+                    text = viewModel.displayUsername,
                     style = MaterialTheme.typography.titleMedium.copy(
                       fontSize = metrics.scaledSp(16),
                       fontWeight = FontWeight.Bold
@@ -5515,7 +6044,7 @@ private fun ProfileAndSettingsDialog(
                       .testTag("account_user_name_text")
                   )
                   Text(
-                    text = viewModel.userEmail,
+                    text = "@${viewModel.username}",
                     style = MaterialTheme.typography.bodyMedium.copy(
                       fontSize = metrics.scaledSp(14)
                     ),
@@ -5524,7 +6053,7 @@ private fun ProfileAndSettingsDialog(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                       .fillMaxWidth()
-                      .testTag("account_user_email_text")
+                      .testTag("account_username_handle_text")
                   )
                 }
               }
@@ -5739,8 +6268,15 @@ private fun ProfileAndSettingsDialog(
 }
 
 /**
- * Coursework & Task Manager Screen connected to the shared `TaskViewModel`.
- * Scales padding and typography dynamically via `rememberResponsiveMetrics()`.
+ * Coursework & Task Manager Screen connected to the shared `TaskViewModel`:
+ * 1. Top horizontal scrollable row (`LazyRow`) of selectable Subject "Folder" chips:
+ *    - Starts with a permanent `"General"` folder, followed by unique `subjectName`s extracted
+ *      directly from the `ViewModel`'s `ClassSchedule` list.
+ *    - Highlights the currently selected folder using `MaterialTheme.colorScheme.primary`, while
+ *      unselected folders use the cream background (`#FFFBF0`).
+ * 2. Main `LazyColumn` below the folders displaying ONLY tasks that match the currently selected
+ *    folder's `subjectCategory`.
+ * 3. Task cards styled with the warm cream color palette (`#FFFBF0`) and `elevation = 8.dp`.
  */
 @Composable
 fun CourseworkTaskManagerScreen(
@@ -5748,8 +6284,54 @@ fun CourseworkTaskManagerScreen(
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
-  val tasks = viewModel.tasks
-  val remainingCount = tasks.count { !it.isCompleted }
+  val allTasksSnapshot = viewModel.tasks.toList()
+  val schedulesSnapshot = viewModel.classSchedules.toList()
+
+  // Dynamically generate Subject Folders: permanent "General" + unique subjectNames from ClassSchedule list
+  val subjectFolders = remember(schedulesSnapshot) {
+    buildList {
+      add(DEFAULT_TASK_CATEGORY)
+      schedulesSnapshot
+        .map { it.subjectName.trim() }
+        .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
+        .distinctBy { it.lowercase(Locale.US) }
+        .forEach { add(it) }
+    }
+  }
+
+  val activeFolder = remember(subjectFolders, viewModel.selectedTaskFolder) {
+    subjectFolders.firstOrNull {
+      it.equals(viewModel.selectedTaskFolder, ignoreCase = true)
+    } ?: DEFAULT_TASK_CATEGORY
+  }
+
+  // Ensure ViewModel's selected folder stays valid if a schedule subject was removed
+  LaunchedEffect(activeFolder) {
+    if (!viewModel.selectedTaskFolder.equals(activeFolder, ignoreCase = true)) {
+      viewModel.selectTaskFolder(activeFolder)
+    }
+  }
+
+  // Filter tasks to only those matching the currently selected folder's subjectCategory
+  val filteredTasks = remember(allTasksSnapshot, activeFolder) {
+    allTasksSnapshot.filter { task ->
+      val taskCategory = task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+      taskCategory.equals(activeFolder, ignoreCase = true)
+    }
+  }
+
+  val folderCountsMap = remember(allTasksSnapshot, subjectFolders) {
+    subjectFolders.associateWith { folder ->
+      allTasksSnapshot.count { task ->
+        val taskCategory = task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+        taskCategory.equals(folder, ignoreCase = true) && !task.isCompleted
+      }
+    }
+  }
+
+  val remainingInFolderCount = remember(filteredTasks) {
+    filteredTasks.count { !it.isCompleted }
+  }
 
   LazyColumn(
     modifier = modifier.testTag("tasks_lazy_column"),
@@ -5761,11 +6343,12 @@ fun CourseworkTaskManagerScreen(
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
   ) {
+    // 1. Screen Header
     item {
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(bottom = 4.dp),
+          .padding(bottom = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -5788,13 +6371,14 @@ fun CourseworkTaskManagerScreen(
           shape = CircleShape
         ) {
           Text(
-            text = "$remainingCount Active",
+            text = "$remainingInFolderCount Active",
             style = MaterialTheme.typography.labelMedium.copy(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.Bold
             ),
             color = MaterialTheme.colorScheme.onPrimaryContainer,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(
               horizontal = metrics.scaledDp(14),
               vertical = metrics.scaledDp(6)
@@ -5804,15 +6388,120 @@ fun CourseworkTaskManagerScreen(
       }
     }
 
-    if (tasks.isEmpty()) {
+    // 2. Dynamic Subject Folders Horizontal Scrollable Row (LazyRow)
+    item {
+      LazyRow(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = 2.dp)
+          .testTag("task_subject_folders_row"),
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        items(
+          items = subjectFolders,
+          key = { it.lowercase(Locale.US) }
+        ) { folderName ->
+          val isSelected = folderName.equals(activeFolder, ignoreCase = true)
+          val activeCount = folderCountsMap[folderName] ?: 0
+          val chipBgColor = if (isSelected) {
+            MaterialTheme.colorScheme.primary
+          } else {
+            CreamCardColor
+          }
+          val chipTextColor = if (isSelected) {
+            MaterialTheme.colorScheme.onPrimary
+          } else {
+            Color(0xFF1E293B)
+          }
+
+          Surface(
+            onClick = { viewModel.selectTaskFolder(folderName) },
+            shape = RoundedCornerShape(18.dp),
+            color = chipBgColor,
+            border = if (isSelected) {
+              null
+            } else {
+              BorderStroke(1.5.dp, Color(0xFFE6DFCF))
+            },
+            shadowElevation = if (isSelected) 8.dp else 4.dp,
+            modifier = Modifier
+              .height(metrics.scaledDp(44))
+              .testTag("task_folder_chip_${folderName.lowercase(Locale.US).replace(" ", "_")}")
+          ) {
+            Row(
+              modifier = Modifier
+                .padding(
+                  horizontal = metrics.scaledDp(14),
+                  vertical = metrics.scaledDp(8)
+                ),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+            ) {
+              Icon(
+                imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
+                contentDescription = null,
+                tint = if (isSelected) {
+                  MaterialTheme.colorScheme.onPrimary
+                } else {
+                  Color(0xFF4F46E5)
+                },
+                modifier = Modifier.size(18.dp)
+              )
+
+              Text(
+                text = folderName,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                ),
+                color = chipTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 180.dp)
+              )
+
+              if (activeCount > 0) {
+                Surface(
+                  color = if (isSelected) {
+                    Color.White.copy(alpha = 0.24f)
+                  } else {
+                    Color(0xFFEEF2FF)
+                  },
+                  shape = CircleShape
+                ) {
+                  Text(
+                    text = activeCount.toString(),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = metrics.scaledSp(11),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (isSelected) {
+                      MaterialTheme.colorScheme.onPrimary
+                    } else {
+                      Color(0xFF4F46E5)
+                    },
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Filtered Task Cards List for Selected Subject Folder
+    if (filteredTasks.isEmpty()) {
       item {
         Card(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 12.dp)
+            .padding(top = 8.dp)
             .testTag("empty_tasks_card"),
           shape = RoundedCornerShape(22.dp),
-          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+          colors = CardDefaults.cardColors(containerColor = CreamCardColor),
           elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
           Column(
@@ -5822,23 +6511,29 @@ fun CourseworkTaskManagerScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
           ) {
+            Icon(
+              imageVector = Icons.Outlined.Folder,
+              contentDescription = null,
+              tint = Color(0xFF4F46E5),
+              modifier = Modifier.size(36.dp)
+            )
             Text(
-              text = "No tasks in your list",
+              text = "No tasks in \"$activeFolder\"",
               style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = metrics.scaledSp(19),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
+              color = Color(0xFF1E293B),
               textAlign = TextAlign.Center,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
             Text(
-              text = "Tap the + button in the bottom corner to add a task and due date.",
+              text = "Tap the + button in the bottom corner to add a task to this subject folder.",
               style = MaterialTheme.typography.bodyLarge.copy(
                 fontSize = metrics.scaledSp(15)
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = Color(0xFF57534E),
               textAlign = TextAlign.Center,
               maxLines = 2,
               overflow = TextOverflow.Ellipsis
@@ -5848,7 +6543,7 @@ fun CourseworkTaskManagerScreen(
       }
     } else {
       items(
-        items = tasks,
+        items = filteredTasks,
         key = { it.id }
       ) { task ->
         TaskItemRowCard(
@@ -5863,8 +6558,8 @@ fun CourseworkTaskManagerScreen(
 }
 
 /**
- * Task row card using `Modifier.weight(1f)` on the middle text column, explicit `Modifier.size()`
- * bounds on the Checkbox and Delete icon buttons, and `maxLines = 2` with `TextOverflow.Ellipsis`.
+ * Cream-themed Task row card (`#FFFBF0`) with `elevation = 8.dp`, high-contrast charcoal/indigo
+ * typography and checkbox colors, and `maxLines` + `TextOverflow.Ellipsis` on all text elements.
  */
 @Composable
 private fun TaskItemRowCard(
@@ -5873,6 +6568,19 @@ private fun TaskItemRowCard(
   onToggle: () -> Unit,
   onDelete: () -> Unit
 ) {
+  val creamBackground = CreamCardColor
+  val titleTextColor = if (task.isCompleted) {
+    Color(0xFF64748B)
+  } else {
+    Color(0xFF1E293B)
+  }
+  val accentColor = if (task.isCompleted) {
+    Color(0xFF64748B)
+  } else {
+    Color(0xFF4F46E5)
+  }
+  val subtextColor = Color(0xFF57534E)
+
   Card(
     modifier = Modifier
       .fillMaxWidth()
@@ -5881,10 +6589,11 @@ private fun TaskItemRowCard(
       .testTag("task_item_card_${task.id}"),
     shape = RoundedCornerShape(20.dp),
     colors = CardDefaults.cardColors(
-      containerColor = MaterialTheme.colorScheme.surface
+      containerColor = creamBackground
     ),
     elevation = CardDefaults.cardElevation(
-      defaultElevation = if (task.isCompleted) 2.dp else 8.dp
+      defaultElevation = 8.dp,
+      pressedElevation = 10.dp
     )
   ) {
     Row(
@@ -5907,9 +6616,9 @@ private fun TaskItemRowCard(
           checked = task.isCompleted,
           onCheckedChange = { onToggle() },
           colors = CheckboxDefaults.colors(
-            checkedColor = MaterialTheme.colorScheme.primary,
-            checkmarkColor = MaterialTheme.colorScheme.onPrimary,
-            uncheckedColor = MaterialTheme.colorScheme.onSurfaceVariant
+            checkedColor = Color(0xFF4F46E5),
+            checkmarkColor = Color.White,
+            uncheckedColor = Color(0xFF475569)
           ),
           modifier = Modifier
             .size(24.dp)
@@ -5919,7 +6628,7 @@ private fun TaskItemRowCard(
 
       Column(
         modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
         Text(
           text = task.title,
@@ -5927,11 +6636,7 @@ private fun TaskItemRowCard(
             fontSize = metrics.scaledSp(16),
             fontWeight = FontWeight.Bold
           ),
-          color = if (task.isCompleted) {
-            MaterialTheme.colorScheme.onSurfaceVariant
-          } else {
-            MaterialTheme.colorScheme.onSurface
-          },
+          color = titleTextColor,
           textDecoration = if (task.isCompleted) {
             TextDecoration.LineThrough
           } else {
@@ -5947,33 +6652,55 @@ private fun TaskItemRowCard(
         Row(
           modifier = Modifier.fillMaxWidth(),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp)
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          Icon(
-            imageVector = Icons.Outlined.CalendarToday,
-            contentDescription = null,
-            tint = if (task.isCompleted) {
-              MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-              MaterialTheme.colorScheme.primary
-            },
-            modifier = Modifier.size(16.dp)
-          )
-          Text(
-            text = "Due: ${task.dueDate}",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.SemiBold
-            ),
+          Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.CalendarToday,
+              contentDescription = null,
+              tint = accentColor,
+              modifier = Modifier.size(15.dp)
+            )
+            Text(
+              text = "Due: ${task.dueDate}",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = accentColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f)
+            )
+          }
+
+          Surface(
             color = if (task.isCompleted) {
-              MaterialTheme.colorScheme.onSurfaceVariant
+              Color(0xFFE6DFCF)
             } else {
-              MaterialTheme.colorScheme.primary
+              Color(0xFFEEF2FF)
             },
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-          )
+            shape = CircleShape
+          ) {
+            Text(
+              text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = metrics.scaledSp(11),
+                fontWeight = FontWeight.Bold
+              ),
+              color = if (task.isCompleted) subtextColor else Color(0xFF3730A3),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .widthIn(max = 120.dp)
+                .padding(horizontal = 9.dp, vertical = 3.dp)
+                .testTag("task_category_badge_${task.id}")
+            )
+          }
         }
       }
 
@@ -5987,7 +6714,7 @@ private fun TaskItemRowCard(
         Icon(
           imageVector = Icons.Outlined.DeleteOutline,
           contentDescription = "Delete ${task.title}",
-          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+          tint = subtextColor,
           modifier = Modifier.size(24.dp)
         )
       }
@@ -5996,25 +6723,37 @@ private fun TaskItemRowCard(
 }
 
 /**
- * Minimalist Dialog with two `OutlinedTextField` inputs:
- * 1. Task Title
- * 2. Due Date (e.g., Oct 25)
- * Saves both the title and the due date to the new task when clicking "Add".
+ * Cream-styled Dialog for adding a new coursework task:
+ * 1. Task Title (`OutlinedTextField`)
+ * 2. Due Date (`OutlinedTextField`)
+ * 3. Subject Category horizontal scrollable row of chips (`LazyRow`) showing `"General"` +
+ *    extracted schedule subjects, pre-selected based on the folder currently viewed.
  */
 @Composable
 private fun AddTaskDialog(
+  availableCategories: List<String> = listOf(DEFAULT_TASK_CATEGORY),
+  initialCategory: String = DEFAULT_TASK_CATEGORY,
   onDismiss: () -> Unit,
-  onAddTask: (String, String) -> Unit
+  onAddTask: (String, String, String) -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
   var taskTitle by rememberSaveable { mutableStateOf("") }
   var taskDueDate by rememberSaveable { mutableStateOf("") }
+  val categories = remember(availableCategories) {
+    if (availableCategories.isEmpty()) listOf(DEFAULT_TASK_CATEGORY) else availableCategories
+  }
+  var selectedCategory by rememberSaveable(initialCategory) {
+    mutableStateOf(
+      categories.firstOrNull { it.equals(initialCategory, ignoreCase = true) }
+        ?: DEFAULT_TASK_CATEGORY
+    )
+  }
 
   AlertDialog(
     onDismissRequest = onDismiss,
     modifier = Modifier.testTag("add_task_dialog"),
     shape = RoundedCornerShape(24.dp),
-    containerColor = MaterialTheme.colorScheme.surface,
+    containerColor = CreamCardColor,
     title = {
       Text(
         text = stringResource(R.string.add_task_dialog_title),
@@ -6022,7 +6761,7 @@ private fun AddTaskDialog(
           fontSize = metrics.scaledSp(21),
           fontWeight = FontWeight.Bold
         ),
-        color = MaterialTheme.colorScheme.onSurface,
+        color = Color(0xFF1E293B),
         maxLines = 1,
         overflow = TextOverflow.Ellipsis
       )
@@ -6041,6 +6780,7 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.task_title_label),
               style = MaterialTheme.typography.bodyMedium,
+              color = Color(0xFF57534E),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -6049,21 +6789,23 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.add_task_input_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+              color = Color(0xFF57534E).copy(alpha = 0.65f),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = MaterialTheme.colorScheme.onSurface
+            color = Color(0xFF1E293B)
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
           colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-            cursorColor = MaterialTheme.colorScheme.primary
+            unfocusedBorderColor = Color(0xFFD6CFC0),
+            cursorColor = MaterialTheme.colorScheme.primary,
+            focusedTextColor = Color(0xFF1E293B),
+            unfocusedTextColor = Color(0xFF1E293B)
           ),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Sentences,
@@ -6081,6 +6823,7 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.due_date_label),
               style = MaterialTheme.typography.bodyMedium,
+              color = Color(0xFF57534E),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -6089,7 +6832,7 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.due_date_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+              color = Color(0xFF57534E).copy(alpha = 0.65f),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -6098,20 +6841,22 @@ private fun AddTaskDialog(
             Icon(
               imageVector = Icons.Outlined.CalendarToday,
               contentDescription = null,
-              tint = MaterialTheme.colorScheme.primary,
+              tint = Color(0xFF4F46E5),
               modifier = Modifier.size(22.dp)
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = MaterialTheme.colorScheme.onSurface
+            color = Color(0xFF1E293B)
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
           colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-            cursorColor = MaterialTheme.colorScheme.primary
+            unfocusedBorderColor = Color(0xFFD6CFC0),
+            cursorColor = MaterialTheme.colorScheme.primary,
+            focusedTextColor = Color(0xFF1E293B),
+            unfocusedTextColor = Color(0xFF1E293B)
           ),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
@@ -6120,7 +6865,7 @@ private fun AddTaskDialog(
           keyboardActions = KeyboardActions(
             onDone = {
               if (taskTitle.isNotBlank()) {
-                onAddTask(taskTitle, taskDueDate)
+                onAddTask(taskTitle, taskDueDate, selectedCategory)
               }
             }
           ),
@@ -6128,11 +6873,93 @@ private fun AddTaskDialog(
             .fillMaxWidth()
             .testTag("new_task_due_date_input")
         )
+
+        // Subject Category Selector ("General" + extracted schedule subjects)
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+        ) {
+          Text(
+            text = stringResource(R.string.task_subject_category_label),
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(14),
+              fontWeight = FontWeight.Bold
+            ),
+            color = Color(0xFF1E293B),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+
+          LazyRow(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("add_task_category_chips_row"),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            items(
+              items = categories,
+              key = { it.lowercase(Locale.US) }
+            ) { categoryName ->
+              val isSelected = categoryName.equals(selectedCategory, ignoreCase = true)
+              Surface(
+                onClick = { selectedCategory = categoryName },
+                shape = RoundedCornerShape(14.dp),
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  IvoryInnerCardColor
+                },
+                border = if (isSelected) {
+                  null
+                } else {
+                  BorderStroke(1.dp, Color(0xFFD6CFC0))
+                },
+                shadowElevation = if (isSelected) 4.dp else 1.dp,
+                modifier = Modifier.testTag(
+                  "add_task_category_chip_${categoryName.lowercase(Locale.US).replace(" ", "_")}"
+                )
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Icon(
+                    imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
+                    contentDescription = null,
+                    tint = if (isSelected) {
+                      MaterialTheme.colorScheme.onPrimary
+                    } else {
+                      Color(0xFF4F46E5)
+                    },
+                    modifier = Modifier.size(16.dp)
+                  )
+                  Text(
+                    text = categoryName,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontSize = metrics.scaledSp(13),
+                      fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                    ),
+                    color = if (isSelected) {
+                      MaterialTheme.colorScheme.onPrimary
+                    } else {
+                      Color(0xFF1E293B)
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 170.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
       }
     },
     confirmButton = {
       Button(
-        onClick = { onAddTask(taskTitle, taskDueDate) },
+        onClick = { onAddTask(taskTitle, taskDueDate, selectedCategory) },
         enabled = taskTitle.isNotBlank(),
         shape = CircleShape,
         colors = ButtonDefaults.buttonColors(
@@ -6169,7 +6996,7 @@ private fun AddTaskDialog(
             fontSize = metrics.scaledSp(15),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          color = Color(0xFF57534E),
           maxLines = 1,
           overflow = TextOverflow.Ellipsis
         )
@@ -6206,6 +7033,1900 @@ fun PlaceholderScreen(
       maxLines = 1,
       overflow = TextOverflow.Ellipsis
     )
+  }
+}
+
+// ============================================================================
+// GOOGLE CLOCK INSPIRED CLOCK SCREEN (ALARM, TIMER, STOPWATCH)
+// ============================================================================
+
+private enum class ClockSubTab(val title: String, val icon: ImageVector, val testTag: String) {
+  ALARM("Alarm", Icons.Filled.Alarm, "clock_tab_alarm"),
+  TIMER("Timer", Icons.Filled.Timer, "clock_tab_timer"),
+  STOPWATCH("Stopwatch", Icons.Filled.AvTimer, "clock_tab_stopwatch")
+}
+
+data class AlarmItem(
+  val id: Int,
+  val name: String,
+  val hour: String,
+  val minute: String,
+  val amPm: String,
+  val activeDays: List<Int>,
+  val isActive: Boolean
+)
+
+data class StopwatchLapItem(
+  val lapNumber: Int,
+  val lapSplitMillis: Long,
+  val totalElapsedMillis: Long
+)
+
+data class CeFocusPreset(
+  val label: String,
+  val durationSeconds: Long,
+  val subtitle: String,
+  val testTag: String
+)
+
+private val CE_FOCUS_PRESETS = listOf(
+  CeFocusPreset(
+    label = "Pomodoro (25m)",
+    durationSeconds = 25L * 60L,
+    subtitle = "Standard 25-min deep engineering sprint",
+    testTag = "preset_chip_pomodoro"
+  ),
+  CeFocusPreset(
+    label = "CELE: Structural (5h)",
+    durationSeconds = 5L * 3600L,
+    subtitle = "Full 5-hour Structural Engineering & Construction board exam simulation",
+    testTag = "preset_chip_structural"
+  ),
+  CeFocusPreset(
+    label = "CELE: Hydraulics (4h)",
+    durationSeconds = 4L * 3600L,
+    subtitle = "Full 4-hour Hydraulics & Geotechnical Engineering board exam simulation",
+    testTag = "preset_chip_hydraulics"
+  )
+)
+
+/**
+ * Plays the device's native alarm sound using RingtoneManager.
+ * Uses TYPE_ALARM first as required, with safe fallback to TYPE_NOTIFICATION or TYPE_RINGTONE
+ * if the device has no default alarm URI configured.
+ */
+fun playNativeAlarmSound(context: Context): Ringtone? {
+  return try {
+    val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+      ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+      ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+    val ringtone = RingtoneManager.getRingtone(context, alarmUri)
+    ringtone?.play()
+    ringtone
+  } catch (e: Exception) {
+    null
+  }
+}
+
+@Composable
+fun ClockScreen(
+  viewModel: TaskViewModel? = null,
+  modifier: Modifier = Modifier
+) {
+  val context = LocalContext.current
+  val localStorageManager = remember(context) { LocalStorageManager(context) }
+  val metrics = rememberResponsiveMetrics()
+  val creamCardColor = dashboardCreamCardColor()
+  val ivoryInnerColor = if (MaterialTheme.colorScheme.background == CanvaLightColorScheme.background) {
+    IvoryInnerCardColor
+  } else {
+    MaterialTheme.colorScheme.surfaceVariant
+  }
+
+  var selectedSubTab by rememberSaveable { mutableStateOf(ClockSubTab.ALARM) }
+
+  // Notification Permission state (Android 13+)
+  var hasNotificationPermission by remember {
+    mutableStateOf(
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(
+          context,
+          Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+      } else {
+        true
+      }
+    )
+  }
+  var isPermissionRationaleDismissed by rememberSaveable { mutableStateOf(false) }
+
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { isGranted ->
+    hasNotificationPermission = isGranted
+  }
+
+  LaunchedEffect(Unit) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
+      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+  }
+
+  // Active Ringtone state so user can stop ringing alarm or timer
+  var activeRingtone by remember { mutableStateOf<Ringtone?>(null) }
+  var ringingBannerMessage by remember { mutableStateOf<String?>(null) }
+
+  fun triggerAlarmRingtone(message: String) {
+    try {
+      activeRingtone?.stop()
+    } catch (_: Exception) {
+    }
+    activeRingtone = playNativeAlarmSound(context)
+    ringingBannerMessage = message
+  }
+
+  fun stopActiveRingtone() {
+    try {
+      activeRingtone?.stop()
+    } catch (_: Exception) {
+    }
+    activeRingtone = null
+    ringingBannerMessage = null
+  }
+
+  DisposableEffect(Unit) {
+    onDispose {
+      try {
+        activeRingtone?.stop()
+      } catch (_: Exception) {
+      }
+    }
+  }
+
+  // ==========================================================================
+  // ALARM STATE (SHARED PREFERENCES BACKED, STARTS COMPLETELY EMPTY)
+  // ==========================================================================
+  val fallbackAlarms = remember {
+    val saved = localStorageManager.loadAlarms(LocalStorageManager.GUEST_ACCOUNT_KEY) ?: emptyList()
+    mutableStateListOf<AlarmItem>().apply { addAll(saved) }
+  }
+  val alarms: List<AlarmItem> = viewModel?.alarms ?: fallbackAlarms
+  var isAddAlarmDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var lastTriggeredAlarmKey by remember { mutableStateOf("") }
+
+  // Check current device time every second while ClockScreen is open
+  LaunchedEffect(alarms.toList()) {
+    while (true) {
+      val now = LocalTime.now()
+      val currentHour24 = now.hour
+      val currentMinute = now.minute
+      val currentAmPm = if (currentHour24 < 12) "AM" else "PM"
+      val currentHour12 = when {
+        currentHour24 == 0 -> 12
+        currentHour24 > 12 -> currentHour24 - 12
+        else -> currentHour24
+      }
+      // Map Java DayOfWeek (1=Mon..7=Sun) to 0..6 (0=Sun..6=Sat)
+      val currentDayIndex = LocalDate.now().dayOfWeek.value % 7
+
+      val matchingAlarm = alarms.firstOrNull { alarm ->
+        val alarmHour = alarm.hour.toIntOrNull() ?: -1
+        val alarmMinute = alarm.minute.toIntOrNull() ?: -1
+        val isDayMatch = alarm.activeDays.isEmpty() || alarm.activeDays.contains(currentDayIndex)
+        alarm.isActive &&
+          isDayMatch &&
+          alarmHour == currentHour12 &&
+          alarmMinute == currentMinute &&
+          alarm.amPm.equals(currentAmPm, ignoreCase = true)
+      }
+
+      if (matchingAlarm != null) {
+        val triggerKey = "${matchingAlarm.id}_${currentHour24}_$currentMinute"
+        if (lastTriggeredAlarmKey != triggerKey) {
+          lastTriggeredAlarmKey = triggerKey
+          val formattedTime = "${matchingAlarm.hour}:${matchingAlarm.minute} ${matchingAlarm.amPm}"
+          triggerAlarmRingtone("Alarm ringing: $formattedTime (${matchingAlarm.name})")
+        }
+      }
+      delay(1000L)
+    }
+  }
+
+  // ==========================================================================
+  // TIMER STATE & COUNTDOWN ENGINE
+  // ==========================================================================
+  // Digit buffer for custom keypad input (up to 6 digits: HHMMSS)
+  var timerDigitInput by rememberSaveable { mutableStateOf("") }
+  var timerTotalDurationSeconds by rememberSaveable { mutableLongStateOf(0L) }
+  var timerRemainingSeconds by rememberSaveable { mutableLongStateOf(0L) }
+  var isTimerRunning by rememberSaveable { mutableStateOf(false) }
+  var activePresetLabel by rememberSaveable { mutableStateOf<String?>(null) }
+
+  LaunchedEffect(isTimerRunning) {
+    while (isTimerRunning && timerRemainingSeconds > 0L) {
+      delay(1000L)
+      if (isTimerRunning && timerRemainingSeconds > 0L) {
+        timerRemainingSeconds -= 1L
+        if (timerRemainingSeconds == 0L) {
+          isTimerRunning = false
+          val labelSuffix = activePresetLabel?.let { " ($it)" } ?: ""
+          triggerAlarmRingtone("Timer finished: 00:00:00$labelSuffix")
+        }
+      }
+    }
+  }
+
+  // ==========================================================================
+  // STOPWATCH STATE & HIGH-PRECISION TICKER
+  // ==========================================================================
+  var isStopwatchRunning by rememberSaveable { mutableStateOf(false) }
+  var stopwatchElapsedMillis by rememberSaveable { mutableLongStateOf(0L) }
+  val stopwatchLaps = remember { mutableStateListOf<StopwatchLapItem>() }
+
+  LaunchedEffect(isStopwatchRunning) {
+    if (isStopwatchRunning) {
+      val baseTime = SystemClock.elapsedRealtime() - stopwatchElapsedMillis
+      while (isStopwatchRunning) {
+        stopwatchElapsedMillis = SystemClock.elapsedRealtime() - baseTime
+        delay(16L)
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .background(MaterialTheme.colorScheme.background)
+      .testTag("clock_screen")
+  ) {
+    // Top Google Clock-style TabRow (Alarm, Timer, Stopwatch)
+    Surface(
+      color = creamCardColor,
+      shadowElevation = 2.dp,
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+              horizontal = metrics.scaledDp(20),
+              vertical = metrics.scaledDp(12)
+            ),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Text(
+            text = "Clock",
+            style = MaterialTheme.typography.headlineSmall.copy(
+              fontWeight = FontWeight.ExtraBold,
+              fontSize = metrics.scaledSp(22)
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+          Text(
+            text = "CE Time Suite",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = MaterialTheme.colorScheme.primary
+          )
+        }
+
+        TabRow(
+          selectedTabIndex = selectedSubTab.ordinal,
+          containerColor = creamCardColor,
+          contentColor = MaterialTheme.colorScheme.primary,
+          indicator = { tabPositions ->
+            if (selectedSubTab.ordinal < tabPositions.size) {
+              TabRowDefaults.SecondaryIndicator(
+                modifier = Modifier
+                  .tabIndicatorOffset(tabPositions[selectedSubTab.ordinal])
+                  .height(3.dp)
+                  .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)),
+                color = MaterialTheme.colorScheme.primary
+              )
+            }
+          },
+          divider = {
+            HorizontalDivider(
+              thickness = 1.dp,
+              color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            )
+          },
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("clock_top_tab_row")
+        ) {
+          ClockSubTab.entries.forEach { tab ->
+            val selected = selectedSubTab == tab
+            Tab(
+              selected = selected,
+              onClick = { selectedSubTab = tab },
+              modifier = Modifier
+                .height(metrics.scaledDp(52))
+                .testTag(tab.testTag),
+              text = {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Icon(
+                    imageVector = tab.icon,
+                    contentDescription = tab.title,
+                    modifier = Modifier.size(18.dp),
+                    tint = if (selected) {
+                      MaterialTheme.colorScheme.primary
+                    } else {
+                      MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                  )
+                  Text(
+                    text = tab.title,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                      fontSize = metrics.scaledSp(13)
+                    ),
+                    color = if (selected) {
+                      MaterialTheme.colorScheme.primary
+                    } else {
+                      MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+              }
+            )
+          }
+        }
+      }
+    }
+
+    // Dismissible POST_NOTIFICATIONS Permission Rationale Card when denied
+    if (!hasNotificationPermission && !isPermissionRationaleDismissed) {
+      Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(
+            horizontal = metrics.scaledDp(16),
+            vertical = metrics.scaledDp(10)
+          )
+          .testTag("clock_permission_rationale_card")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(14)),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            modifier = Modifier.size(40.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Filled.NotificationsActive,
+                contentDescription = "Notification permission required",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+              )
+            }
+          }
+
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Please grant notification permissions so your alarms can ring.",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontSize = metrics.scaledSp(13)
+              ),
+              color = MaterialTheme.colorScheme.onSurface
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+              TextButton(
+                onClick = {
+                  notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                },
+                contentPadding = PaddingValues(0.dp),
+                modifier = Modifier.testTag("grant_notification_permission_button")
+              ) {
+                Text(
+                  text = "Grant Permission",
+                  style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                  color = MaterialTheme.colorScheme.primary
+                )
+              }
+            }
+          }
+
+          IconButton(
+            onClick = { isPermissionRationaleDismissed = true },
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("dismiss_permission_rationale_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Close,
+              contentDescription = "Dismiss notification rationale",
+              tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          }
+        }
+      }
+    }
+
+    // Active ringing alarm/timer banner with Silence button
+    ringingBannerMessage?.let { activeMessage ->
+      Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+          containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(
+            horizontal = metrics.scaledDp(16),
+            vertical = metrics.scaledDp(8)
+          )
+          .testTag("active_ringing_banner")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = metrics.scaledDp(16), vertical = metrics.scaledDp(12)),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.NotificationsActive,
+              contentDescription = "Ringing",
+              tint = MaterialTheme.colorScheme.primary
+            )
+            Text(
+              text = activeMessage,
+              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+              color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+          }
+          Button(
+            onClick = { stopActiveRingtone() },
+            shape = RoundedCornerShape(50),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            modifier = Modifier.testTag("stop_alarm_sound_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.VolumeOff,
+              contentDescription = "Stop sound",
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Dismiss")
+          }
+        }
+      }
+    }
+
+    // Main Sub-screen Content
+    Box(
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxWidth()
+    ) {
+      when (selectedSubTab) {
+        ClockSubTab.ALARM -> AlarmSubScreen(
+          alarms = alarms,
+          creamCardColor = creamCardColor,
+          ivoryInnerColor = ivoryInnerColor,
+          metrics = metrics,
+          onToggleAlarm = { alarmId, isActive ->
+            if (viewModel != null) {
+              viewModel.toggleAlarmActive(alarmId, isActive)
+            } else {
+              val index = fallbackAlarms.indexOfFirst { it.id == alarmId }
+              if (index >= 0) {
+                fallbackAlarms[index] = fallbackAlarms[index].copy(isActive = isActive)
+                localStorageManager.saveAlarms(fallbackAlarms, LocalStorageManager.GUEST_ACCOUNT_KEY)
+              }
+            }
+          },
+          onToggleAlarmDay = { alarmId, dayIndex ->
+            if (viewModel != null) {
+              viewModel.toggleAlarmDay(alarmId, dayIndex)
+            } else {
+              val index = fallbackAlarms.indexOfFirst { it.id == alarmId }
+              if (index >= 0 && dayIndex in 0..6) {
+                val current = fallbackAlarms[index]
+                val updatedDays = if (current.activeDays.contains(dayIndex)) {
+                  current.activeDays - dayIndex
+                } else {
+                  (current.activeDays + dayIndex).sorted()
+                }
+                fallbackAlarms[index] = current.copy(activeDays = updatedDays)
+                localStorageManager.saveAlarms(fallbackAlarms, LocalStorageManager.GUEST_ACCOUNT_KEY)
+              }
+            }
+          },
+          onOpenAddAlarmDialog = {
+            isAddAlarmDialogOpen = true
+          },
+          onTestRingNow = { alarm ->
+            val formattedTime = "${alarm.hour}:${alarm.minute} ${alarm.amPm}"
+            triggerAlarmRingtone("Alarm ringing: $formattedTime (${alarm.name})")
+          }
+        )
+
+        ClockSubTab.TIMER -> TimerSubScreen(
+          digitInput = timerDigitInput,
+          totalDurationSeconds = timerTotalDurationSeconds,
+          remainingSeconds = timerRemainingSeconds,
+          isRunning = isTimerRunning,
+          activePresetLabel = activePresetLabel,
+          creamCardColor = creamCardColor,
+          ivoryInnerColor = ivoryInnerColor,
+          metrics = metrics,
+          onAppendDigits = { digits ->
+            if (!isTimerRunning && timerRemainingSeconds == 0L) {
+              val combined = (timerDigitInput + digits).trimStart('0')
+              timerDigitInput = combined.take(6)
+            }
+          },
+          onBackspace = {
+            if (!isTimerRunning && timerRemainingSeconds == 0L && timerDigitInput.isNotEmpty()) {
+              timerDigitInput = timerDigitInput.dropLast(1)
+            }
+          },
+          onClearInput = {
+            isTimerRunning = false
+            timerRemainingSeconds = 0L
+            timerTotalDurationSeconds = 0L
+            timerDigitInput = ""
+            activePresetLabel = null
+          },
+          onStartOrPause = {
+            if (isTimerRunning) {
+              isTimerRunning = false
+            } else {
+              if (timerRemainingSeconds > 0L) {
+                isTimerRunning = true
+              } else {
+                val parsedSeconds = parseKeypadDigitsToSeconds(timerDigitInput)
+                if (parsedSeconds > 0L) {
+                  timerTotalDurationSeconds = parsedSeconds
+                  timerRemainingSeconds = parsedSeconds
+                  activePresetLabel = "Custom Timer"
+                  isTimerRunning = true
+                }
+              }
+            }
+          },
+          onResetTimer = {
+            isTimerRunning = false
+            timerRemainingSeconds = 0L
+            timerTotalDurationSeconds = 0L
+            activePresetLabel = null
+          },
+          onSelectPreset = { preset ->
+            stopActiveRingtone()
+            timerDigitInput = ""
+            timerTotalDurationSeconds = preset.durationSeconds
+            timerRemainingSeconds = preset.durationSeconds
+            activePresetLabel = preset.label
+            isTimerRunning = true
+          }
+        )
+
+        ClockSubTab.STOPWATCH -> StopwatchSubScreen(
+          elapsedMillis = stopwatchElapsedMillis,
+          isRunning = isStopwatchRunning,
+          laps = stopwatchLaps,
+          creamCardColor = creamCardColor,
+          ivoryInnerColor = ivoryInnerColor,
+          metrics = metrics,
+          onToggleStartStop = {
+            isStopwatchRunning = !isStopwatchRunning
+          },
+          onLapOrReset = {
+            if (isStopwatchRunning) {
+              val previousTotal = stopwatchLaps.firstOrNull()?.totalElapsedMillis ?: 0L
+              val split = (stopwatchElapsedMillis - previousTotal).coerceAtLeast(0L)
+              stopwatchLaps.add(
+                0,
+                StopwatchLapItem(
+                  lapNumber = stopwatchLaps.size + 1,
+                  lapSplitMillis = split,
+                  totalElapsedMillis = stopwatchElapsedMillis
+                )
+              )
+            } else {
+              stopwatchElapsedMillis = 0L
+              stopwatchLaps.clear()
+            }
+          }
+        )
+      }
+    }
+  }
+
+  if (isAddAlarmDialogOpen) {
+    AddAlarmDialog(
+      creamCardColor = creamCardColor,
+      ivoryInnerColor = ivoryInnerColor,
+      metrics = metrics,
+      onDismiss = { isAddAlarmDialogOpen = false },
+      onSaveAlarm = { name, hour, minute, amPm, activeDays ->
+        if (viewModel != null) {
+          viewModel.addAlarm(
+            name = name,
+            hour = hour,
+            minute = minute,
+            amPm = amPm,
+            activeDays = activeDays,
+            isActive = true
+          )
+        } else {
+          val nextId = (fallbackAlarms.maxOfOrNull { it.id } ?: 0) + 1
+          fallbackAlarms.add(
+            AlarmItem(
+              id = nextId,
+              name = name.trim().ifEmpty { "Alarm" },
+              hour = hour,
+              minute = minute,
+              amPm = amPm,
+              activeDays = activeDays.sorted(),
+              isActive = true
+            )
+          )
+          localStorageManager.saveAlarms(fallbackAlarms, LocalStorageManager.GUEST_ACCOUNT_KEY)
+        }
+        isAddAlarmDialogOpen = false
+      }
+    )
+  }
+}
+
+private fun parseKeypadDigitsToSeconds(digits: String): Long {
+  if (digits.isBlank()) return 0L
+  val padded = digits.padStart(6, '0').takeLast(6)
+  val hours = padded.substring(0, 2).toLongOrNull() ?: 0L
+  val minutes = padded.substring(2, 4).toLongOrNull() ?: 0L
+  val seconds = padded.substring(4, 6).toLongOrNull() ?: 0L
+  return hours * 3600L + minutes * 60L + seconds
+}
+
+private fun formatKeypadDigitsPreview(digits: String): Triple<String, String, String> {
+  val padded = digits.padStart(6, '0').takeLast(6)
+  return Triple(
+    padded.substring(0, 2),
+    padded.substring(2, 4),
+    padded.substring(4, 6)
+  )
+}
+
+private fun formatDurationSecondsHms(totalSeconds: Long): String {
+  val clamped = totalSeconds.coerceAtLeast(0L)
+  val hours = clamped / 3600L
+  val minutes = (clamped % 3600L) / 60L
+  val seconds = clamped % 60L
+  return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
+}
+
+private fun formatStopwatchMillis(elapsedMillis: Long): String {
+  val clamped = elapsedMillis.coerceAtLeast(0L)
+  val totalSeconds = clamped / 1000L
+  val minutes = totalSeconds / 60L
+  val seconds = totalSeconds % 60L
+  val centiseconds = (clamped % 1000L) / 10L
+  return String.format(Locale.US, "%02d:%02d.%02d", minutes, seconds, centiseconds)
+}
+
+// ============================================================================
+// 1. ALARM SUB-SCREEN & ADD ALARM DIALOG
+// ============================================================================
+
+private val ALARM_WEEK_DAY_LABELS = listOf("S", "M", "T", "W", "T", "F", "S")
+
+@Composable
+private fun AlarmSubScreen(
+  alarms: List<AlarmItem>,
+  creamCardColor: Color,
+  ivoryInnerColor: Color,
+  metrics: ResponsiveMetrics,
+  onToggleAlarm: (Int, Boolean) -> Unit,
+  onToggleAlarmDay: (Int, Int) -> Unit,
+  onOpenAddAlarmDialog: () -> Unit,
+  onTestRingNow: (AlarmItem) -> Unit
+) {
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .testTag("alarm_sub_screen")
+  ) {
+    if (alarms.isEmpty()) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(horizontal = metrics.scaledDp(24)),
+        contentAlignment = Alignment.Center
+      ) {
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Alarm,
+            contentDescription = "No alarms set",
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            modifier = Modifier.size(metrics.scaledDp(48))
+          )
+          Text(
+            text = "No Alarms Yet",
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = metrics.scaledSp(18)
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+          Text(
+            text = "Tap the + button below to create an alarm.",
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = metrics.scaledSp(13)
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+          )
+        }
+      }
+    }
+
+    LazyColumn(
+      modifier = Modifier
+        .fillMaxSize()
+        .testTag("alarm_list_lazy_column"),
+      contentPadding = PaddingValues(
+        start = metrics.scaledDp(16),
+        end = metrics.scaledDp(16),
+        top = metrics.scaledDp(14),
+        bottom = metrics.scaledDp(108)
+      ),
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+    ) {
+      items(alarms, key = { it.id }) { alarm ->
+        Card(
+          shape = RoundedCornerShape(24.dp),
+          colors = CardDefaults.cardColors(containerColor = creamCardColor),
+          border = BorderStroke(
+            width = 1.dp,
+            color = if (alarm.isActive) {
+              MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+            } else {
+              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            }
+          ),
+          elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("alarm_card_${alarm.id}")
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(metrics.scaledDp(18)),
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          ) {
+            // Top Row: Alarm name on the left and a "Test Ring" button with a small bell icon on the right
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Text(
+                text = alarm.name,
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontWeight = FontWeight.SemiBold,
+                  fontSize = metrics.scaledSp(14)
+                ),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+              )
+
+              TextButton(
+                onClick = { onTestRingNow(alarm) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.testTag("test_alarm_ring_${alarm.id}")
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.NotificationsActive,
+                  contentDescription = "Test alarm sound",
+                  modifier = Modifier.size(15.dp),
+                  tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "Test Ring",
+                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                  color = MaterialTheme.colorScheme.primary
+                )
+              }
+            }
+
+            // Middle Row: Massive digital font for the time, baseline-aligned AM/PM, and Switch toggle pushed to the far right
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Text(
+                  text = "${alarm.hour}:${alarm.minute}",
+                  style = MaterialTheme.typography.displayLarge.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = metrics.scaledSp(46),
+                    lineHeight = metrics.scaledSp(50)
+                  ),
+                  color = if (alarm.isActive) {
+                    MaterialTheme.colorScheme.onSurface
+                  } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                  },
+                  modifier = Modifier.alignByBaseline()
+                )
+                Text(
+                  text = alarm.amPm,
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = metrics.scaledSp(18)
+                  ),
+                  color = if (alarm.isActive) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                  },
+                  modifier = Modifier.alignByBaseline()
+                )
+              }
+
+              Switch(
+                checked = alarm.isActive,
+                onCheckedChange = { checked -> onToggleAlarm(alarm.id, checked) },
+                colors = SwitchDefaults.colors(
+                  checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                  checkedTrackColor = MaterialTheme.colorScheme.primary,
+                  uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                  uncheckedTrackColor = ivoryInnerColor
+                ),
+                modifier = Modifier.testTag("alarm_switch_${alarm.id}")
+              )
+            }
+
+            // Bottom Row: 7 circular indicators for the days of the week (S, M, T, W, T, F, S)
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              ALARM_WEEK_DAY_LABELS.forEachIndexed { dayIndex, dayLetter ->
+                val isDayActive = alarm.activeDays.contains(dayIndex)
+                Surface(
+                  onClick = { onToggleAlarmDay(alarm.id, dayIndex) },
+                  shape = CircleShape,
+                  color = if (isDayActive) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                  },
+                  border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isDayActive) {
+                      MaterialTheme.colorScheme.primary
+                    } else {
+                      MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    }
+                  ),
+                  modifier = Modifier
+                    .size(metrics.scaledDp(34))
+                    .testTag("alarm_${alarm.id}_day_$dayIndex")
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Text(
+                      text = dayLetter,
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = metrics.scaledSp(12)
+                      ),
+                      color = if (isDayActive) {
+                        Color.White
+                      } else {
+                        MaterialTheme.colorScheme.primary
+                      }
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Large circular Google Clock-style FAB (+) at the bottom center
+    FloatingActionButton(
+      onClick = onOpenAddAlarmDialog,
+      shape = CircleShape,
+      containerColor = MaterialTheme.colorScheme.primary,
+      contentColor = MaterialTheme.colorScheme.onPrimary,
+      elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+      modifier = Modifier
+        .align(Alignment.BottomCenter)
+        .padding(bottom = metrics.scaledDp(20))
+        .size(metrics.scaledDp(68))
+        .testTag("add_alarm_fab")
+    ) {
+      Icon(
+        imageVector = Icons.Filled.Add,
+        contentDescription = "Add alarm",
+        modifier = Modifier.size(metrics.scaledDp(32))
+      )
+    }
+  }
+}
+
+@Composable
+private fun AddAlarmDialog(
+  creamCardColor: Color,
+  ivoryInnerColor: Color,
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit,
+  onSaveAlarm: (name: String, hour: String, minute: String, amPm: String, activeDays: List<Int>) -> Unit
+) {
+  var alarmName by rememberSaveable { mutableStateOf("") }
+  var hourInput by rememberSaveable { mutableStateOf("07") }
+  var minuteInput by rememberSaveable { mutableStateOf("00") }
+  var selectedAmPm by rememberSaveable { mutableStateOf("AM") }
+  val selectedDays = remember { mutableStateListOf(1, 2, 3, 4, 5) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = creamCardColor,
+    title = {
+      Text(
+        text = "Add Alarm",
+        style = MaterialTheme.typography.titleLarge.copy(
+          fontWeight = FontWeight.ExtraBold,
+          fontSize = metrics.scaledSp(20)
+        ),
+        color = MaterialTheme.colorScheme.onSurface
+      )
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+      ) {
+        // Time Picker Row: Hour (01-12), Minute (00-59), and AM/PM Toggle
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          OutlinedTextField(
+            value = hourInput,
+            onValueChange = { raw ->
+              val digits = raw.filter { it.isDigit() }.take(2)
+              hourInput = digits
+            },
+            label = { Text("Hour") },
+            placeholder = { Text("07") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Number,
+              imeAction = ImeAction.Next
+            ),
+            textStyle = MaterialTheme.typography.titleLarge.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.Bold,
+              textAlign = TextAlign.Center
+            ),
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedContainerColor = ivoryInnerColor,
+              unfocusedContainerColor = ivoryInnerColor,
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("add_alarm_hour_input")
+          )
+
+          Text(
+            text = ":",
+            style = MaterialTheme.typography.headlineMedium.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+
+          OutlinedTextField(
+            value = minuteInput,
+            onValueChange = { raw ->
+              val digits = raw.filter { it.isDigit() }.take(2)
+              minuteInput = digits
+            },
+            label = { Text("Minute") },
+            placeholder = { Text("00") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Number,
+              imeAction = ImeAction.Next
+            ),
+            textStyle = MaterialTheme.typography.titleLarge.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.Bold,
+              textAlign = TextAlign.Center
+            ),
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedContainerColor = ivoryInnerColor,
+              unfocusedContainerColor = ivoryInnerColor,
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("add_alarm_minute_input")
+          )
+
+          // AM / PM Toggle Column
+          Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            listOf("AM", "PM").forEach { period ->
+              val isSelected = selectedAmPm == period
+              Surface(
+                onClick = { selectedAmPm = period },
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  ivoryInnerColor
+                },
+                border = BorderStroke(
+                  width = 1.dp,
+                  color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.outlineVariant
+                  }
+                ),
+                modifier = Modifier
+                  .width(metrics.scaledDp(52))
+                  .height(metrics.scaledDp(32))
+                  .testTag("add_alarm_ampm_$period")
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Text(
+                    text = period,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (isSelected) {
+                      Color.White
+                    } else {
+                      MaterialTheme.colorScheme.primary
+                    }
+                  )
+                }
+              }
+            }
+          }
+        }
+
+        // Alarm Name OutlinedTextField (defaults to "Alarm" if left blank)
+        OutlinedTextField(
+          value = alarmName,
+          onValueChange = { alarmName = it },
+          label = { Text("Alarm Name") },
+          placeholder = { Text("Alarm") },
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.Words,
+            imeAction = ImeAction.Done
+          ),
+          shape = RoundedCornerShape(14.dp),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = ivoryInnerColor,
+            unfocusedContainerColor = ivoryInnerColor,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("add_alarm_name_input")
+        )
+
+        // Repeat Days Section: 7 selectable day circles (S, M, T, W, T, F, S)
+        Column(
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "Repeat Days",
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontWeight = FontWeight.SemiBold,
+              fontSize = metrics.scaledSp(13)
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            ALARM_WEEK_DAY_LABELS.forEachIndexed { dayIndex, dayLetter ->
+              val isSelected = selectedDays.contains(dayIndex)
+              Surface(
+                onClick = {
+                  if (isSelected) {
+                    selectedDays.remove(dayIndex)
+                  } else {
+                    selectedDays.add(dayIndex)
+                  }
+                },
+                shape = CircleShape,
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                },
+                border = BorderStroke(
+                  width = 1.dp,
+                  color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                  }
+                ),
+                modifier = Modifier
+                  .size(metrics.scaledDp(36))
+                  .testTag("add_alarm_day_circle_$dayIndex")
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Text(
+                    text = dayLetter,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontWeight = FontWeight.Bold,
+                      fontSize = metrics.scaledSp(12)
+                    ),
+                    color = if (isSelected) {
+                      Color.White
+                    } else {
+                      MaterialTheme.colorScheme.primary
+                    }
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          val parsedHour = (hourInput.trim().toIntOrNull() ?: 7).coerceIn(1, 12)
+          val parsedMinute = (minuteInput.trim().toIntOrNull() ?: 0).coerceIn(0, 59)
+          val formattedHour = String.format(Locale.US, "%02d", parsedHour)
+          val formattedMinute = String.format(Locale.US, "%02d", parsedMinute)
+          val resolvedName = alarmName.trim().ifEmpty { "Alarm" }
+          onSaveAlarm(
+            resolvedName,
+            formattedHour,
+            formattedMinute,
+            selectedAmPm,
+            selectedDays.toList().sorted()
+          )
+        },
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary
+        ),
+        modifier = Modifier.testTag("save_alarm_button")
+      ) {
+        Text(
+          text = "Save",
+          style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+        )
+      }
+    },
+    dismissButton = {
+      TextButton(
+        onClick = onDismiss,
+        modifier = Modifier.testTag("cancel_alarm_button")
+      ) {
+        Text(
+          text = "Cancel",
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+      }
+    },
+    modifier = Modifier.testTag("add_alarm_dialog")
+  )
+}
+
+// ============================================================================
+// 2. TIMER SUB-SCREEN (WITH CE FOCUS PRESETS)
+// ============================================================================
+
+@Composable
+private fun TimerSubScreen(
+  digitInput: String,
+  totalDurationSeconds: Long,
+  remainingSeconds: Long,
+  isRunning: Boolean,
+  activePresetLabel: String?,
+  creamCardColor: Color,
+  ivoryInnerColor: Color,
+  metrics: ResponsiveMetrics,
+  onAppendDigits: (String) -> Unit,
+  onBackspace: () -> Unit,
+  onClearInput: () -> Unit,
+  onStartOrPause: () -> Unit,
+  onResetTimer: () -> Unit,
+  onSelectPreset: (CeFocusPreset) -> Unit
+) {
+  val isCountdownActive = remainingSeconds > 0L || totalDurationSeconds > 0L
+  val (hhPreview, mmPreview, ssPreview) = remember(digitInput) {
+    formatKeypadDigitsPreview(digitInput)
+  }
+
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .verticalScroll(rememberScrollState())
+      .padding(
+        horizontal = metrics.scaledDp(16),
+        vertical = metrics.scaledDp(14)
+      )
+      .testTag("timer_sub_screen"),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+  ) {
+    // Massive Digital Timer Display Card
+    Card(
+      shape = RoundedCornerShape(28.dp),
+      colors = CardDefaults.cardColors(containerColor = creamCardColor),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(
+            horizontal = metrics.scaledDp(18),
+            vertical = metrics.scaledDp(20)
+          ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+      ) {
+        if (activePresetLabel != null) {
+          Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+          ) {
+            Text(
+              text = activePresetLabel,
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = metrics.scaledSp(12)
+              ),
+              color = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+          }
+        }
+
+        if (isCountdownActive) {
+          Text(
+            text = formatDurationSecondsHms(remainingSeconds),
+            style = MaterialTheme.typography.displayLarge.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.ExtraBold,
+              fontSize = metrics.scaledSp(50),
+              lineHeight = metrics.scaledSp(54)
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.testTag("timer_countdown_display")
+          )
+
+          val progress = if (totalDurationSeconds > 0L) {
+            (remainingSeconds.toFloat() / totalDurationSeconds.toFloat()).coerceIn(0f, 1f)
+          } else {
+            0f
+          }
+          LinearProgressIndicator(
+            progress = { progress },
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = WarmCreamTrackColor,
+            strokeCap = StrokeCap.Round,
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(8.dp)
+          )
+        } else {
+          // Keypad Digital Entry Display (00h 00m 00s)
+          Row(
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("timer_keypad_display")
+          ) {
+            TimerUnitSegment(value = hhPreview, unit = "h", isHighlighted = digitInput.length >= 5, metrics = metrics)
+            Spacer(modifier = Modifier.width(metrics.scaledDp(8)))
+            TimerUnitSegment(value = mmPreview, unit = "m", isHighlighted = digitInput.length >= 3, metrics = metrics)
+            Spacer(modifier = Modifier.width(metrics.scaledDp(8)))
+            TimerUnitSegment(value = ssPreview, unit = "s", isHighlighted = digitInput.isNotEmpty(), metrics = metrics)
+
+            IconButton(
+              onClick = onBackspace,
+              modifier = Modifier
+                .padding(start = 4.dp)
+                .size(48.dp)
+                .testTag("timer_backspace_button")
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Backspace,
+                contentDescription = "Delete digit",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // CE Focus Presets Section
+    Card(
+      shape = RoundedCornerShape(22.dp),
+      colors = CardDefaults.cardColors(containerColor = creamCardColor),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("ce_focus_presets_section")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(metrics.scaledDp(14)),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+      ) {
+        Text(
+          text = "CE Focus Presets",
+          style = MaterialTheme.typography.titleSmall.copy(
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = metrics.scaledSp(14)
+          ),
+          color = MaterialTheme.colorScheme.onSurface
+        )
+
+        LazyRow(
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          items(CE_FOCUS_PRESETS, key = { it.label }) { preset ->
+            val isSelected = activePresetLabel == preset.label && isCountdownActive
+            Surface(
+              shape = RoundedCornerShape(50),
+              color = if (isSelected) {
+                MaterialTheme.colorScheme.primary
+              } else {
+                ivoryInnerColor
+              },
+              border = BorderStroke(
+                width = 1.dp,
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                }
+              ),
+              modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .clickable { onSelectPreset(preset) }
+                .testTag(preset.testTag)
+            ) {
+              Row(
+                modifier = Modifier.padding(
+                  horizontal = metrics.scaledDp(14),
+                  vertical = metrics.scaledDp(10)
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Timer,
+                  contentDescription = preset.label,
+                  modifier = Modifier.size(16.dp),
+                  tint = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimary
+                  } else {
+                    MaterialTheme.colorScheme.primary
+                  }
+                )
+                Text(
+                  text = preset.label,
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = metrics.scaledSp(13)
+                  ),
+                  color = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimary
+                  } else {
+                    MaterialTheme.colorScheme.onSurface
+                  }
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Standard Google Clock Number Pad when entering a custom timer
+    if (!isCountdownActive) {
+      val keypadRows = remember {
+        listOf(
+          listOf("1", "2", "3"),
+          listOf("4", "5", "6"),
+          listOf("7", "8", "9"),
+          listOf("00", "0", "C")
+        )
+      }
+
+      Column(
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("timer_number_keypad")
+      ) {
+        keypadRows.forEach { rowDigits ->
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            rowDigits.forEach { keyLabel ->
+              Surface(
+                shape = CircleShape,
+                color = creamCardColor,
+                border = BorderStroke(
+                  1.dp,
+                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                ),
+                modifier = Modifier
+                  .size(metrics.scaledDp(62))
+                  .clip(CircleShape)
+                  .clickable {
+                    if (keyLabel == "C") {
+                      onClearInput()
+                    } else {
+                      onAppendDigits(keyLabel)
+                    }
+                  }
+                  .testTag("timer_key_$keyLabel")
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Text(
+                    text = keyLabel,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontFamily = JetBrainsMonoFamily,
+                      fontWeight = FontWeight.Bold,
+                      fontSize = metrics.scaledSp(22)
+                    ),
+                    color = if (keyLabel == "C") {
+                      MaterialTheme.colorScheme.error
+                    } else {
+                      MaterialTheme.colorScheme.onSurface
+                    }
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Circular Play/Pause and Reset FAB Controls
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = metrics.scaledDp(4), bottom = metrics.scaledDp(16)),
+      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      if (isCountdownActive || digitInput.isNotEmpty()) {
+        Surface(
+          shape = CircleShape,
+          color = creamCardColor,
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+          modifier = Modifier
+            .size(metrics.scaledDp(58))
+            .clip(CircleShape)
+            .clickable { onResetTimer(); onClearInput() }
+            .testTag("timer_reset_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Filled.Replay,
+              contentDescription = "Reset timer",
+              tint = MaterialTheme.colorScheme.onSurface,
+              modifier = Modifier.size(26.dp)
+            )
+          }
+        }
+      }
+
+      FloatingActionButton(
+        onClick = onStartOrPause,
+        shape = CircleShape,
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+        modifier = Modifier
+          .size(metrics.scaledDp(72))
+          .testTag("timer_play_pause_fab")
+      ) {
+        Icon(
+          imageVector = if (isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+          contentDescription = if (isRunning) "Pause timer" else "Start timer",
+          modifier = Modifier.size(metrics.scaledDp(34))
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun TimerUnitSegment(
+  value: String,
+  unit: String,
+  isHighlighted: Boolean,
+  metrics: ResponsiveMetrics
+) {
+  Row(verticalAlignment = Alignment.Bottom) {
+    Text(
+      text = value,
+      style = MaterialTheme.typography.displayMedium.copy(
+        fontFamily = JetBrainsMonoFamily,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = metrics.scaledSp(40)
+      ),
+      color = if (isHighlighted) {
+        MaterialTheme.colorScheme.primary
+      } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+      }
+    )
+    Text(
+      text = unit,
+      style = MaterialTheme.typography.titleMedium.copy(
+        fontWeight = FontWeight.Bold,
+        fontSize = metrics.scaledSp(18)
+      ),
+      color = if (isHighlighted) {
+        MaterialTheme.colorScheme.primary
+      } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+      },
+      modifier = Modifier.padding(bottom = 5.dp, start = 2.dp)
+    )
+  }
+}
+
+// ============================================================================
+// 3. STOPWATCH SUB-SCREEN
+// ============================================================================
+
+@Composable
+private fun StopwatchSubScreen(
+  elapsedMillis: Long,
+  isRunning: Boolean,
+  laps: List<StopwatchLapItem>,
+  creamCardColor: Color,
+  ivoryInnerColor: Color,
+  metrics: ResponsiveMetrics,
+  onToggleStartStop: () -> Unit,
+  onLapOrReset: () -> Unit
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(
+        horizontal = metrics.scaledDp(16),
+        vertical = metrics.scaledDp(14)
+      )
+      .testTag("stopwatch_sub_screen"),
+    horizontalAlignment = Alignment.CenterHorizontally
+  ) {
+    // Massive circular-inspired digital stopwatch header
+    Card(
+      shape = RoundedCornerShape(32.dp),
+      colors = CardDefaults.cardColors(containerColor = creamCardColor),
+      border = BorderStroke(
+        width = 1.5.dp,
+        color = if (isRunning) {
+          MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+        } else {
+          MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        }
+      ),
+      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = metrics.scaledDp(6))
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(
+            horizontal = metrics.scaledDp(20),
+            vertical = metrics.scaledDp(28)
+          ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
+      ) {
+        Text(
+          text = if (isRunning) "RUNNING" else if (elapsedMillis > 0L) "PAUSED" else "READY",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp
+          ),
+          color = if (isRunning) {
+            MaterialTheme.colorScheme.primary
+          } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+          }
+        )
+
+        Text(
+          text = formatStopwatchMillis(elapsedMillis),
+          style = MaterialTheme.typography.displayLarge.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = metrics.scaledSp(54),
+            lineHeight = metrics.scaledSp(58)
+          ),
+          color = MaterialTheme.colorScheme.onSurface,
+          textAlign = TextAlign.Center,
+          modifier = Modifier.testTag("stopwatch_digital_counter")
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(metrics.scaledDp(16)))
+
+    // Two circular buttons: Lap/Reset and Start/Stop
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      // Secondary circular button: Lap (when running) or Reset (when stopped and > 0)
+      val canLapOrReset = isRunning || elapsedMillis > 0L
+      Surface(
+        shape = CircleShape,
+        color = if (canLapOrReset) creamCardColor else creamCardColor.copy(alpha = 0.5f),
+        border = BorderStroke(
+          width = 1.5.dp,
+          color = if (canLapOrReset) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+          } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+          }
+        ),
+        modifier = Modifier
+          .size(metrics.scaledDp(62))
+          .clip(CircleShape)
+          .clickable(enabled = canLapOrReset) { onLapOrReset() }
+          .testTag("stopwatch_lap_reset_button")
+      ) {
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.Center
+        ) {
+          Icon(
+            imageVector = if (isRunning) Icons.Filled.Flag else Icons.Filled.Replay,
+            contentDescription = if (isRunning) "Record lap" else "Reset stopwatch",
+            tint = if (canLapOrReset) {
+              MaterialTheme.colorScheme.primary
+            } else {
+              MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+            },
+            modifier = Modifier.size(22.dp)
+          )
+          Text(
+            text = if (isRunning) "Lap" else "Reset",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = metrics.scaledSp(10)
+            ),
+            color = if (canLapOrReset) {
+              MaterialTheme.colorScheme.primary
+            } else {
+              MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+            }
+          )
+        }
+      }
+
+      // Primary circular FAB: Start / Stop
+      FloatingActionButton(
+        onClick = onToggleStartStop,
+        shape = CircleShape,
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+        modifier = Modifier
+          .size(metrics.scaledDp(74))
+          .testTag("stopwatch_start_stop_button")
+      ) {
+        Icon(
+          imageVector = if (isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+          contentDescription = if (isRunning) "Stop stopwatch" else "Start stopwatch",
+          modifier = Modifier.size(metrics.scaledDp(36))
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(metrics.scaledDp(16)))
+
+    // Scrollable list of Lap Times below the buttons
+    Card(
+      shape = RoundedCornerShape(22.dp),
+      colors = CardDefaults.cardColors(containerColor = creamCardColor),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxWidth()
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(metrics.scaledDp(14))
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = metrics.scaledDp(8)),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "Lap Splits",
+            style = MaterialTheme.typography.titleSmall.copy(
+              fontWeight = FontWeight.ExtraBold,
+              fontSize = metrics.scaledSp(14)
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+          Text(
+            text = "${laps.size} recorded",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontFamily = JetBrainsMonoFamily
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+
+        HorizontalDivider(
+          thickness = 1.dp,
+          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        )
+
+        if (laps.isEmpty()) {
+          Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+          ) {
+            Text(
+              text = "Start the stopwatch and tap Lap to record split intervals.",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center
+            )
+          }
+        } else {
+          LazyColumn(
+            modifier = Modifier
+              .fillMaxSize()
+              .padding(top = metrics.scaledDp(8))
+              .testTag("stopwatch_laps_list"),
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+          ) {
+            items(laps, key = { it.lapNumber }) { lap ->
+              Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = ivoryInnerColor,
+                border = BorderStroke(
+                  1.dp,
+                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                ),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("stopwatch_lap_row_${lap.lapNumber}")
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                      horizontal = metrics.scaledDp(14),
+                      vertical = metrics.scaledDp(10)
+                    ),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    text = String.format(Locale.US, "#%02d", lap.lapNumber),
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontFamily = JetBrainsMonoFamily,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                  Text(
+                    text = "+${formatStopwatchMillis(lap.lapSplitMillis)}",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontFamily = JetBrainsMonoFamily,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                  )
+                  Text(
+                    text = formatStopwatchMillis(lap.totalElapsedMillis),
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                      fontFamily = JetBrainsMonoFamily,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
