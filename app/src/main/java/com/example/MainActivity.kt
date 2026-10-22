@@ -5,8 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
-import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,6 +17,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.safeDrawing
@@ -53,6 +55,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Architecture
@@ -66,13 +69,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.Assignment
@@ -80,6 +84,7 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.EventNote
 import androidx.compose.material.icons.outlined.LocationOn
@@ -161,7 +166,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
@@ -174,12 +181,12 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
-import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
@@ -305,23 +312,34 @@ data class ClassSchedule(
   val timeRange: String,
   val days: List<String>,
   val room: String,
-  val colorHex: Long
+  val colorHex: Long,
+  val startTime: String = extractStartEndTimeTokens(timeRange).first,
+  val endTime: String = extractStartEndTimeTokens(timeRange).second
 )
 
 /**
- * Selectable Day options for the Week View in the Schedule tab.
+ * Selectable Day options for the Week View in the Schedule tab and
+ * circular Day chips (`M`, `T`, `W`, `Th`, `F`, `S`) in the Add Class Schedule dialog.
  */
 enum class ScheduleWeekDay(
   val shortLabel: String,
   val dayCode: String,
+  val chipLabel: String,
   val fullLabel: String
 ) {
-  MON(shortLabel = "Mon", dayCode = "M", fullLabel = "Monday"),
-  TUE(shortLabel = "Tue", dayCode = "Tue", fullLabel = "Tuesday"),
-  WED(shortLabel = "Wed", dayCode = "W", fullLabel = "Wednesday"),
-  THU(shortLabel = "Thu", dayCode = "Th", fullLabel = "Thursday"),
-  FRI(shortLabel = "Fri", dayCode = "F", fullLabel = "Friday"),
-  SAT(shortLabel = "Sat", dayCode = "Sat", fullLabel = "Saturday")
+  MON(shortLabel = "Mon", dayCode = "M", chipLabel = "M", fullLabel = "Monday"),
+  TUE(shortLabel = "Tue", dayCode = "Tue", chipLabel = "T", fullLabel = "Tuesday"),
+  WED(shortLabel = "Wed", dayCode = "W", chipLabel = "W", fullLabel = "Wednesday"),
+  THU(shortLabel = "Thu", dayCode = "Th", chipLabel = "Th", fullLabel = "Thursday"),
+  FRI(shortLabel = "Fri", dayCode = "F", chipLabel = "F", fullLabel = "Friday"),
+  SAT(shortLabel = "Sat", dayCode = "Sat", chipLabel = "S", fullLabel = "Saturday");
+
+  fun matchesToken(token: String): Boolean {
+    return token.equals(dayCode, ignoreCase = true) ||
+      token.equals(shortLabel, ignoreCase = true) ||
+      token.equals(chipLabel, ignoreCase = true) ||
+      token.equals(fullLabel, ignoreCase = true)
+  }
 }
 
 /**
@@ -335,15 +353,280 @@ data class ExtraToolItem(
 )
 
 /**
+ * Result of validating user credentials against the `SharedPreferences` mock backend.
+ */
+enum class LoginValidationResult {
+  SUCCESS,
+  INVALID_EMAIL_FORMAT,
+  NO_ACCOUNT_FOUND,
+  INCORRECT_PASSWORD
+}
+
+/**
+ * Strictly validates an email string before login or sign-up using Android's native
+ * `android.util.Patterns.EMAIL_ADDRESS` matcher with a standard Regex fallback.
+ */
+fun isValidEmailFormat(email: String): Boolean {
+  val trimmed = email.trim()
+  if (trimmed.isEmpty()) return false
+  val nativePattern = android.util.Patterns.EMAIL_ADDRESS
+  return nativePattern?.matcher(trimmed)?.matches()
+    ?: Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$").matches(trimmed)
+}
+
+/**
+ * Lightweight offline data manager wrapping Android's native `SharedPreferences`.
+ * Acts as a local mock backend that persists:
+ * 1. Registered user accounts (`email` -> `password` map).
+ * 2. Account-segregated `Task` lists (`tasks_<email>` or `tasks_guest`).
+ * 3. Account-segregated `ClassSchedule` lists (`schedules_<email>` or `schedules_guest`).
+ * 4. Active user session (`userName`, `userEmail`) and `isDarkMode`.
+ * 5. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
+ */
+class LocalStorageManager(context: Context) {
+  private val prefs: SharedPreferences =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+  fun normalizeAccountKey(emailOrGuest: String?): String {
+    val trimmed = emailOrGuest?.trim().orEmpty()
+    return if (trimmed.isEmpty() || trimmed.equals(GUEST_ACCOUNT_KEY, ignoreCase = true)) {
+      GUEST_ACCOUNT_KEY
+    } else {
+      trimmed.lowercase(Locale.US)
+    }
+  }
+
+  private fun tasksKeyFor(accountKey: String): String {
+    return "${KEY_TASKS_PREFIX}${normalizeAccountKey(accountKey)}"
+  }
+
+  private fun schedulesKeyFor(accountKey: String): String {
+    return "${KEY_SCHEDULES_PREFIX}${normalizeAccountKey(accountKey)}"
+  }
+
+  /**
+   * Returns all registered users stored in `SharedPreferences` (normalized lowercase email -> password).
+   */
+  fun getRegisteredUsers(): Map<String, String> {
+    val rawJson = prefs.getString(KEY_REGISTERED_USERS, null) ?: return emptyMap()
+    return try {
+      val jsonObject = JSONObject(rawJson)
+      val map = mutableMapOf<String, String>()
+      val keys = jsonObject.keys()
+      while (keys.hasNext()) {
+        val emailKey = keys.next()
+        map[emailKey.trim().lowercase(Locale.US)] = jsonObject.optString(emailKey, "")
+      }
+      map
+    } catch (_: Exception) {
+      emptyMap()
+    }
+  }
+
+  /**
+   * Checks whether the given email is already registered in `SharedPreferences`.
+   */
+  fun isEmailRegistered(email: String): Boolean {
+    val normalizedEmail = email.trim().lowercase(Locale.US)
+    if (normalizedEmail.isEmpty() || normalizedEmail == GUEST_ACCOUNT_KEY) return false
+    return getRegisteredUsers().containsKey(normalizedEmail)
+  }
+
+  /**
+   * Verifies that the email exists and its stored password matches `password`.
+   */
+  fun verifyUserPassword(email: String, password: String): Boolean {
+    val normalizedEmail = email.trim().lowercase(Locale.US)
+    if (normalizedEmail.isEmpty()) return false
+    val savedPassword = getRegisteredUsers()[normalizedEmail] ?: return false
+    return savedPassword == password
+  }
+
+  /**
+   * Registers a new user account (`email` -> `password`) in `SharedPreferences`.
+   */
+  fun registerUser(email: String, password: String) {
+    val normalizedEmail = email.trim().lowercase(Locale.US)
+    if (normalizedEmail.isEmpty() || normalizedEmail == GUEST_ACCOUNT_KEY) return
+    val currentUsers = getRegisteredUsers().toMutableMap()
+    currentUsers[normalizedEmail] = password
+    val jsonObject = JSONObject()
+    currentUsers.forEach { (k, v) -> jsonObject.put(k, v) }
+    prefs.edit().putString(KEY_REGISTERED_USERS, jsonObject.toString()).apply()
+  }
+
+  fun saveTasks(tasks: List<Task>, accountKey: String = GUEST_ACCOUNT_KEY) {
+    val jsonArray = JSONArray()
+    for (task in tasks) {
+      val obj = JSONObject().apply {
+        put("id", task.id)
+        put("title", task.title)
+        put("dueDate", task.dueDate)
+        put("isCompleted", task.isCompleted)
+      }
+      jsonArray.put(obj)
+    }
+    prefs.edit().putString(tasksKeyFor(accountKey), jsonArray.toString()).apply()
+  }
+
+  fun loadTasks(accountKey: String = GUEST_ACCOUNT_KEY): List<Task>? {
+    val storageKey = tasksKeyFor(accountKey)
+    if (!prefs.contains(storageKey)) return null
+    val rawJson = prefs.getString(storageKey, null) ?: return null
+    return try {
+      val jsonArray = JSONArray(rawJson)
+      val loaded = mutableListOf<Task>()
+      for (i in 0 until jsonArray.length()) {
+        val obj = jsonArray.optJSONObject(i) ?: continue
+        loaded.add(
+          Task(
+            id = obj.optInt("id", i + 1),
+            title = obj.optString("title", ""),
+            dueDate = obj.optString("dueDate", "Upcoming"),
+            isCompleted = obj.optBoolean("isCompleted", false)
+          )
+        )
+      }
+      loaded
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  fun saveSchedules(schedules: List<ClassSchedule>, accountKey: String = GUEST_ACCOUNT_KEY) {
+    val jsonArray = JSONArray()
+    for (schedule in schedules) {
+      val daysArray = JSONArray()
+      schedule.days.forEach { day -> daysArray.put(day) }
+      val obj = JSONObject().apply {
+        put("id", schedule.id)
+        put("subjectName", schedule.subjectName)
+        put("timeRange", schedule.timeRange)
+        put("days", daysArray)
+        put("room", schedule.room)
+        put("colorHex", schedule.colorHex)
+        put("startTime", schedule.startTime)
+        put("endTime", schedule.endTime)
+      }
+      jsonArray.put(obj)
+    }
+    prefs.edit().putString(schedulesKeyFor(accountKey), jsonArray.toString()).apply()
+  }
+
+  fun loadSchedules(accountKey: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
+    val storageKey = schedulesKeyFor(accountKey)
+    if (!prefs.contains(storageKey)) return null
+    val rawJson = prefs.getString(storageKey, null) ?: return null
+    return try {
+      val jsonArray = JSONArray(rawJson)
+      val loaded = mutableListOf<ClassSchedule>()
+      for (i in 0 until jsonArray.length()) {
+        val obj = jsonArray.optJSONObject(i) ?: continue
+        val daysArray = obj.optJSONArray("days")
+        val daysList = mutableListOf<String>()
+        if (daysArray != null) {
+          for (j in 0 until daysArray.length()) {
+            val dayToken = daysArray.optString(j, "").trim()
+            if (dayToken.isNotEmpty()) {
+              daysList.add(dayToken)
+            }
+          }
+        }
+        val timeRange = obj.optString("timeRange", "7:00 AM - 9:00 AM")
+        val (fallbackStart, fallbackEnd) = extractStartEndTimeTokens(timeRange)
+        loaded.add(
+          ClassSchedule(
+            id = obj.optInt("id", 100 + i),
+            subjectName = obj.optString("subjectName", ""),
+            timeRange = timeRange,
+            days = if (daysList.isEmpty()) listOf("M") else daysList,
+            room = obj.optString("room", "ENG. 307"),
+            colorHex = obj.optLong("colorHex", 0xFF00C4CCL),
+            startTime = obj.optString("startTime", fallbackStart).ifBlank { fallbackStart },
+            endTime = obj.optString("endTime", fallbackEnd).ifBlank { fallbackEnd }
+          )
+        )
+      }
+      loaded
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  /**
+   * Explicitly deletes all temporary data associated with the `"guest"` keys
+   * (`tasks_guest` and `schedules_guest`) when logging out of Guest mode.
+   */
+  fun clearGuestData() {
+    val editor = prefs.edit()
+      .remove(tasksKeyFor(GUEST_ACCOUNT_KEY))
+      .remove(schedulesKeyFor(GUEST_ACCOUNT_KEY))
+    prefs.all.keys
+      .filter { key ->
+        key.endsWith("_$GUEST_ACCOUNT_KEY")
+      }
+      .forEach { key ->
+        editor.remove(key)
+      }
+    editor.apply()
+  }
+
+  fun saveUserProfile(userName: String, userEmail: String) {
+    prefs.edit()
+      .putString(KEY_USER_NAME, userName)
+      .putString(KEY_USER_EMAIL, userEmail)
+      .apply()
+  }
+
+  fun loadUserName(): String? {
+    val saved = prefs.getString(KEY_USER_NAME, null)
+    return saved?.takeIf { it.isNotBlank() }
+  }
+
+  fun loadUserEmail(): String? {
+    return prefs.getString(KEY_USER_EMAIL, null)
+  }
+
+  fun clearUserProfile() {
+    prefs.edit()
+      .remove(KEY_USER_NAME)
+      .remove(KEY_USER_EMAIL)
+      .apply()
+  }
+
+  fun saveDarkMode(enabled: Boolean) {
+    prefs.edit().putBoolean(KEY_DARK_MODE, enabled).apply()
+  }
+
+  fun loadDarkMode(defaultValue: Boolean = false): Boolean {
+    return prefs.getBoolean(KEY_DARK_MODE, defaultValue)
+  }
+
+  companion object {
+    const val GUEST_ACCOUNT_KEY = "guest"
+    private const val PREFS_NAME = "sibil_app_offline_storage"
+    private const val KEY_REGISTERED_USERS = "registered_users_json"
+    private const val KEY_TASKS_PREFIX = "tasks_"
+    private const val KEY_SCHEDULES_PREFIX = "schedules_"
+    private const val KEY_USER_NAME = "saved_user_name"
+    private const val KEY_USER_EMAIL = "saved_user_email"
+    private const val KEY_DARK_MODE = "saved_dark_mode"
+  }
+}
+
+/**
  * Shared ViewModel storing and managing:
  * 1. Global theme state (`isDarkMode`, default `false`).
- * 2. User session data (`userName` and `userEmail`).
+ * 2. User session data (`userName`, `userEmail`, and `hasSavedSession`).
  * 3. Live Open-Meteo weather summary (`weatherText`, starting at `"Fetching Weather..."`).
- * 4. Mutable list of coursework tasks shared across the Academic Dashboard and Task Manager.
+ * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager.
  * 5. Today's Schedule list on the Dashboard.
- * 6. Mutable list of `ClassSchedule` items for the colored Week Timetable & COR Auto-Extract.
+ * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View.
+ * 7. Simulated Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
  */
-class TaskViewModel : ViewModel() {
+class TaskViewModel(
+  private var storageManager: LocalStorageManager? = null
+) : ViewModel() {
   var isDarkMode by mutableStateOf(false)
     private set
 
@@ -353,22 +636,32 @@ class TaskViewModel : ViewModel() {
   var userEmail by mutableStateOf("alberto@civil.edu")
     private set
 
+  var hasSavedSession by mutableStateOf(false)
+    private set
+
   var weatherText by mutableStateOf("Fetching Weather...")
     private set
 
   var hasRequestedInitialWeather by mutableStateOf(false)
     private set
 
-  var isExtractingCor by mutableStateOf(false)
-    private set
-
-  var isCorExtracted by mutableStateOf(false)
-    private set
-
   private var nextId by mutableIntStateOf(6)
   private var nextScheduleId by mutableIntStateOf(100)
+  private var hasLoadedFromStorage = false
 
-  private val _tasks = mutableStateListOf(
+  val isGuestMode: Boolean
+    get() = userName.equals("Guest", ignoreCase = true) ||
+      userEmail.isBlank() ||
+      userEmail.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true)
+
+  val currentAccountKey: String
+    get() = if (isGuestMode) {
+      LocalStorageManager.GUEST_ACCOUNT_KEY
+    } else {
+      userEmail.trim().lowercase(Locale.US)
+    }
+
+  private fun buildDefaultStarterTasks(): List<Task> = listOf(
     Task(
       id = 1,
       title = "Reinforced Concrete Design - Plate 3",
@@ -400,6 +693,10 @@ class TaskViewModel : ViewModel() {
       isCompleted = true
     )
   )
+
+  private val _tasks = mutableStateListOf<Task>().apply {
+    addAll(buildDefaultStarterTasks())
+  }
   val tasks: List<Task> get() = _tasks
 
   val todaysSchedule: List<ClassScheduleItem> = listOf(
@@ -426,121 +723,93 @@ class TaskViewModel : ViewModel() {
   private val _classSchedules = mutableStateListOf<ClassSchedule>()
   val classSchedules: List<ClassSchedule> get() = _classSchedules
 
-  /**
-   * Immediately sets the ViewModel into the PDF processing state (`"Processing PDF..."`)
-   * as soon as a non-null PDF `Uri` is returned by the native file picker.
-   */
-  fun startProcessingPdf() {
-    isExtractingCor = true
+  init {
+    storageManager?.let { loadFromStorage(it) }
   }
 
   /**
-   * Simulates a 2.5-second COR PDF OCR extraction and dynamically generates
-   * 4 or 5 random Civil Engineering subjects with random days, times, rooms, and colors
-   * so each uploaded PDF produces a fresh schedule.
+   * Attaches a `LocalStorageManager` if the `ViewModel` was constructed without one,
+   * immediately loading saved tasks, schedules, theme preference, and user login state.
    */
-  suspend fun extractCorSchedule(pdfUri: Uri? = null) {
-    isExtractingCor = true
-    // TODO: Integrate Apache PDFBox or ML Kit here in Android Studio to extract raw text from the URI.
-    delay(2500)
-    populateDynamicRandomCorSchedule(pdfUri)
+  fun attachStorage(manager: LocalStorageManager) {
+    if (storageManager == null) {
+      storageManager = manager
+    }
+    if (!hasLoadedFromStorage) {
+      loadFromStorage(manager)
+    }
+  }
+
+  private fun loadFromStorage(manager: LocalStorageManager) {
+    hasLoadedFromStorage = true
+
+    isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
+
+    val savedUserName = manager.loadUserName()
+    if (!savedUserName.isNullOrBlank()) {
+      userName = savedUserName
+      userEmail = manager.loadUserEmail() ?: ""
+      hasSavedSession = true
+      loadAccountDataForKey(manager, currentAccountKey)
+    } else {
+      hasSavedSession = false
+    }
+  }
+
+  private fun loadAccountDataForKey(manager: LocalStorageManager, accountKey: String) {
+    val savedTasks = manager.loadTasks(accountKey)
+    if (savedTasks != null) {
+      _tasks.clear()
+      _tasks.addAll(savedTasks)
+      nextId = (savedTasks.maxOfOrNull { it.id } ?: 0) + 1
+    } else {
+      val starterTasks = buildDefaultStarterTasks()
+      _tasks.clear()
+      _tasks.addAll(starterTasks)
+      nextId = 6
+      manager.saveTasks(_tasks, accountKey)
+    }
+
+    val savedSchedules = manager.loadSchedules(accountKey)
+    if (savedSchedules != null) {
+      val sorted = savedSchedules.sortedBy { parseTimeToFloat(it.startTime) }
+      _classSchedules.clear()
+      _classSchedules.addAll(sorted)
+      nextScheduleId = (savedSchedules.maxOfOrNull { it.id } ?: 99) + 1
+    } else {
+      _classSchedules.clear()
+      nextScheduleId = 100
+    }
   }
 
   /**
-   * Dynamically generates 4 or 5 random civil engineering subjects (e.g., "Structural Theory",
-   * "Fluid Mechanics", "Surveying") with randomized days, time ranges, rooms, and card colors,
-   * then marks the COR state as synced (`"COR Synced"`).
+   * Filters `classSchedules` for the selected `ScheduleWeekDay` and actively sorts them
+   * in chronological order based on Start Time before displaying them.
    */
-  fun populateDynamicRandomCorSchedule(@Suppress("UNUSED_PARAMETER") pdfUri: Uri? = null) {
-    val civilEngineeringSubjectsPool = listOf(
-      "Structural Theory",
-      "Fluid Mechanics",
-      "Surveying",
-      "Reinforced Concrete Design",
-      "Soil Mechanics & Foundation Eng.",
-      "Hydraulics & Water Resources",
-      "Construction Methods & Project Mgt",
-      "Steel & Timber Design",
-      "Highway & Railroad Engineering",
-      "Quantity Surveying",
-      "Bridge Engineering",
-      "CE Comprehensive Course 1"
-    )
+  fun getSchedulesForDay(weekDay: ScheduleWeekDay): List<ClassSchedule> {
+    return _classSchedules
+      .filter { schedule ->
+        schedule.days.any { dayToken -> weekDay.matchesToken(dayToken) }
+      }
+      .sortedBy { schedule ->
+        parseTimeToFloat(schedule.startTime)
+      }
+  }
 
-    val timeSlotsPool = listOf(
-      "07:30AM-09:00AM",
-      "09:00AM-10:30AM",
-      "10:30AM-12:00PM",
-      "01:00PM-02:30PM",
-      "02:30PM-04:00PM",
-      "04:30PM-06:00PM",
-      "06:00PM-07:30PM"
-    )
-
-    val dayCombinationsPool = listOf(
-      listOf("M", "W"),
-      listOf("Tue", "Th"),
-      listOf("M", "Tue"),
-      listOf("W", "F"),
-      listOf("Th", "F"),
-      listOf("F", "Sat"),
-      listOf("M", "W", "F"),
-      listOf("Tue", "Th", "Sat")
-    )
-
-    val roomsPool = listOf(
-      "ENG. 301",
-      "ENG. 305",
-      "ENG. 307",
-      "COEN LAB",
-      "HYDRAULICS LAB",
-      "CE STUDIO 2"
-    )
-
-    val cardColorPalette = listOf(
-      0xFF5C6BC0L, // Light Indigo
-      0xFFF97316L, // Soft Orange
-      0xFF0D9488L, // Muted Teal
-      0xFFEF4444L, // Soft Red
-      0xFF3B82F6L, // Slate Blue
-      0xFF8B5CF6L, // Light Purple
-      0xFF10B981L, // Soft Green
-      0xFFD97706L  // Amber
-    )
-
-    val courseCount = Random.nextInt(from = 4, until = 6) // 4 or 5 random subjects
-    val selectedSubjects = civilEngineeringSubjectsPool.shuffled().take(courseCount)
-    val shuffledTimes = timeSlotsPool.shuffled()
-    val shuffledDays = dayCombinationsPool.shuffled().toMutableList()
-    val shuffledColors = cardColorPalette.shuffled()
-
-    // Ensure today's day abbreviation (if Mon-Sat) is included in at least one generated subject
-    // so the Dashboard's "Today's Schedule" card dynamically reflects the newly uploaded PDF.
-    val todayCode = resolveTodayCorDayAbbreviation()
-    if (todayCode != "Sun" && shuffledDays.take(courseCount).none { it.contains(todayCode) }) {
-      val matchingCombination = dayCombinationsPool.filter { it.contains(todayCode) }.random()
-      shuffledDays[0] = matchingCombination
-    }
-
-    val generatedCorCourses = selectedSubjects.mapIndexed { index, subjectTitle ->
-      ClassSchedule(
-        id = index + 1,
-        subjectName = subjectTitle,
-        timeRange = shuffledTimes[index % shuffledTimes.size],
-        days = shuffledDays[index % shuffledDays.size],
-        room = roomsPool.random(),
-        colorHex = shuffledColors[index % shuffledColors.size]
-      )
-    }
-
-    // Keep any manually added courses (id >= 100) while replacing the extracted COR courses
-    val manualCourses = _classSchedules.filter { it.id >= 100 }
-    _classSchedules.clear()
-    _classSchedules.addAll(generatedCorCourses)
-    _classSchedules.addAll(manualCourses)
-
-    isExtractingCor = false
-    isCorExtracted = true
+  /**
+   * Filters `classSchedules` for a day abbreviation (e.g., today's day on the Dashboard)
+   * and sorts them in chronological order based on Start Time.
+   */
+  fun getSchedulesForDayAbbreviation(dayAbbreviation: String): List<ClassSchedule> {
+    return _classSchedules
+      .filter { schedule ->
+        schedule.days.any { dayToken ->
+          doesDayTokenMatchAbbreviation(dayToken, dayAbbreviation)
+        }
+      }
+      .sortedBy { schedule ->
+        parseTimeToFloat(schedule.startTime)
+      }
   }
 
   fun addClassSchedule(
@@ -551,27 +820,70 @@ class TaskViewModel : ViewModel() {
     colorHex: Long
   ) {
     val trimmedSubject = subjectName.trim()
-    val trimmedTime = timeRange.trim().ifEmpty { "08:00AM-10:00AM" }
-    val trimmedRoom = room.trim().ifEmpty { "ENG. 301" }
+    val trimmedTime = timeRange.trim().ifEmpty { "7:00 AM - 9:00 AM" }
+    val trimmedRoom = room.trim().ifEmpty { "ENG. 307" }
     val normalizedDays = if (days.isEmpty()) listOf("M") else days
+    val (parsedStart, parsedEnd) = extractStartEndTimeTokens(trimmedTime)
 
     if (trimmedSubject.isNotEmpty()) {
       _classSchedules.add(
-        0,
         ClassSchedule(
           id = nextScheduleId++,
           subjectName = trimmedSubject,
           timeRange = trimmedTime,
           days = normalizedDays,
           room = trimmedRoom,
-          colorHex = colorHex
+          colorHex = colorHex,
+          startTime = parsedStart,
+          endTime = parsedEnd
         )
       )
+      val sorted = _classSchedules.sortedBy {
+        parseTimeToFloat(it.startTime)
+      }
+      _classSchedules.clear()
+      _classSchedules.addAll(sorted)
+      storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+    }
+  }
+
+  fun updateClassSchedule(
+    scheduleId: Int,
+    subjectName: String,
+    timeRange: String,
+    days: List<String>,
+    room: String,
+    colorHex: Long
+  ) {
+    val index = _classSchedules.indexOfFirst { it.id == scheduleId }
+    val trimmedSubject = subjectName.trim()
+    val trimmedTime = timeRange.trim().ifEmpty { "7:00 AM - 9:00 AM" }
+    val trimmedRoom = room.trim().ifEmpty { "ENG. 307" }
+    val normalizedDays = if (days.isEmpty()) listOf("M") else days
+    val (parsedStart, parsedEnd) = extractStartEndTimeTokens(trimmedTime)
+
+    if (index != -1 && trimmedSubject.isNotEmpty()) {
+      _classSchedules[index] = _classSchedules[index].copy(
+        subjectName = trimmedSubject,
+        timeRange = trimmedTime,
+        days = normalizedDays,
+        room = trimmedRoom,
+        colorHex = colorHex,
+        startTime = parsedStart,
+        endTime = parsedEnd
+      )
+      val sorted = _classSchedules.sortedBy {
+        parseTimeToFloat(it.startTime)
+      }
+      _classSchedules.clear()
+      _classSchedules.addAll(sorted)
+      storageManager?.saveSchedules(_classSchedules, currentAccountKey)
     }
   }
 
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
+    storageManager?.saveSchedules(_classSchedules, currentAccountKey)
   }
 
   /**
@@ -621,16 +933,92 @@ class TaskViewModel : ViewModel() {
 
   fun updateDarkMode(enabled: Boolean) {
     isDarkMode = enabled
+    storageManager?.saveDarkMode(enabled)
+  }
+
+  /**
+   * Validates `typedEmail` and `typedPassword` against the `SharedPreferences` registered users map.
+   * - Validates email format first and returns `INVALID_EMAIL_FORMAT` if invalid.
+   * - Returns `NO_ACCOUNT_FOUND` if the email is not registered.
+   * - Returns `INCORRECT_PASSWORD` if the email is registered but the password does not match.
+   * - Logs the user in and returns `SUCCESS` when valid.
+   */
+  fun attemptLogin(typedEmail: String, typedPassword: String): LoginValidationResult {
+    val cleanEmail = typedEmail.trim().lowercase(Locale.US)
+    if (!isValidEmailFormat(cleanEmail)) {
+      return LoginValidationResult.INVALID_EMAIL_FORMAT
+    }
+    val manager = storageManager
+    if (manager == null || !manager.isEmailRegistered(cleanEmail)) {
+      return LoginValidationResult.NO_ACCOUNT_FOUND
+    }
+    if (!manager.verifyUserPassword(cleanEmail, typedPassword)) {
+      return LoginValidationResult.INCORRECT_PASSWORD
+    }
+    loginWithEmail(cleanEmail)
+    return LoginValidationResult.SUCCESS
+  }
+
+  /**
+   * Checks whether `email` is already registered in `SharedPreferences`.
+   */
+  fun isEmailRegistered(email: String): Boolean {
+    return storageManager?.isEmailRegistered(email.trim()) == true
+  }
+
+  /**
+   * Saves a newly registered account (`email` -> `password`) to `SharedPreferences`
+   * and immediately logs the user in with their segregated storage keys.
+   */
+  fun completeSignUp(email: String, password: String) {
+    val cleanEmail = email.trim().lowercase(Locale.US)
+    storageManager?.registerUser(cleanEmail, password)
+    loginWithEmail(cleanEmail)
   }
 
   fun loginWithEmail(typedEmail: String) {
+    val cleanEmail = typedEmail.trim().lowercase(Locale.US).ifEmpty { "alberto@civil.edu" }
     userName = "Alberto Jr. M. Manzo"
-    userEmail = typedEmail.trim().ifEmpty { "alberto@civil.edu" }
+    userEmail = cleanEmail
+    hasSavedSession = true
+    storageManager?.let { manager ->
+      manager.saveUserProfile(userName, userEmail)
+      loadAccountDataForKey(manager, currentAccountKey)
+    }
   }
 
   fun loginAsGuest() {
     userName = "Guest"
     userEmail = ""
+    hasSavedSession = true
+    storageManager?.let { manager ->
+      manager.saveUserProfile(userName, userEmail)
+      loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
+    }
+  }
+
+  /**
+   * Logs out the current user.
+   * - If logging out from Guest mode, explicitly deletes all temporary data associated with
+   *   the `"guest"` keys (`tasks_guest` and `schedules_guest`) in `SharedPreferences`.
+   * - Registered accounts logging out keep all of their saved Tasks and Schedules intact.
+   */
+  fun logout() {
+    val wasGuest = isGuestMode
+    hasSavedSession = false
+    storageManager?.let { manager ->
+      if (wasGuest) {
+        manager.clearGuestData()
+      }
+      manager.clearUserProfile()
+    }
+    if (wasGuest) {
+      _tasks.clear()
+      _tasks.addAll(buildDefaultStarterTasks())
+      _classSchedules.clear()
+      nextId = 6
+      nextScheduleId = 100
+    }
   }
 
   fun addTask(title: String, dueDate: String) {
@@ -646,6 +1034,7 @@ class TaskViewModel : ViewModel() {
           isCompleted = false
         )
       )
+      storageManager?.saveTasks(_tasks, currentAccountKey)
     }
   }
 
@@ -654,11 +1043,24 @@ class TaskViewModel : ViewModel() {
     if (index != -1) {
       val current = _tasks[index]
       _tasks[index] = current.copy(isCompleted = !current.isCompleted)
+      storageManager?.saveTasks(_tasks, currentAccountKey)
     }
   }
 
   fun deleteTask(taskId: Int) {
     _tasks.removeAll { it.id == taskId }
+    storageManager?.saveTasks(_tasks, currentAccountKey)
+  }
+
+  companion object {
+    fun provideFactory(storageManager: LocalStorageManager): ViewModelProvider.Factory {
+      return object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+          return TaskViewModel(storageManager) as T
+        }
+      }
+    }
   }
 }
 
@@ -687,6 +1089,245 @@ private fun resolveTodayCorDayAbbreviation(): String {
     DayOfWeek.SATURDAY -> "Sat"
     DayOfWeek.SUNDAY -> "Sun"
   }
+}
+
+/**
+ * Resolves the initial `ScheduleWeekDay` tab to highlight based on today's real-world day of week
+ * (falling back to Monday on Sundays).
+ */
+@SuppressLint("NewApi")
+private fun resolveInitialScheduleWeekDay(): ScheduleWeekDay {
+  return when (LocalDate.now().dayOfWeek) {
+    DayOfWeek.MONDAY -> ScheduleWeekDay.MON
+    DayOfWeek.TUESDAY -> ScheduleWeekDay.TUE
+    DayOfWeek.WEDNESDAY -> ScheduleWeekDay.WED
+    DayOfWeek.THURSDAY -> ScheduleWeekDay.THU
+    DayOfWeek.FRIDAY -> ScheduleWeekDay.FRI
+    DayOfWeek.SATURDAY -> ScheduleWeekDay.SAT
+    DayOfWeek.SUNDAY -> ScheduleWeekDay.MON
+  }
+}
+
+/**
+ * Checks whether a class schedule day token (e.g., "M", "T", "Tue", "W", "Th", "F", "S", "Sat")
+ * matches the target day abbreviation (e.g., today's abbreviation on the Dashboard).
+ */
+private fun doesDayTokenMatchAbbreviation(token: String, targetAbbreviation: String): Boolean {
+  if (token.equals(targetAbbreviation, ignoreCase = true)) return true
+  val matchingWeekDay = ScheduleWeekDay.entries.firstOrNull {
+    it.dayCode.equals(targetAbbreviation, ignoreCase = true) ||
+      it.chipLabel.equals(targetAbbreviation, ignoreCase = true) ||
+      it.shortLabel.equals(targetAbbreviation, ignoreCase = true)
+  }
+  return matchingWeekDay?.matchesToken(token) == true
+}
+
+/**
+ * Safely parses standard time inputs (e.g., "7:00 AM", "07:30 AM", "1:00 PM", "12:00 PM")
+ * and converts them into a 24-hour float:
+ * - "7:00 AM"  -> 7.0f
+ * - "7:30 AM"  -> 7.5f
+ * - "1:00 PM"  -> 13.0f
+ * - "12:00 PM" -> 12.0f
+ * If parsing fails, defaults to 7.0f to prevent crashes.
+ */
+fun parseTimeToFloat(timeString: String): Float {
+  return try {
+    val trimmed = timeString.trim()
+    if (trimmed.isEmpty()) return 7.0f
+
+    val upper = trimmed.uppercase(Locale.US)
+    val isPm = upper.contains("PM")
+    val isAm = upper.contains("AM")
+
+    val clockPortion = upper
+      .replace("AM", "")
+      .replace("PM", "")
+      .trim()
+
+    if (clockPortion.isEmpty()) return 7.0f
+
+    val hour: Int
+    val minute: Int
+
+    if (clockPortion.contains(":")) {
+      val parts = clockPortion.split(":")
+      hour = parts.getOrNull(0)?.trim()?.filter { it.isDigit() }?.toIntOrNull() ?: return 7.0f
+      minute = (parts.getOrNull(1)?.trim()?.filter { it.isDigit() }?.toIntOrNull() ?: 0)
+        .coerceIn(0, 59)
+    } else {
+      val digits = clockPortion.filter { it.isDigit() }
+      when (digits.length) {
+        1, 2 -> {
+          hour = digits.toIntOrNull() ?: return 7.0f
+          minute = 0
+        }
+        3 -> {
+          hour = digits.substring(0, 1).toIntOrNull() ?: return 7.0f
+          minute = (digits.substring(1, 3).toIntOrNull() ?: 0).coerceIn(0, 59)
+        }
+        4 -> {
+          hour = digits.substring(0, 2).toIntOrNull() ?: return 7.0f
+          minute = (digits.substring(2, 4).toIntOrNull() ?: 0).coerceIn(0, 59)
+        }
+        else -> return 7.0f
+      }
+    }
+
+    if (hour !in 0..23) return 7.0f
+
+    val hour24 = when {
+      hour in 13..23 -> hour
+      isPm -> if (hour == 12) 12 else hour + 12
+      isAm -> if (hour == 12) 12 else hour
+      else -> {
+        when {
+          hour == 12 -> 12
+          hour in 7..11 -> hour
+          hour in 1..6 -> hour + 12
+          else -> hour
+        }
+      }
+    }
+
+    hour24.toFloat() + (minute.toFloat() / 60.0f)
+  } catch (_: Exception) {
+    7.0f
+  }
+}
+
+/**
+ * Splits a raw `timeRange` string (e.g., `"7:00 AM - 9:00 AM"`) into `(startTime, endTime)`.
+ */
+private fun extractStartEndTimeTokens(timeRange: String): Pair<String, String> {
+  val parts = timeRange.split("-", "–")
+  val startToken = parts.getOrNull(0)?.trim().orEmpty().ifEmpty { "7:00 AM" }
+  val endToken = parts.getOrNull(1)?.trim().orEmpty().ifEmpty { "9:00 AM" }
+  return startToken to endToken
+}
+
+/**
+ * Infers the academic daytime meridiem ("AM" for 7..11, "PM" for 12 and 1..6) as the user types
+ * into the Start Time or End Time field so the AM/PM toggle automatically assists them.
+ */
+private fun inferAcademicMeridiem(rawTimeInput: String): String? {
+  val trimmed = rawTimeInput.trim()
+  if (trimmed.isEmpty()) return null
+  val upper = trimmed.uppercase(Locale.US)
+  if (upper.contains("PM")) return "PM"
+  if (upper.contains("AM")) return "AM"
+
+  val hour = if (trimmed.contains(":")) {
+    trimmed.substringBefore(":").filter { it.isDigit() }.toIntOrNull()
+  } else {
+    val digits = trimmed.filter { it.isDigit() }
+    when (digits.length) {
+      1, 2 -> digits.toIntOrNull()
+      3 -> digits.substring(0, 1).toIntOrNull()
+      4 -> digits.substring(0, 2).toIntOrNull()
+      else -> null
+    }
+  } ?: return null
+
+  return when (hour) {
+    in 7..11 -> "AM"
+    12, in 1..6 -> "PM"
+    in 13..23 -> "PM"
+    else -> null
+  }
+}
+
+/**
+ * Preserves the user's raw clock input paired with the selected AM/PM toggle
+ * (e.g., `"7:00"` + `"AM"` -> `"7:00 AM"`, `"9:00"` + `"AM"` -> `"9:00 AM"`,
+ * `"7:00 AM - 9:00 AM"`) without forcibly zero-padding or clamping digits.
+ */
+private fun formatStructuredTimeRange(
+  startInput: String,
+  startMeridiem: String,
+  endInput: String,
+  endMeridiem: String
+): String {
+  fun buildSingleToken(raw: String, meridiem: String, fallbackClock: String): String {
+    val trimmed = raw.trim()
+    val cleanMeridiem = if (meridiem.equals("PM", ignoreCase = true)) "PM" else "AM"
+    if (trimmed.isEmpty()) {
+      return "$fallbackClock $cleanMeridiem"
+    }
+
+    val explicitAmPm = when {
+      trimmed.uppercase(Locale.US).contains("PM") -> "PM"
+      trimmed.uppercase(Locale.US).contains("AM") -> "AM"
+      else -> null
+    }
+    val resolvedMeridiem = explicitAmPm ?: cleanMeridiem
+
+    val clockOnly = trimmed
+      .replace(Regex("""(?i)\s*(am|pm)"""), "")
+      .trim()
+
+    if (clockOnly.isEmpty()) {
+      return "$fallbackClock $resolvedMeridiem"
+    }
+
+    // Preserve the user's raw clock string if they included ':'
+    if (clockOnly.contains(":")) {
+      return "$clockOnly $resolvedMeridiem"
+    }
+
+    // If the user typed only digits without ':' (e.g., "7" -> "7:00", "730" -> "7:30", "1030" -> "10:30")
+    val digits = clockOnly.filter { it.isDigit() }
+    val normalizedClock = when (digits.length) {
+      1, 2 -> "$digits:00"
+      3 -> "${digits.substring(0, 1)}:${digits.substring(1, 3)}"
+      4 -> "${digits.substring(0, 2)}:${digits.substring(2, 4)}"
+      else -> clockOnly
+    }
+    return "$normalizedClock $resolvedMeridiem"
+  }
+
+  val startFormatted = buildSingleToken(startInput, startMeridiem, fallbackClock = "7:00")
+  val endFormatted = buildSingleToken(endInput, endMeridiem, fallbackClock = "9:00")
+  return "$startFormatted - $endFormatted"
+}
+
+private data class StructuredTimeRangeInputs(
+  val startTime: String,
+  val startMeridiem: String,
+  val endTime: String,
+  val endMeridiem: String
+)
+
+/**
+ * Parses a saved `timeRange` string (e.g., `"7:00 AM - 9:00 AM"`, `"1:00 PM - 3:00 PM"`)
+ * back into structured `startTime`, `startMeridiem`, `endTime`, and `endMeridiem` fields
+ * while preserving the user's raw clock text.
+ */
+private fun parseTimeRangeToStructuredInputs(timeRange: String): StructuredTimeRangeInputs {
+  val (startToken, endToken) = extractStartEndTimeTokens(timeRange)
+
+  fun splitClockAndMeridiem(token: String, fallbackMeridiem: String): Pair<String, String> {
+    val upper = token.uppercase(Locale.US)
+    val meridiem = when {
+      upper.contains("PM") -> "PM"
+      upper.contains("AM") -> "AM"
+      else -> inferAcademicMeridiem(token) ?: fallbackMeridiem
+    }
+    val rawClock = token
+      .replace(Regex("""(?i)\s*(am|pm)"""), "")
+      .trim()
+      .ifEmpty { "7:00" }
+    return rawClock to meridiem
+  }
+
+  val (startClock, startAmPm) = splitClockAndMeridiem(startToken, "AM")
+  val (endClock, endAmPm) = splitClockAndMeridiem(endToken, startAmPm)
+  return StructuredTimeRangeInputs(
+    startTime = startClock,
+    startMeridiem = startAmPm,
+    endTime = endClock,
+    endMeridiem = endAmPm
+  )
 }
 
 /**
@@ -769,10 +1410,22 @@ private fun resolveDeviceCoordinatesOrFallback(context: Context): Pair<Double, D
 
 @Composable
 fun CivilEngineeringProductivityApp(
-  taskViewModel: TaskViewModel = viewModel()
+  taskViewModel: TaskViewModel? = null
 ) {
+  val context = LocalContext.current
+  val storageManager = remember(context) {
+    LocalStorageManager(context.applicationContext ?: context)
+  }
+  val resolvedViewModel: TaskViewModel = taskViewModel ?: viewModel(
+    factory = TaskViewModel.provideFactory(storageManager)
+  )
+  remember(resolvedViewModel, storageManager) {
+    resolvedViewModel.attachStorage(storageManager)
+    true
+  }
+
   // Dynamically switch between darkColorScheme() and lightColorScheme() based on ViewModel.isDarkMode
-  val dynamicColorScheme = if (taskViewModel.isDarkMode) {
+  val dynamicColorScheme = if (resolvedViewModel.isDarkMode) {
     CanvaDarkColorScheme
   } else {
     CanvaLightColorScheme
@@ -782,8 +1435,9 @@ fun CivilEngineeringProductivityApp(
     colorScheme = dynamicColorScheme,
     typography = Typography
   ) {
-    // Top-level navigation state: launches into the Startup/Login Screen first
-    var isLoggedIn by rememberSaveable { mutableStateOf(false) }
+    // Top-level navigation state: if a userName is already saved in SharedPreferences,
+    // bypass the Login screen entirely and go straight to the Dashboard.
+    var isLoggedIn by rememberSaveable { mutableStateOf(resolvedViewModel.hasSavedSession) }
 
     Crossfade(
       targetState = isLoggedIn,
@@ -792,19 +1446,32 @@ fun CivilEngineeringProductivityApp(
     ) { loggedIn ->
       if (!loggedIn) {
         StartupLoginScreen(
-          onLoginWithEmail = { typedEmail ->
-            taskViewModel.loginWithEmail(typedEmail)
+          onAttemptLogin = { typedEmail, typedPassword ->
+            val result = resolvedViewModel.attemptLogin(typedEmail, typedPassword)
+            if (result == LoginValidationResult.SUCCESS) {
+              isLoggedIn = true
+            }
+            result
+          },
+          onCheckEmailRegistered = { emailToCheck ->
+            resolvedViewModel.isEmailRegistered(emailToCheck)
+          },
+          onCompleteSignUp = { registeredEmail, createdPassword ->
+            resolvedViewModel.completeSignUp(registeredEmail, createdPassword)
             isLoggedIn = true
           },
           onContinueAsGuest = {
-            taskViewModel.loginAsGuest()
+            resolvedViewModel.loginAsGuest()
             isLoggedIn = true
           }
         )
       } else {
         MainProductivityScaffold(
-          taskViewModel = taskViewModel,
-          onLogout = { isLoggedIn = false }
+          taskViewModel = resolvedViewModel,
+          onLogout = {
+            resolvedViewModel.logout()
+            isLoggedIn = false
+          }
         )
       }
     }
@@ -812,15 +1479,18 @@ fun CivilEngineeringProductivityApp(
 }
 
 /**
- * Canva-Inspired Startup / Login Screen:
- * - Soft gradient background that adapts smoothly to Light and Dark mode.
- * - Uses `LocalConfiguration` scaling multiplier so text and padding adapt cleanly to phones and tablets.
- * - Displays "Sibil App" in large, bold, elegant typography with "CE Student Command Center" underneath.
- * - Captures typed Email on "Log In" (setting userName to "Alberto Jr. M. Manzo") or sets "Guest" on "Continue as Guest".
+ * Canva-Inspired Startup / Login Screen with Simulated Authentication & Sign-Up Verification Flow:
+ * - Validates "Log In" against `SharedPreferences` registered accounts:
+ *   * Displays bold red `"No account found"` if email is not in `SharedPreferences`.
+ *   * Displays bold red `"Incorrect password"` if email exists but password does not match.
+ * - Includes a `"Sign Up"` button opening the 4-step Sign-Up & Verification Dialog.
+ * - Includes `"Continue as Guest"` which loads segregated `tasks_guest` and `schedules_guest` keys.
  */
 @Composable
 fun StartupLoginScreen(
-  onLoginWithEmail: (String) -> Unit,
+  onAttemptLogin: (String, String) -> LoginValidationResult,
+  onCheckEmailRegistered: (String) -> Boolean,
+  onCompleteSignUp: (String, String) -> Unit,
   onContinueAsGuest: () -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -828,9 +1498,33 @@ fun StartupLoginScreen(
   var email by rememberSaveable { mutableStateOf("") }
   var password by rememberSaveable { mutableStateOf("") }
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
+  var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var isSignUpDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var isGuestWarningDialogOpen by rememberSaveable { mutableStateOf(false) }
 
   val topGradientColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
   val baseBackground = MaterialTheme.colorScheme.background
+
+  fun handleLoginClick() {
+    if (!isValidEmailFormat(email)) {
+      loginErrorMessage = "Invalid email format"
+      return
+    }
+    when (onAttemptLogin(email, password)) {
+      LoginValidationResult.INVALID_EMAIL_FORMAT -> {
+        loginErrorMessage = "Invalid email format"
+      }
+      LoginValidationResult.NO_ACCOUNT_FOUND -> {
+        loginErrorMessage = "No account found"
+      }
+      LoginValidationResult.INCORRECT_PASSWORD -> {
+        loginErrorMessage = "Incorrect password"
+      }
+      LoginValidationResult.SUCCESS -> {
+        loginErrorMessage = null
+      }
+    }
+  }
 
   Box(
     modifier = modifier
@@ -928,12 +1622,15 @@ fun StartupLoginScreen(
               horizontal = metrics.scaledDp(24),
               vertical = metrics.scaledDp(28)
             ),
-          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
           // Email OutlinedTextField
           OutlinedTextField(
             value = email,
-            onValueChange = { email = it },
+            onValueChange = {
+              email = it
+              if (loginErrorMessage != null) loginErrorMessage = null
+            },
             label = {
               Text(
                 text = stringResource(R.string.email_label),
@@ -984,7 +1681,10 @@ fun StartupLoginScreen(
           // Password OutlinedTextField (visually obscured)
           OutlinedTextField(
             value = password,
-            onValueChange = { password = it },
+            onValueChange = {
+              password = it
+              if (loginErrorMessage != null) loginErrorMessage = null
+            },
             label = {
               Text(
                 text = stringResource(R.string.password_label),
@@ -1057,43 +1757,92 @@ fun StartupLoginScreen(
               imeAction = ImeAction.Done
             ),
             keyboardActions = KeyboardActions(
-              onDone = { onLoginWithEmail(email) }
+              onDone = { handleLoginClick() }
             ),
             modifier = Modifier
               .fillMaxWidth()
               .testTag("login_password_input")
           )
 
-          Spacer(modifier = Modifier.height(4.dp))
-
-          // Pill-Shaped Primary "Log In" Button
-          Button(
-            onClick = { onLoginWithEmail(email) },
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(metrics.scaledDp(52))
-              .testTag("login_submit_button")
-          ) {
+          // Bold, red validation error text below the fields ("No account found" / "Incorrect password")
+          loginErrorMessage?.let { errorText ->
             Text(
-              text = stringResource(R.string.login_button),
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = metrics.scaledSp(17),
+              text = errorText,
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(14),
                 fontWeight = FontWeight.Bold
               ),
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
+              color = Color(0xFFD32F2F),
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("login_error_text")
             )
           }
 
-          // Pill-Shaped Secondary "Continue as Guest" TextButton
+          Spacer(modifier = Modifier.height(2.dp))
+
+          // Row / Column of Primary "Log In" and Secondary "Sign Up" Buttons
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Button(
+              onClick = { handleLoginClick() },
+              shape = CircleShape,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+              ),
+              elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+              modifier = Modifier
+                .weight(1f)
+                .height(metrics.scaledDp(52))
+                .testTag("login_submit_button")
+            ) {
+              Text(
+                text = stringResource(R.string.login_button),
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(16),
+                  fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+
+            OutlinedButton(
+              onClick = {
+                loginErrorMessage = null
+                isSignUpDialogOpen = true
+              },
+              shape = CircleShape,
+              border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+              modifier = Modifier
+                .weight(1f)
+                .height(metrics.scaledDp(52))
+                .testTag("sign_up_button")
+            ) {
+              Text(
+                text = "Sign Up",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(16),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+          }
+
+          // Pill-Shaped Secondary "Continue as Guest" TextButton (opens Guest Mode Warning Dialog)
           TextButton(
-            onClick = onContinueAsGuest,
+            onClick = {
+              loginErrorMessage = null
+              isGuestWarningDialogOpen = true
+            },
             shape = CircleShape,
             modifier = Modifier
               .fillMaxWidth()
@@ -1114,6 +1863,573 @@ fun StartupLoginScreen(
         }
       }
     }
+
+    if (isGuestWarningDialogOpen) {
+      GuestModeWarningDialog(
+        onCancel = { isGuestWarningDialogOpen = false },
+        onProceed = {
+          isGuestWarningDialogOpen = false
+          onContinueAsGuest()
+        }
+      )
+    }
+
+    if (isSignUpDialogOpen) {
+      SignUpVerificationDialog(
+        initialEmail = email,
+        onCheckEmailRegistered = onCheckEmailRegistered,
+        onDismiss = { isSignUpDialogOpen = false },
+        onCompleteSignUp = { registeredEmail, createdPassword ->
+          isSignUpDialogOpen = false
+          onCompleteSignUp(registeredEmail, createdPassword)
+        }
+      )
+    }
+  }
+}
+
+/**
+ * Guest Mode Warning Dialog styled to match the warm cream card aesthetics:
+ * - Title: "Guest Mode Warning"
+ * - Body Text: "You are logging in as a Guest. Your tasks and schedules will NOT be permanently saved. All data will be wiped completely when you log out."
+ * - Buttons: "Cancel" (closes dialog) and "Proceed" (logs in as Guest and navigates to Dashboard).
+ */
+@Composable
+private fun GuestModeWarningDialog(
+  onCancel: () -> Unit,
+  onProceed: () -> Unit
+) {
+  val metrics = rememberResponsiveMetrics()
+  val dialogBackgroundColor = dashboardCreamCardColor()
+
+  Dialog(
+    onDismissRequest = onCancel,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Surface(
+      modifier = Modifier
+        .fillMaxWidth(0.92f)
+        .widthIn(max = if (metrics.screenWidthDp > 600) 480.dp else 420.dp)
+        .testTag("guest_mode_warning_dialog"),
+      shape = RoundedCornerShape(28.dp),
+      color = dialogBackgroundColor,
+      tonalElevation = 8.dp,
+      shadowElevation = 16.dp
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(
+            horizontal = metrics.scaledDp(24),
+            vertical = metrics.scaledDp(24)
+          ),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+      ) {
+        Text(
+          text = "Guest Mode Warning",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(21),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.onSurface,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("guest_warning_dialog_title")
+        )
+
+        Text(
+          text = "You are logging in as a Guest. Your tasks and schedules will NOT be permanently saved. All data will be wiped completely when you log out.",
+          style = MaterialTheme.typography.bodyMedium.copy(
+            fontSize = metrics.scaledSp(15),
+            lineHeight = metrics.scaledSp(22),
+            fontWeight = FontWeight.Medium
+          ),
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("guest_warning_dialog_body")
+        )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12)),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          OutlinedButton(
+            onClick = onCancel,
+            shape = CircleShape,
+            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
+            modifier = Modifier
+              .weight(1f)
+              .height(metrics.scaledDp(48))
+              .testTag("guest_warning_cancel_button")
+          ) {
+            Text(
+              text = "Cancel",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.onSurface
+            )
+          }
+
+          Button(
+            onClick = onProceed,
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+              .weight(1f)
+              .height(metrics.scaledDp(48))
+              .testTag("guest_warning_proceed_button")
+          ) {
+            Text(
+              text = "Proceed",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.Bold
+              )
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 4-Step Sign-Up & Verification Dialog:
+ * - Step 1: User enters email. Strictly validates email format first (`"Invalid email format"`).
+ *   If valid and already registered in `SharedPreferences`, displays `"Account already exists, please log in"`.
+ * - Step 2: If the email is valid and new, clicking `"Send Verification Code"` simulates a 2-second
+ *   loading state (`delay(2000)`), dynamically generates a 4-digit code via `(1000..9999).random().toString()`,
+ *   and displays `"Mock email sent! Code: [RANDOM_CODE]"` on-screen and via Toast.
+ * - Step 3: Shows a text field for the verification code. Requires the exact generated 4-digit code to unlock Step 4.
+ * - Step 4: Shows a `"Create Password"` field and `"Complete Sign Up"` button that saves the
+ *   account to `SharedPreferences` and logs the user in.
+ */
+@Composable
+private fun SignUpVerificationDialog(
+  initialEmail: String,
+  onCheckEmailRegistered: (String) -> Boolean,
+  onDismiss: () -> Unit,
+  onCompleteSignUp: (String, String) -> Unit
+) {
+  val context = LocalContext.current
+  val metrics = rememberResponsiveMetrics()
+  val coroutineScope = rememberCoroutineScope()
+
+  var signUpEmail by rememberSaveable { mutableStateOf(initialEmail.trim()) }
+  var signUpError by rememberSaveable { mutableStateOf<String?>(null) }
+  var isSendingCode by rememberSaveable { mutableStateOf(false) }
+  var isCodeSent by rememberSaveable { mutableStateOf(false) }
+  var generatedVerificationCode by rememberSaveable { mutableStateOf("") }
+  var verificationCode by rememberSaveable { mutableStateOf("") }
+  var newPassword by rememberSaveable { mutableStateOf("") }
+  var isNewPasswordVisible by rememberSaveable { mutableStateOf(false) }
+
+  val isCodeVerified =
+    isCodeSent && generatedVerificationCode.isNotEmpty() && verificationCode.trim() == generatedVerificationCode
+  val dialogBackgroundColor = dashboardCreamCardColor()
+
+  Dialog(
+    onDismissRequest = {
+      if (!isSendingCode) onDismiss()
+    },
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Surface(
+      modifier = Modifier
+        .fillMaxWidth(0.92f)
+        .widthIn(max = if (metrics.screenWidthDp > 600) 520.dp else 440.dp)
+        .testTag("sign_up_dialog"),
+      shape = RoundedCornerShape(28.dp),
+      color = dialogBackgroundColor,
+      tonalElevation = 8.dp,
+      shadowElevation = 16.dp
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(
+            horizontal = metrics.scaledDp(22),
+            vertical = metrics.scaledDp(24)
+          ),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+      ) {
+        // Header Row
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "Create Account",
+            style = MaterialTheme.typography.headlineSmall.copy(
+              fontSize = metrics.scaledSp(22),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .weight(1f)
+              .testTag("sign_up_dialog_title")
+          )
+
+          IconButton(
+            onClick = {
+              if (!isSendingCode) onDismiss()
+            },
+            modifier = Modifier
+              .size(48.dp)
+              .minimumInteractiveComponentSize()
+              .testTag("close_sign_up_dialog_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Close,
+              contentDescription = "Close Sign Up",
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(24.dp)
+            )
+          }
+        }
+
+        // Step 1: Email Field
+        OutlinedTextField(
+          value = signUpEmail,
+          onValueChange = { updated ->
+            signUpEmail = updated
+            isCodeSent = false
+            generatedVerificationCode = ""
+            verificationCode = ""
+            newPassword = ""
+            val trimmed = updated.trim()
+            signUpError = if (trimmed.isNotEmpty() && isValidEmailFormat(trimmed) && onCheckEmailRegistered(trimmed)) {
+              "Account already exists, please log in"
+            } else {
+              null
+            }
+          },
+          enabled = !isSendingCode,
+          label = {
+            Text(
+              text = stringResource(R.string.email_label),
+              style = MaterialTheme.typography.bodyMedium,
+              maxLines = 1
+            )
+          },
+          placeholder = {
+            Text(
+              text = "student@civil.edu",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+              maxLines = 1
+            )
+          },
+          leadingIcon = {
+            Icon(
+              imageVector = Icons.Outlined.Email,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(22.dp)
+            )
+          },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+            focusedContainerColor = dashboardIvoryInnerColor(),
+            unfocusedContainerColor = dashboardIvoryInnerColor(),
+            cursorColor = MaterialTheme.colorScheme.primary
+          ),
+          keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Email,
+            imeAction = ImeAction.Done
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("signup_email_input")
+        )
+
+        // Error message (e.g., "Invalid email format" or "Account already exists, please log in")
+        signUpError?.let { errorText ->
+          Text(
+            text = errorText,
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = metrics.scaledSp(14),
+              fontWeight = FontWeight.Bold
+            ),
+            color = Color(0xFFD32F2F),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("signup_error_text")
+          )
+        }
+
+        // Step 2: "Send Verification Code" Button + 2-second simulated loading state
+        Button(
+          onClick = {
+            val trimmedEmail = signUpEmail.trim()
+            if (!isValidEmailFormat(trimmedEmail)) {
+              signUpError = "Invalid email format"
+            } else if (onCheckEmailRegistered(trimmedEmail)) {
+              signUpError = "Account already exists, please log in"
+            } else {
+              signUpError = null
+              isSendingCode = true
+              verificationCode = ""
+              newPassword = ""
+              coroutineScope.launch {
+                delay(2000L)
+                val dynamicCode = (1000..9999).random().toString()
+                generatedVerificationCode = dynamicCode
+                isSendingCode = false
+                isCodeSent = true
+                Toast.makeText(
+                  context,
+                  "Mock email sent! Code: $dynamicCode",
+                  Toast.LENGTH_SHORT
+                ).show()
+              }
+            }
+          },
+          enabled = !isSendingCode,
+          shape = CircleShape,
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(metrics.scaledDp(48))
+            .testTag("send_verification_code_button")
+        ) {
+          if (isSendingCode) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.onPrimary,
+                strokeWidth = 2.5.dp,
+                modifier = Modifier.size(18.dp)
+              )
+              Text(
+                text = "Sending Code...",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(15),
+                  fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1
+              )
+            }
+          } else {
+            Text(
+              text = "Send Verification Code",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.Bold
+              ),
+              maxLines = 1
+            )
+          }
+        }
+
+        // Step 3: Verification Code Text & Input
+        if (isCodeSent && generatedVerificationCode.isNotEmpty()) {
+          Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("mock_code_sent_banner")
+          ) {
+            Text(
+              text = "Mock email sent! Code: $generatedVerificationCode",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.primary,
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .testTag("mock_code_sent_text")
+            )
+          }
+
+          OutlinedTextField(
+            value = verificationCode,
+            onValueChange = { verificationCode = it.trim() },
+            label = {
+              Text(
+                text = "Verification Code",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1
+              )
+            },
+            placeholder = {
+              Text(
+                text = "Enter 4-digit code",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                maxLines = 1
+              )
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+              focusedContainerColor = dashboardIvoryInnerColor(),
+              unfocusedContainerColor = dashboardIvoryInnerColor(),
+              cursorColor = MaterialTheme.colorScheme.primary
+            ),
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Number,
+              imeAction = ImeAction.Next
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("verification_code_input")
+          )
+
+          if (verificationCode.isNotEmpty() && !isCodeVerified) {
+            Text(
+              text = "Enter $generatedVerificationCode to verify your email",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.fillMaxWidth()
+            )
+          }
+        }
+
+        // Step 4: "Create Password" Field & "Complete Sign Up" Button once the generated 4-digit code is entered
+        if (isCodeVerified) {
+          OutlinedTextField(
+            value = newPassword,
+            onValueChange = {
+              newPassword = it
+              if (signUpError != null) signUpError = null
+            },
+            label = {
+              Text(
+                text = "Create Password",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1
+              )
+            },
+            placeholder = {
+              Text(
+                text = "Enter your new password",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                maxLines = 1
+              )
+            },
+            leadingIcon = {
+              Icon(
+                imageVector = Icons.Outlined.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp)
+              )
+            },
+            trailingIcon = {
+              IconButton(
+                onClick = { isNewPasswordVisible = !isNewPasswordVisible },
+                modifier = Modifier
+                  .size(48.dp)
+                  .minimumInteractiveComponentSize()
+                  .testTag("toggle_signup_password_visibility_button")
+              ) {
+                Icon(
+                  imageVector = if (isNewPasswordVisible) {
+                    Icons.Filled.VisibilityOff
+                  } else {
+                    Icons.Filled.Visibility
+                  },
+                  contentDescription = if (isNewPasswordVisible) {
+                    "Hide password"
+                  } else {
+                    "Show password"
+                  },
+                  tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                  modifier = Modifier.size(22.dp)
+                )
+              }
+            },
+            visualTransformation = if (isNewPasswordVisible) {
+              VisualTransformation.None
+            } else {
+              PasswordVisualTransformation()
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+              focusedContainerColor = dashboardIvoryInnerColor(),
+              unfocusedContainerColor = dashboardIvoryInnerColor(),
+              cursorColor = MaterialTheme.colorScheme.primary
+            ),
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Password,
+              imeAction = ImeAction.Done
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("signup_create_password_input")
+          )
+
+          Button(
+            onClick = {
+              val trimmedEmail = signUpEmail.trim()
+              if (!isValidEmailFormat(trimmedEmail)) {
+                signUpError = "Invalid email format"
+              } else if (onCheckEmailRegistered(trimmedEmail)) {
+                signUpError = "Account already exists, please log in"
+              } else if (newPassword.isBlank()) {
+                signUpError = "Please create a password"
+              } else {
+                onCompleteSignUp(trimmedEmail, newPassword)
+              }
+            },
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(metrics.scaledDp(50))
+              .testTag("complete_sign_up_button")
+          ) {
+            Text(
+              text = "Complete Sign Up",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(16),
+                fontWeight = FontWeight.Bold
+              ),
+              maxLines = 1
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1124,8 +2440,10 @@ private fun MainProductivityScaffold(
 ) {
   val metrics = rememberResponsiveMetrics()
   var selectedTab by rememberSaveable { mutableStateOf(CeNavTab.DASHBOARD) }
+  var selectedScheduleWeekDay by rememberSaveable { mutableStateOf(resolveInitialScheduleWeekDay()) }
   var isAddTaskDialogOpen by rememberSaveable { mutableStateOf(false) }
   var isAddScheduleDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var editingSchedule by remember { mutableStateOf<ClassSchedule?>(null) }
   var isProfileSettingsDialogOpen by rememberSaveable { mutableStateOf(false) }
 
   // Return to Dashboard when pressing system Back on any secondary bottom tab
@@ -1162,7 +2480,10 @@ private fun MainProductivityScaffold(
         }
         CeNavTab.SCHEDULE -> {
           FloatingActionButton(
-            onClick = { isAddScheduleDialogOpen = true },
+            onClick = {
+              editingSchedule = null
+              isAddScheduleDialogOpen = true
+            },
             shape = CircleShape,
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -1244,6 +2565,12 @@ private fun MainProductivityScaffold(
         )
         CeNavTab.SCHEDULE -> ClassTimetableScheduleScreen(
           viewModel = taskViewModel,
+          selectedWeekDay = selectedScheduleWeekDay,
+          onSelectWeekDay = { selectedScheduleWeekDay = it },
+          onEditSchedule = { scheduleToEdit ->
+            editingSchedule = scheduleToEdit
+            isAddScheduleDialogOpen = true
+          },
           modifier = Modifier
             .fillMaxSize()
             .widthIn(max = metrics.maxContentWidth)
@@ -1271,16 +2598,44 @@ private fun MainProductivityScaffold(
 
     if (isAddScheduleDialogOpen) {
       AddClassScheduleDialog(
-        onDismiss = { isAddScheduleDialogOpen = false },
-        onSaveSchedule = { subjectName, timeRange, selectedDays, room, colorHex ->
-          taskViewModel.addClassSchedule(
-            subjectName = subjectName,
-            timeRange = timeRange,
-            days = selectedDays,
-            room = room,
-            colorHex = colorHex
-          )
+        initialDay = selectedScheduleWeekDay,
+        editingSchedule = editingSchedule,
+        onDismiss = {
           isAddScheduleDialogOpen = false
+          editingSchedule = null
+        },
+        onSaveSchedule = { subjectName, timeRange, selectedDays, room, colorHex ->
+          val currentEditing = editingSchedule
+          if (currentEditing != null) {
+            taskViewModel.updateClassSchedule(
+              scheduleId = currentEditing.id,
+              subjectName = subjectName,
+              timeRange = timeRange,
+              days = selectedDays,
+              room = room,
+              colorHex = colorHex
+            )
+          } else {
+            taskViewModel.addClassSchedule(
+              subjectName = subjectName,
+              timeRange = timeRange,
+              days = selectedDays,
+              room = room,
+              colorHex = colorHex
+            )
+          }
+          // Automatically switch the active Week View day tab if needed so the saved class is immediately visible
+          val matchesCurrentTab = selectedDays.any { selectedScheduleWeekDay.matchesToken(it) }
+          if (!matchesCurrentTab) {
+            val firstMatchingDay = ScheduleWeekDay.entries.firstOrNull { weekDay ->
+              selectedDays.any { weekDay.matchesToken(it) }
+            }
+            if (firstMatchingDay != null) {
+              selectedScheduleWeekDay = firstMatchingDay
+            }
+          }
+          isAddScheduleDialogOpen = false
+          editingSchedule = null
         }
       )
     }
@@ -1596,11 +2951,7 @@ fun AcademicDashboardPage(
       item {
         val middleRowHeight = metrics.scaledDp(276)
         val todayAbbreviation = resolveTodayCorDayAbbreviation()
-        val todaysFilteredClasses = viewModel.classSchedules.filter { schedule ->
-          schedule.days.any { dayToken ->
-            dayToken.equals(todayAbbreviation, ignoreCase = true)
-          }
-        }
+        val todaysFilteredClasses = viewModel.getSchedulesForDayAbbreviation(todayAbbreviation)
 
         Row(
           modifier = Modifier
@@ -2519,54 +3870,34 @@ private fun ExtraToolPlaceholderCard(
 
 /**
  * Fully functional "Schedule" tab featuring:
- * 1. Small top-right "Upload COR" button that launches the native Android PDF file picker
- *    (`ActivityResultContracts.OpenDocument()`) restricted strictly to `arrayOf("application/pdf")`.
- * 2. When a non-null PDF `Uri` is selected, immediately transitions the button text to
- *    `"Processing PDF..."`, waits `delay(2500)` to simulate OCR extraction, dynamically populates
- *    4 or 5 random Civil Engineering subjects into `TaskViewModel`, and updates the button to
- *    `"COR Synced"` with a checkmark icon.
- * 3. Interactive Week View horizontal row of selectable Days (Mon, Tue, Wed, Thu, Fri, Sat).
- * 4. Tall, rounded, colored graphic cards displaying Subject Name, Time, and Room Assignment.
+ * 1. Top Header with "Class Timetable" title and a top-right toggle button switching between
+ *    "List View" and "Grid View" (Graphic Table).
+ * 2. In List View:
+ *    - Interactive Week View horizontal row of selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
+ *      with a distinct `BorderStroke(2.dp, MaterialTheme.colorScheme.primary)` on the selected day.
+ *    - Chronologically sorted colored class schedule cards for the selected day.
+ * 3. In Grid View:
+ *    - Scrollable Graphic Timetable replicating the hand-drawn reference table with:
+ *      * Far-left "AM" and "PM" group indicators.
+ *      * Left Y-axis displaying hours from 7:00 down to 5:00.
+ *      * Prominent horizontal divider line at the 12:00 mark.
+ *      * Top X-axis for MON, TUE, WED, THU, FRI, SAT.
+ *      * Colored `ClassSchedule` blocks mapped into their corresponding Day columns and Time rows.
  */
 @Composable
 fun ClassTimetableScheduleScreen(
   viewModel: TaskViewModel,
+  selectedWeekDay: ScheduleWeekDay = resolveInitialScheduleWeekDay(),
+  onSelectWeekDay: (ScheduleWeekDay) -> Unit = {},
+  onEditSchedule: (ClassSchedule) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
-  var selectedWeekDay by rememberSaveable { mutableStateOf(ScheduleWeekDay.MON) }
-  var selectedPdfUri by remember { mutableStateOf<Uri?>(null) }
-  var pdfSelectionSequence by remember { mutableIntStateOf(0) }
-
-  // Native Android PDF File Picker restricted strictly to PDF documents
-  val launcher = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.OpenDocument()
-  ) { uri: Uri? ->
-    if (uri != null) {
-      selectedPdfUri = uri
-      viewModel.startProcessingPdf()
-      pdfSelectionSequence++
-    }
-  }
-
-  // Simulate OCR processing on the selected PDF URI for 2,500ms before populating random CE courses
-  LaunchedEffect(pdfSelectionSequence) {
-    val activeUri = selectedPdfUri
-    if (pdfSelectionSequence > 0 && activeUri != null) {
-      viewModel.startProcessingPdf()
-      // TODO: Integrate Apache PDFBox or ML Kit here in Android Studio to extract raw text from the URI.
-      delay(2500)
-      viewModel.populateDynamicRandomCorSchedule(activeUri)
-    }
-  }
+  var isGridView by rememberSaveable { mutableStateOf(false) }
 
   val allSchedules = viewModel.classSchedules
-  val filteredSchedules = allSchedules.filter { schedule ->
-    schedule.days.any { dayToken ->
-      dayToken.equals(selectedWeekDay.dayCode, ignoreCase = true) ||
-        dayToken.equals(selectedWeekDay.shortLabel, ignoreCase = true)
-    }
-  }
+  // Actively filters AND chronologically sorts classes by Start Time via ViewModel
+  val filteredSchedules = viewModel.getSchedulesForDay(selectedWeekDay)
 
   LazyColumn(
     modifier = modifier.testTag("schedule_screen_list"),
@@ -2578,7 +3909,7 @@ fun ClassTimetableScheduleScreen(
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
   ) {
-    // Top Header Row: "Class Timetable" Title on the left + Subtle "Upload COR" / "Processing PDF..." / "COR Synced" Button on the far right
+    // 1. Top Header Row: "Class Timetable" Title + Top-Right Grid/List View Toggle Button
     item {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -2599,283 +3930,642 @@ fun ClassTimetableScheduleScreen(
             .testTag("schedule_screen_title")
         )
 
-        OutlinedButton(
-          onClick = {
-            launcher.launch(arrayOf("application/pdf"))
+        Surface(
+          onClick = { isGridView = !isGridView },
+          shape = RoundedCornerShape(16.dp),
+          color = if (isGridView) {
+            MaterialTheme.colorScheme.primaryContainer
+          } else {
+            dashboardCreamCardColor()
           },
-          enabled = !viewModel.isExtractingCor,
-          shape = CircleShape,
-          contentPadding = PaddingValues(
-            horizontal = metrics.scaledDp(12),
-            vertical = metrics.scaledDp(6)
+          border = BorderStroke(
+            width = 1.5.dp,
+            color = MaterialTheme.colorScheme.primary
           ),
-          colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = if (viewModel.isCorExtracted) {
-              MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-            } else {
-              MaterialTheme.colorScheme.surface
-            },
-            contentColor = MaterialTheme.colorScheme.primary
-          ),
+          shadowElevation = 4.dp,
           modifier = Modifier
-            .height(metrics.scaledDp(36))
-            .testTag("upload_cor_button")
+            .height(42.dp)
+            .testTag("schedule_view_toggle_button")
         ) {
-          when {
-            viewModel.isExtractingCor -> {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-              ) {
-                CircularProgressIndicator(
-                  color = MaterialTheme.colorScheme.primary,
-                  strokeWidth = 2.dp,
-                  modifier = Modifier
-                    .size(14.dp)
-                    .testTag("cor_loading_indicator")
-                )
-                Text(
-                  text = stringResource(R.string.extracting_cor_label),
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
-            }
-            viewModel.isCorExtracted -> {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.Check,
-                  contentDescription = null,
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(16.dp)
-                )
-                Text(
-                  text = stringResource(R.string.cor_synced_button),
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
-            }
-            else -> {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.UploadFile,
-                  contentDescription = null,
-                  tint = MaterialTheme.colorScheme.primary,
-                  modifier = Modifier.size(16.dp)
-                )
-                Text(
-                  text = stringResource(R.string.upload_cor_button),
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
-            }
+          Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Icon(
+              imageVector = if (isGridView) {
+                Icons.AutoMirrored.Filled.ViewList
+              } else {
+                Icons.Filled.GridView
+              },
+              contentDescription = if (isGridView) {
+                stringResource(R.string.list_view_label)
+              } else {
+                stringResource(R.string.grid_view_label)
+              },
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(18.dp)
+            )
+            Text(
+              text = if (isGridView) {
+                stringResource(R.string.list_view_label)
+              } else {
+                stringResource(R.string.grid_view_label)
+              },
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.primary,
+              maxLines = 1
+            )
           }
         }
       }
     }
 
-    // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
-    item {
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("schedule_week_day_selector"),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        ScheduleWeekDay.entries.forEach { day ->
-          val isSelected = selectedWeekDay == day
-          val countForDay = allSchedules.count { sched ->
-            sched.days.any { token ->
-              token.equals(day.dayCode, ignoreCase = true) ||
-                token.equals(day.shortLabel, ignoreCase = true)
-            }
-          }
+    if (isGridView) {
+      // Graphic Table (Grid View) Mode
+      item {
+        ScheduleTimetableGridView(
+          schedules = allSchedules,
+          selectedWeekDay = selectedWeekDay,
+          onSelectWeekDay = onSelectWeekDay,
+          metrics = metrics
+        )
+      }
+    } else {
+      // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
+      //    with distinct BorderStroke(2.dp, MaterialTheme.colorScheme.primary) on the selected day
+      item {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("schedule_week_day_selector"),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          ScheduleWeekDay.entries.forEach { day ->
+            val isSelected = selectedWeekDay == day
+            val countForDay = viewModel.getSchedulesForDay(day).size
 
-          Surface(
-            onClick = { selectedWeekDay = day },
-            shape = RoundedCornerShape(18.dp),
-            color = if (isSelected) {
-              MaterialTheme.colorScheme.primary
-            } else {
-              MaterialTheme.colorScheme.surface
-            },
-            shadowElevation = if (isSelected) 8.dp else 3.dp,
-            modifier = Modifier
-              .weight(1f)
-              .height(metrics.scaledDp(66))
-              .testTag("week_day_tab_${day.shortLabel.lowercase()}")
-          ) {
-            Column(
+            Surface(
+              onClick = { onSelectWeekDay(day) },
+              shape = RoundedCornerShape(18.dp),
+              color = if (isSelected) {
+                MaterialTheme.colorScheme.primaryContainer
+              } else {
+                dashboardCreamCardColor()
+              },
+              border = if (isSelected) {
+                BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+              } else {
+                BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+              },
+              shadowElevation = if (isSelected) 8.dp else 4.dp,
               modifier = Modifier
-                .fillMaxSize()
-                .padding(vertical = 8.dp, horizontal = 4.dp),
-              horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.SpaceBetween
+                .weight(1f)
+                .height(metrics.scaledDp(66))
+                .testTag("week_day_tab_${day.shortLabel.lowercase()}")
             ) {
-              Text(
-                text = day.shortLabel,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = metrics.scaledSp(12),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = if (isSelected) {
-                  MaterialTheme.colorScheme.onPrimary
-                } else {
-                  MaterialTheme.colorScheme.onSurface
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-
-              Surface(
-                color = if (isSelected) {
-                  MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.22f)
-                } else {
-                  MaterialTheme.colorScheme.primaryContainer
-                },
-                shape = CircleShape
+              Column(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(vertical = 8.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
               ) {
                 Text(
-                  text = "$countForDay",
+                  text = day.shortLabel,
                   style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = metrics.scaledSp(10),
+                    fontSize = metrics.scaledSp(12),
                     fontWeight = FontWeight.Bold
                   ),
                   color = if (isSelected) {
-                    MaterialTheme.colorScheme.onPrimary
+                    MaterialTheme.colorScheme.primary
                   } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
+                    MaterialTheme.colorScheme.onSurface
                   },
                   maxLines = 1,
-                  modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                  overflow = TextOverflow.Ellipsis
                 )
+
+                Surface(
+                  color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.primaryContainer
+                  },
+                  shape = CircleShape
+                ) {
+                  Text(
+                    text = "$countForDay",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = metrics.scaledSp(10),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (isSelected) {
+                      MaterialTheme.colorScheme.onPrimary
+                    } else {
+                      MaterialTheme.colorScheme.onPrimaryContainer
+                    },
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                  )
+                }
               }
             }
           }
         }
       }
-    }
 
-    // Selected Day Subheader
-    item {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Text(
-          text = "${selectedWeekDay.fullLabel} Classes",
-          style = MaterialTheme.typography.titleLarge.copy(
-            fontSize = metrics.scaledSp(18),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onBackground,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f)
-        )
-
-        Text(
-          text = "${filteredSchedules.size} scheduled",
-          style = MaterialTheme.typography.labelMedium.copy(
-            fontSize = metrics.scaledSp(12),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 1
-        )
-      }
-    }
-
-    // 3. Visual Timetable Cards for the Selected Day
-    if (filteredSchedules.isEmpty()) {
+      // Selected Day Subheader
       item {
-        Card(
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("empty_schedule_day_card"),
-          shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-          ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          Column(
+          Text(
+            text = "${selectedWeekDay.fullLabel} Classes",
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = metrics.scaledSp(18),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+          )
+
+          Text(
+            text = "${filteredSchedules.size} scheduled",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = metrics.scaledSp(12),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+          )
+        }
+      }
+
+      // 3. Visual Timetable Cards for the Selected Day (chronologically sorted)
+      if (filteredSchedules.isEmpty()) {
+        item {
+          Card(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(metrics.scaledDp(28)),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+              .testTag("empty_schedule_day_card"),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+              containerColor = dashboardCreamCardColor()
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
           ) {
-            Icon(
-              imageVector = Icons.Outlined.EventNote,
-              contentDescription = null,
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(36.dp)
-            )
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(metrics.scaledDp(28)),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.EventNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(36.dp)
+              )
+              Text(
+                text = if (allSchedules.isEmpty()) {
+                  "No classes scheduled yet"
+                } else {
+                  "No classes on ${selectedWeekDay.fullLabel}"
+                },
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(18),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+              Text(
+                text = if (allSchedules.isEmpty()) {
+                  "Tap the + button below to add your Civil Engineering classes to the timetable."
+                } else {
+                  "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
+                },
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = metrics.scaledSp(14)
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+          }
+        }
+      } else {
+        items(
+          items = filteredSchedules,
+          key = { "${selectedWeekDay.dayCode}_${it.id}" }
+        ) { scheduleItem ->
+          ColoredClassScheduleCard(
+            schedule = scheduleItem,
+            metrics = metrics,
+            onEdit = { onEditSchedule(scheduleItem) },
+            onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
+          )
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Scrollable Graphic Table (Grid View) replicating the hand-drawn reference timetable:
+ * - Far-left edge: vertical "AM" and "PM" group indicators.
+ * - Left Y-axis: hours from `7:00` down to `5:00` (`7:00, 8:00, 9:00, 10:00, 11:00` in AM;
+ *   `12:00, 1:00, 2:00, 3:00, 4:00, 5:00` in PM).
+ * - Prominent horizontal divider line at the `12:00` mark.
+ * - Top X-axis: `MON, TUE, WED, THU, FRI, SAT`.
+ * - Colored `ClassSchedule` blocks mapped into the corresponding Day columns and Time rows.
+ */
+@Composable
+private fun ScheduleTimetableGridView(
+  schedules: List<ClassSchedule>,
+  selectedWeekDay: ScheduleWeekDay,
+  onSelectWeekDay: (ScheduleWeekDay) -> Unit,
+  metrics: ResponsiveMetrics
+) {
+  val amHourLabels = remember { listOf("7:00", "8:00", "9:00", "10:00", "11:00") }
+  val pmHourLabels = remember { listOf("12:00", "1:00", "2:00", "3:00", "4:00", "5:00") }
+  val allHourLabels = remember { amHourLabels + pmHourLabels }
+
+  val hourHeight = metrics.scaledDp(56)
+  val lunchRowHeight = metrics.scaledDp(28) // Shorter height for the 12:00 PM LUNCH divider row
+  val amSectionHeight = hourHeight * amHourLabels.size
+  val pmSectionHeight = lunchRowHeight + hourHeight * (pmHourLabels.size - 1)
+  val totalGridBodyHeight = amSectionHeight + pmSectionHeight
+
+  val meridiemStripWidth = metrics.scaledDp(22)
+  val hourLabelColumnWidth = metrics.scaledDp(42)
+  val leftAxisTotalWidth = meridiemStripWidth + hourLabelColumnWidth
+
+  val gridLineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+  val lunchPurpleColor = MaterialTheme.colorScheme.primary
+  val creamSurface = dashboardCreamCardColor()
+  val ivoryCellSurface = dashboardIvoryInnerColor()
+
+  Card(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("schedule_timetable_grid_card"),
+    shape = RoundedCornerShape(22.dp),
+    colors = CardDefaults.cardColors(containerColor = creamSurface),
+    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f))
+  ) {
+    Column(
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      // 1. Top X-Axis Header Row: [AM/PM + TIME Corner] | MON | TUE | WED | THU | FRI | SAT
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(metrics.scaledDp(42))
+          .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))
+          .testTag("schedule_grid_header_row"),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        // Top-left corner cell above AM/PM + Hour labels
+        Box(
+          modifier = Modifier
+            .width(leftAxisTotalWidth)
+            .fillMaxHeight()
+            .border(width = 0.5.dp, color = gridLineColor),
+          contentAlignment = Alignment.Center
+        ) {
+          Text(
+            text = "TIME",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontSize = metrics.scaledSp(9),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+          )
+        }
+
+        // Day Headers: MON, TUE, WED, THU, FRI, SAT
+        ScheduleWeekDay.entries.forEach { day ->
+          val isSelectedDay = day == selectedWeekDay
+          Box(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxHeight()
+              .background(
+                if (isSelectedDay) {
+                  MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                } else {
+                  Color.Transparent
+                }
+              )
+              .border(
+                width = if (isSelectedDay) 1.5.dp else 0.5.dp,
+                color = if (isSelectedDay) MaterialTheme.colorScheme.primary else gridLineColor
+              )
+              .clickable { onSelectWeekDay(day) }
+              .testTag("grid_header_day_${day.shortLabel.uppercase(Locale.US)}"),
+            contentAlignment = Alignment.Center
+          ) {
             Text(
-              text = if (allSchedules.isEmpty()) {
-                "No classes loaded yet"
-              } else {
-                "No classes on ${selectedWeekDay.fullLabel}"
-              },
-              style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(18),
+              text = day.shortLabel.uppercase(Locale.US),
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = metrics.scaledSp(10),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
-              textAlign = TextAlign.Center,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-            Text(
-              text = if (allSchedules.isEmpty()) {
-                "Tap \"Upload COR (Auto-Extract)\" above to import your CTU-Danao schedule, or tap + to add a class manually."
+              color = if (isSelectedDay) {
+                MaterialTheme.colorScheme.primary
               } else {
-                "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
+                MaterialTheme.colorScheme.onSurface
               },
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(14)
-              ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              textAlign = TextAlign.Center,
-              maxLines = 3,
+              maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           }
         }
       }
-    } else {
-      items(
-        items = filteredSchedules,
-        key = { "${selectedWeekDay.dayCode}_${it.id}" }
-      ) { scheduleItem ->
-        ColoredClassScheduleCard(
-          schedule = scheduleItem,
-          metrics = metrics,
-          onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
-        )
+
+      HorizontalDivider(thickness = 1.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+      // 2. Main Timetable Body: Left Y-Axis (AM/PM + 7:00..5:00) + 6 Day Columns + Custom 12:00 LUNCH Divider
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(totalGridBodyHeight)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxSize()
+        ) {
+          // Far-left edge: "AM" and "PM" group indicator column
+          Column(
+            modifier = Modifier
+              .width(meridiemStripWidth)
+              .fillMaxHeight()
+              .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+          ) {
+            // AM Group Box (7:00 to 11:00 rows)
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(amSectionHeight)
+                .border(width = 0.5.dp, color = gridLineColor)
+                .testTag("grid_am_indicator"),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = "AM",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = metrics.scaledSp(10),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = MaterialTheme.colorScheme.primary
+              )
+            }
+
+            // PM Group Box (12:00 LUNCH row to 5:00 row)
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(pmSectionHeight)
+                .border(width = 0.5.dp, color = gridLineColor)
+                .testTag("grid_pm_indicator"),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = "PM",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = metrics.scaledSp(10),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = MaterialTheme.colorScheme.secondary
+              )
+            }
+          }
+
+          // Hour labels column (7:00 down to 5:00, with shorter 12:00 row)
+          Column(
+            modifier = Modifier
+              .width(hourLabelColumnWidth)
+              .fillMaxHeight()
+              .background(creamSurface)
+          ) {
+            allHourLabels.forEach { hourText ->
+              val isLunchRow = hourText == "12:00"
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(if (isLunchRow) lunchRowHeight else hourHeight)
+                  .background(
+                    if (isLunchRow) {
+                      lunchPurpleColor.copy(alpha = 0.14f)
+                    } else {
+                      Color.Transparent
+                    }
+                  )
+                  .border(width = 0.5.dp, color = gridLineColor)
+                  .padding(
+                    top = if (isLunchRow) 0.dp else 4.dp,
+                    end = 4.dp
+                  ),
+                contentAlignment = if (isLunchRow) Alignment.CenterEnd else Alignment.TopEnd
+              ) {
+                Text(
+                  text = hourText,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = metrics.scaledSp(10),
+                    fontWeight = if (isLunchRow) FontWeight.ExtraBold else FontWeight.Bold
+                  ),
+                  color = if (isLunchRow) {
+                    lunchPurpleColor
+                  } else {
+                    MaterialTheme.colorScheme.onSurface
+                  },
+                  maxLines = 1
+                )
+              }
+            }
+          }
+
+          // 6 Day Columns (MON, TUE, WED, THU, FRI, SAT) + Full-Width 12:00 PM "LUNCH" Divider
+          Box(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxHeight()
+          ) {
+            Row(modifier = Modifier.fillMaxSize()) {
+              ScheduleWeekDay.entries.forEach { day ->
+                val daySchedules = remember(schedules, day) {
+                  schedules
+                    .filter { sched -> sched.days.any { token -> day.matchesToken(token) } }
+                    .sortedBy { sched -> parseTimeToFloat(sched.startTime) }
+                }
+
+                Box(
+                  modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(ivoryCellSurface)
+                    .testTag("grid_day_column_${day.shortLabel.lowercase(Locale.US)}")
+                ) {
+                  // Background hourly grid cells for this day column (with shorter 12:00 row)
+                  Column(modifier = Modifier.fillMaxSize()) {
+                    allHourLabels.forEach { hourText ->
+                      val isLunchRow = hourText == "12:00"
+                      Box(
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .height(if (isLunchRow) lunchRowHeight else hourHeight)
+                          .border(width = 0.5.dp, color = gridLineColor)
+                      )
+                    }
+                  }
+
+                  // Box overlay for class blocks positioned via parseTimeToFloat(startTime / endTime)
+                  daySchedules.forEach { classInfo ->
+                    val startFloat = parseTimeToFloat(classInfo.startTime).coerceIn(7.0f, 17.5f)
+                    val parsedEndFloat = parseTimeToFloat(classInfo.endTime)
+                    val endFloat = (if (parsedEndFloat > startFloat) parsedEndFloat else startFloat + 1.0f)
+                      .coerceIn(startFloat + 0.5f, 18.0f)
+
+                    val rawTopOffset = hourHeight * (startFloat - 7.0f)
+                    val topOffset = when {
+                      startFloat >= 13.0f -> rawTopOffset - (hourHeight - lunchRowHeight)
+                      startFloat > 12.0f -> amSectionHeight + lunchRowHeight * (startFloat - 12.0f)
+                      else -> rawTopOffset
+                    }.coerceAtLeast(0.dp)
+
+                    val cardHeight = (hourHeight * (endFloat - startFloat))
+                      .coerceAtLeast(metrics.scaledDp(26))
+                    val blockColor = Color(classInfo.colorHex)
+
+                    // High-contrast text color calculation based on block background luminance
+                    val blockLuminance =
+                      0.299f * blockColor.red + 0.587f * blockColor.green + 0.114f * blockColor.blue
+                    val primaryTextColor =
+                      if (blockLuminance > 0.62f) Color(0xFF1C1B1F) else Color.White
+                    val secondaryTextColor =
+                      if (blockLuminance > 0.62f) {
+                        Color(0xFF1C1B1F).copy(alpha = 0.88f)
+                      } else {
+                        Color.White.copy(alpha = 0.94f)
+                      }
+
+                    Surface(
+                      onClick = { onSelectWeekDay(day) },
+                      shape = RoundedCornerShape(8.dp),
+                      color = blockColor,
+                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
+                      shadowElevation = 4.dp,
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 2.dp, vertical = 1.dp)
+                        .offset(y = topOffset)
+                        .height(cardHeight)
+                        .testTag("grid_class_block_${day.shortLabel.lowercase(Locale.US)}_${classInfo.id}")
+                    ) {
+                      Column(
+                        modifier = Modifier
+                          .fillMaxSize()
+                          .padding(4.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                      ) {
+                        // 1. Subject Name (Bold, centered, maxLines = 2, ellipsis)
+                        Text(
+                          text = classInfo.subjectName,
+                          style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = metrics.scaledSp(9),
+                            lineHeight = metrics.scaledSp(10),
+                            fontWeight = FontWeight.Bold
+                          ),
+                          color = primaryTextColor,
+                          textAlign = TextAlign.Center,
+                          maxLines = 2,
+                          overflow = TextOverflow.Ellipsis,
+                          modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // 2. Room Assignment (Standard font, centered, maxLines = 1, ellipsis)
+                        if (classInfo.room.isNotBlank()) {
+                          Spacer(modifier = Modifier.height(1.dp))
+                          Text(
+                            text = classInfo.room,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                              fontSize = metrics.scaledSp(8),
+                              lineHeight = metrics.scaledSp(9),
+                              fontWeight = FontWeight.Normal
+                            ),
+                            color = secondaryTextColor,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
+                          )
+                        }
+
+                        // 3. Time Duration (Directly displays the raw string inputted by the user)
+                        Spacer(modifier = Modifier.height(1.dp))
+                        Text(
+                          text = classInfo.timeRange,
+                          style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = metrics.scaledSp(7),
+                            lineHeight = metrics.scaledSp(8),
+                            fontWeight = FontWeight.Normal
+                          ),
+                          color = secondaryTextColor,
+                          textAlign = TextAlign.Center,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis,
+                          modifier = Modifier.fillMaxWidth()
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // Custom "LUNCH" Horizontal Divider Block at 12:00 PM spanning across all day columns
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(lunchRowHeight)
+                .offset(y = amSectionHeight)
+                .background(lunchPurpleColor)
+                .border(width = 1.dp, color = Color.White.copy(alpha = 0.35f))
+                .testTag("schedule_grid_noon_divider"),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = "LUNCH",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = metrics.scaledSp(11),
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 2.sp
+                ),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                maxLines = 1
+              )
+            }
+          }
+        }
       }
     }
   }
@@ -2889,6 +4579,7 @@ fun ClassTimetableScheduleScreen(
 private fun ColoredClassScheduleCard(
   schedule: ClassSchedule,
   metrics: ResponsiveMetrics,
+  onEdit: () -> Unit = {},
   onDelete: () -> Unit
 ) {
   val cardAccentColor = Color(schedule.colorHex)
@@ -2927,7 +4618,7 @@ private fun ColoredClassScheduleCard(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
       ) {
-        // Top Row: Day Pills + Delete Icon
+        // Top Row: Day Pills + Edit (Pen) Icon + Delete (Trash) Icon
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.SpaceBetween,
@@ -2957,18 +4648,37 @@ private fun ColoredClassScheduleCard(
             }
           }
 
-          IconButton(
-            onClick = onDelete,
-            modifier = Modifier
-              .size(36.dp)
-              .testTag("delete_schedule_button_${schedule.id}")
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
           ) {
-            Icon(
-              imageVector = Icons.Outlined.DeleteOutline,
-              contentDescription = "Remove ${schedule.subjectName}",
-              tint = Color.White.copy(alpha = 0.9f),
-              modifier = Modifier.size(20.dp)
-            )
+            IconButton(
+              onClick = onEdit,
+              modifier = Modifier
+                .size(36.dp)
+                .testTag("edit_schedule_button_${schedule.id}")
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Edit,
+                contentDescription = "Edit ${schedule.subjectName}",
+                tint = Color.White.copy(alpha = 0.92f),
+                modifier = Modifier.size(20.dp)
+              )
+            }
+
+            IconButton(
+              onClick = onDelete,
+              modifier = Modifier
+                .size(36.dp)
+                .testTag("delete_schedule_button_${schedule.id}")
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.DeleteOutline,
+                contentDescription = "Remove ${schedule.subjectName}",
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(20.dp)
+              )
+            }
           }
         }
 
@@ -3060,20 +4770,66 @@ private fun ColoredClassScheduleCard(
 }
 
 /**
- * Manual Entry Dialog opened by the Schedule screen's Floating Action Button (FAB).
- * Allows typing Subject Name, Room, Time, and selecting Days of the week via checkboxes.
+ * Polished Manual Entry `Dialog` opened by the Schedule screen's "+" Floating Action Button (FAB).
+ * Styled with the warm cream card palette (`#FFFBF0` in light mode) and includes:
+ * - Title: "Add Class Schedule"
+ * - `OutlinedTextField` for "Subject Name" (e.g., "Reinforced Concrete Design")
+ * - `OutlinedTextField` for "Room" (e.g., "ENG. 307")
+ * - Structured "Start Time" + AM/PM toggle buttons and "End Time" + AM/PM toggle buttons
+ * - A row of selectable circular Day toggles (`M`, `T`, `W`, `Th`, `F`, `S`)
+ * - "Cancel" and "Save" buttons
  */
 @Composable
 private fun AddClassScheduleDialog(
+  initialDay: ScheduleWeekDay = resolveInitialScheduleWeekDay(),
+  editingSchedule: ClassSchedule? = null,
   onDismiss: () -> Unit,
   onSaveSchedule: (String, String, List<String>, String, Long) -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
-  var subjectName by rememberSaveable { mutableStateOf("") }
-  var timeRange by rememberSaveable { mutableStateOf("") }
-  var roomAssignment by rememberSaveable { mutableStateOf("") }
+  val isEditMode = editingSchedule != null
+  val prefilledTimeInputs = remember(editingSchedule) {
+    editingSchedule?.let { parseTimeRangeToStructuredInputs(it.timeRange) }
+  }
 
-  val selectedDayCodes = remember { mutableStateListOf("M", "Tue") }
+  var subjectName by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(editingSchedule?.subjectName ?: "")
+  }
+  var roomAssignment by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(editingSchedule?.room ?: "")
+  }
+  var startTimeInput by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(prefilledTimeInputs?.startTime ?: "")
+  }
+  var startMeridiem by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(prefilledTimeInputs?.startMeridiem ?: "AM")
+  }
+  var endTimeInput by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(prefilledTimeInputs?.endTime ?: "")
+  }
+  var endMeridiem by rememberSaveable(editingSchedule?.id) {
+    mutableStateOf(prefilledTimeInputs?.endMeridiem ?: "AM")
+  }
+
+  val selectedDayCodes = remember(editingSchedule?.id) {
+    if (editingSchedule != null) {
+      val matchedCodes = ScheduleWeekDay.entries
+        .filter { weekDay -> editingSchedule.days.any { token -> weekDay.matchesToken(token) } }
+        .map { it.dayCode }
+        .ifEmpty { editingSchedule.days }
+      mutableStateListOf(*matchedCodes.toTypedArray())
+    } else {
+      val todayCode = resolveTodayCorDayAbbreviation()
+      val defaultCodes = buildList {
+        add(initialDay.dayCode)
+        if (todayCode != "Sun" && !contains(todayCode)) {
+          add(todayCode)
+        }
+      }
+      mutableStateListOf(*defaultCodes.toTypedArray())
+    }
+  }
+
   val availableColors = remember {
     listOf(
       0xFF5C6BC0L, // Light Indigo
@@ -3086,33 +4842,54 @@ private fun AddClassScheduleDialog(
       0xFFD97706L  // Amber
     )
   }
-  var selectedColorHex by rememberSaveable { mutableLongStateOf(availableColors.first()) }
+  var selectedColorHex by rememberSaveable(editingSchedule?.id) {
+    mutableLongStateOf(editingSchedule?.colorHex ?: availableColors.first())
+  }
 
-  AlertDialog(
+  val dialogSurfaceColor = dashboardCreamCardColor()
+  val chipUnselectedColor = dashboardIvoryInnerColor()
+
+  Dialog(
     onDismissRequest = onDismiss,
-    modifier = Modifier.testTag("add_schedule_dialog"),
-    shape = RoundedCornerShape(24.dp),
-    containerColor = MaterialTheme.colorScheme.surface,
-    title = {
-      Text(
-        text = stringResource(R.string.add_schedule_dialog_title),
-        style = MaterialTheme.typography.headlineMedium.copy(
-          fontSize = metrics.scaledSp(20),
-          fontWeight = FontWeight.Bold
-        ),
-        color = MaterialTheme.colorScheme.onSurface,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-      )
-    },
-    text = {
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Card(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = metrics.scaledDp(20))
+        .widthIn(max = 480.dp)
+        .testTag("add_schedule_dialog"),
+      shape = RoundedCornerShape(28.dp),
+      colors = CardDefaults.cardColors(
+        containerColor = dialogSurfaceColor
+      ),
+      elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+    ) {
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          .padding(top = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          .padding(metrics.scaledDp(22)),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
       ) {
+        // Dialog Header Title: "Edit Class Schedule" in edit mode, or "Add Class Schedule" in add mode
+        Text(
+          text = if (isEditMode) {
+            stringResource(R.string.edit_schedule_dialog_title)
+          } else {
+            stringResource(R.string.add_schedule_dialog_title)
+          },
+          style = MaterialTheme.typography.headlineMedium.copy(
+            fontSize = metrics.scaledSp(22),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.testTag("schedule_dialog_title")
+        )
+
+        // 1. OutlinedTextField for "Subject Name" (e.g., "Reinforced Concrete Design")
         OutlinedTextField(
           value = subjectName,
           onValueChange = { subjectName = it },
@@ -3139,6 +4916,11 @@ private fun AddClassScheduleDialog(
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+            cursorColor = MaterialTheme.colorScheme.primary
+          ),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Next
@@ -3148,41 +4930,7 @@ private fun AddClassScheduleDialog(
             .testTag("new_schedule_subject_input")
         )
 
-        OutlinedTextField(
-          value = timeRange,
-          onValueChange = { timeRange = it },
-          label = {
-            Text(
-              text = stringResource(R.string.schedule_time_label),
-              style = MaterialTheme.typography.bodyMedium,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          placeholder = {
-            Text(
-              text = stringResource(R.string.schedule_time_placeholder),
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = metrics.scaledSp(15),
-            color = MaterialTheme.colorScheme.onSurface
-          ),
-          singleLine = true,
-          shape = RoundedCornerShape(16.dp),
-          keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.Characters,
-            imeAction = ImeAction.Next
-          ),
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("new_schedule_time_input")
-        )
-
+        // 2. OutlinedTextField for "Room" (e.g., "ENG. 307")
         OutlinedTextField(
           value = roomAssignment,
           onValueChange = { roomAssignment = it },
@@ -3203,90 +4951,246 @@ private fun AddClassScheduleDialog(
               overflow = TextOverflow.Ellipsis
             )
           },
+          leadingIcon = {
+            Icon(
+              imageVector = Icons.Outlined.LocationOn,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(20.dp)
+            )
+          },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
             color = MaterialTheme.colorScheme.onSurface
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+            cursorColor = MaterialTheme.colorScheme.primary
+          ),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Characters,
-            imeAction = ImeAction.Done
+            imeAction = ImeAction.Next
           ),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("new_schedule_room_input")
         )
 
-        Text(
-          text = stringResource(R.string.select_days_label),
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(14),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onSurface
-        )
+        // 3. Structured Start Time + AM/PM Toggle
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          OutlinedTextField(
+            value = startTimeInput,
+            onValueChange = { newValue ->
+              startTimeInput = newValue
+              inferAcademicMeridiem(newValue)?.let { startMeridiem = it }
+            },
+            label = {
+              Text(
+                text = stringResource(R.string.start_time_label),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            },
+            placeholder = {
+              Text(
+                text = stringResource(R.string.start_time_placeholder),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            },
+            leadingIcon = {
+              Icon(
+                imageVector = Icons.Outlined.Schedule,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+              )
+            },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+              fontSize = metrics.scaledSp(15),
+              color = MaterialTheme.colorScheme.onSurface
+            ),
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+              cursorColor = MaterialTheme.colorScheme.primary
+            ),
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Text,
+              imeAction = ImeAction.Next
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("new_schedule_start_time_input")
+          )
 
-        // Checkboxes for Days of the Week (2 rows of 3 for clean responsive fit)
+          AmPmSegmentedToggle(
+            selectedMeridiem = startMeridiem,
+            onSelectMeridiem = { startMeridiem = it },
+            amTestTag = "start_time_am_toggle",
+            pmTestTag = "start_time_pm_toggle",
+            metrics = metrics
+          )
+        }
+
+        // 4. Structured End Time + AM/PM Toggle
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          OutlinedTextField(
+            value = endTimeInput,
+            onValueChange = { newValue ->
+              endTimeInput = newValue
+              inferAcademicMeridiem(newValue)?.let { endMeridiem = it }
+            },
+            label = {
+              Text(
+                text = stringResource(R.string.end_time_label),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            },
+            placeholder = {
+              Text(
+                text = stringResource(R.string.end_time_placeholder),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            },
+            leadingIcon = {
+              Icon(
+                imageVector = Icons.Outlined.Schedule,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+              )
+            },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+              fontSize = metrics.scaledSp(15),
+              color = MaterialTheme.colorScheme.onSurface
+            ),
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+              cursorColor = MaterialTheme.colorScheme.primary
+            ),
+            keyboardOptions = KeyboardOptions(
+              keyboardType = KeyboardType.Text,
+              imeAction = ImeAction.Done
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("new_schedule_end_time_input")
+          )
+
+          AmPmSegmentedToggle(
+            selectedMeridiem = endMeridiem,
+            onSelectMeridiem = { endMeridiem = it },
+            amTestTag = "end_time_am_toggle",
+            pmTestTag = "end_time_pm_toggle",
+            metrics = metrics
+          )
+        }
+
+        // 5. Selectable Circular Day Toggles Row (M, T, W, Th, F, S)
         Column(
           modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(4.dp)
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
         ) {
-          ScheduleWeekDay.entries.chunked(3).forEach { rowDays ->
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(4.dp),
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              rowDays.forEach { day ->
-                val isChecked = selectedDayCodes.contains(day.dayCode)
-                Row(
-                  modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable {
-                      if (isChecked) {
-                        selectedDayCodes.remove(day.dayCode)
-                      } else {
-                        selectedDayCodes.add(day.dayCode)
-                      }
+          Text(
+            text = stringResource(R.string.select_days_label),
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(14),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("schedule_day_chips_row"),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            ScheduleWeekDay.entries.forEach { day ->
+              val isSelected = selectedDayCodes.any { day.matchesToken(it) }
+              Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center
+              ) {
+                Surface(
+                  onClick = {
+                    if (isSelected) {
+                      selectedDayCodes.removeAll { day.matchesToken(it) }
+                    } else {
+                      selectedDayCodes.add(day.dayCode)
                     }
-                    .padding(vertical = 4.dp),
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  Checkbox(
-                    checked = isChecked,
-                    onCheckedChange = { checked ->
-                      if (checked) {
-                        if (!selectedDayCodes.contains(day.dayCode)) {
-                          selectedDayCodes.add(day.dayCode)
-                        }
+                  },
+                  shape = CircleShape,
+                  color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    chipUnselectedColor
+                  },
+                  shadowElevation = if (isSelected) 6.dp else 2.dp,
+                  modifier = Modifier
+                    .size(44.dp)
+                    .border(
+                      width = if (isSelected) 0.dp else 1.dp,
+                      color = if (isSelected) {
+                        Color.Transparent
                       } else {
-                        selectedDayCodes.remove(day.dayCode)
-                      }
-                    },
-                    modifier = Modifier
-                      .size(24.dp)
-                      .testTag("schedule_day_checkbox_${day.shortLabel.lowercase()}")
-                  )
-                  Spacer(modifier = Modifier.width(4.dp))
-                  Text(
-                    text = day.shortLabel,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontSize = metrics.scaledSp(13),
-                      fontWeight = FontWeight.SemiBold
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
+                        MaterialTheme.colorScheme.surfaceVariant
+                      },
+                      shape = CircleShape
+                    )
+                    .testTag("schedule_day_chip_${day.chipLabel.lowercase()}")
+                ) {
+                  Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    Text(
+                      text = day.chipLabel,
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontSize = metrics.scaledSp(13),
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                      } else {
+                        MaterialTheme.colorScheme.onSurface
+                      },
+                      maxLines = 1
+                    )
+                  }
                 }
               }
             }
           }
         }
 
-        // Card Color Picker Row
+        // 6. Card Accent Color Picker Row
         Row(
           modifier = Modifier
             .fillMaxWidth()
@@ -3324,57 +5228,138 @@ private fun AddClassScheduleDialog(
             }
           }
         }
-      }
-    },
-    confirmButton = {
-      Button(
-        onClick = {
-          onSaveSchedule(
-            subjectName,
-            timeRange,
-            selectedDayCodes.toList(),
-            roomAssignment,
-            selectedColorHex
-          )
-        },
-        enabled = subjectName.isNotBlank(),
-        shape = CircleShape,
-        modifier = Modifier
-          .height(48.dp)
-          .testTag("confirm_save_schedule_button")
-      ) {
-        Text(
-          text = stringResource(R.string.save_schedule_button),
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(15),
-            fontWeight = FontWeight.Bold
-          ),
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
-        )
-      }
-    },
-    dismissButton = {
-      TextButton(
-        onClick = onDismiss,
-        shape = CircleShape,
-        modifier = Modifier
-          .height(48.dp)
-          .testTag("cancel_save_schedule_button")
-      ) {
-        Text(
-          text = stringResource(R.string.cancel_button),
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(15),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
-        )
+
+        // 7. Action Buttons: "Cancel" and "Save"
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+          horizontalArrangement = Arrangement.End,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          TextButton(
+            onClick = onDismiss,
+            shape = CircleShape,
+            modifier = Modifier
+              .height(48.dp)
+              .testTag("cancel_save_schedule_button")
+          ) {
+            Text(
+              text = stringResource(R.string.cancel_button),
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Spacer(modifier = Modifier.width(8.dp))
+
+          Button(
+            onClick = {
+              val formattedRange = formatStructuredTimeRange(
+                startInput = startTimeInput,
+                startMeridiem = startMeridiem,
+                endInput = endTimeInput,
+                endMeridiem = endMeridiem
+              )
+              onSaveSchedule(
+                subjectName,
+                formattedRange,
+                selectedDayCodes.toList(),
+                roomAssignment,
+                selectedColorHex
+              )
+            },
+            enabled = subjectName.isNotBlank(),
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
+            ),
+            modifier = Modifier
+              .height(48.dp)
+              .testTag("confirm_save_schedule_button")
+          ) {
+            Text(
+              text = stringResource(R.string.save_schedule_button),
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.Bold
+              ),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(horizontal = 10.dp)
+            )
+          }
+        }
       }
     }
-  )
+  }
+}
+
+/**
+ * Compact AM / PM toggle buttons paired with the Start Time and End Time inputs.
+ */
+@Composable
+private fun AmPmSegmentedToggle(
+  selectedMeridiem: String,
+  onSelectMeridiem: (String) -> Unit,
+  amTestTag: String,
+  pmTestTag: String,
+  metrics: ResponsiveMetrics
+) {
+  Surface(
+    shape = RoundedCornerShape(14.dp),
+    color = dashboardIvoryInnerColor(),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+    modifier = Modifier.height(52.dp)
+  ) {
+    Row(
+      modifier = Modifier.padding(3.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+      listOf("AM" to amTestTag, "PM" to pmTestTag).forEach { (label, tag) ->
+        val isSelected = selectedMeridiem.equals(label, ignoreCase = true)
+        Surface(
+          onClick = { onSelectMeridiem(label) },
+          shape = RoundedCornerShape(11.dp),
+          color = if (isSelected) {
+            MaterialTheme.colorScheme.primary
+          } else {
+            Color.Transparent
+          },
+          modifier = Modifier
+            .fillMaxHeight()
+            .width(metrics.scaledDp(42))
+            .testTag(tag)
+        ) {
+          Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+          ) {
+            Text(
+              text = label,
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
+              ),
+              color = if (isSelected) {
+                MaterialTheme.colorScheme.onPrimary
+              } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+              },
+              maxLines = 1
+            )
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
