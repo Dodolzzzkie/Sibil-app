@@ -13,11 +13,12 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    // Note: For standalone Sibil APK releases, keep applicationId fixed (e.g., "com.sibil.ceapp") across all builds.
     applicationId = "com.aistudio.civildesk.ceprod"
     minSdk = 24
     targetSdk = 36
     versionCode = 2
-    versionName = "1.1"
+    versionName = "1.0.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

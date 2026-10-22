@@ -1,15 +1,52 @@
+/*
+ * =================================================================================================
+ * SIBIL APP — IN-PLACE APK UPDATE & ZERO DATA LOSS BUILD SPECIFICATION
+ * =================================================================================================
+ * To guarantee seamless in-place APK updates over existing installations without wiping
+ * SharedPreferences (Tasks, Schedules, Alarms, Flashcards, and User Profiles):
+ *
+ * 1. Android Gradle Configuration (`app/build.gradle.kts`):
+ *    android {
+ *        defaultConfig {
+ *            applicationId = "com.sibil.ceapp" // MUST remain fixed across all builds
+ *            versionCode = 2                   // MUST be incremented with each release (1 -> 2 -> 3...)
+ *            versionName = "1.0.1"
+ *        }
+ *    }
+ *    (Ensure all APKs are signed with the same keystore so Android allows in-place upgrades.)
+ *
+ * 2. Android Manifest Configuration (`app/src/main/AndroidManifest.xml`):
+ *    <application
+ *        android:allowBackup="true"
+ *        android:hasFragileUserData="true"
+ *        ... >
+ *    (`android:hasFragileUserData="true"` prompts Android 10+ users to keep their app data
+ *    even if they manually uninstall the app before installing a newer APK.)
+ * =================================================================================================
+ */
 package com.example
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.OpenableColumns
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -19,7 +56,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -40,6 +81,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
@@ -78,12 +121,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -191,7 +236,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -200,6 +248,8 @@ import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.Typography
+import android.util.Base64
+import java.net.HttpURLConnection
 import java.net.URL
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -216,6 +266,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+private const val DEVELOPER_GEMINI_API_KEY = "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew"
+const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.1 (Build 2)"
+
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
 private const val DEFAULT_FALLBACK_LONGITUDE = 124.03
 
@@ -226,7 +279,9 @@ private val WarmCreamTrackColor = Color(0xFFE6DFCF)
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    WindowCompat.setDecorFitsSystemWindows(window, false)
     enableEdgeToEdge()
+    createTimerNotificationChannel(this)
     setContent {
       CivilEngineeringProductivityApp()
     }
@@ -383,6 +438,183 @@ data class ExtraToolItem(
 )
 
 /**
+ * Smart Flashcard Data Models for Active-Recall Civil Engineering Study.
+ */
+data class FlashcardItem(
+  val id: Int,
+  val question: String,
+  val answer: String,
+  val category: String,
+  var masteryLevel: String = "New"
+)
+
+data class FlashcardDeck(
+  val id: Int,
+  val title: String,
+  val subjectTag: String,
+  val cards: List<FlashcardItem>
+)
+
+/**
+ * Resolves the effective Gemini API key directly from `DEVELOPER_GEMINI_API_KEY`.
+ */
+fun resolveActiveGeminiApiKey(savedPrefsKey: String? = null): String {
+  return DEVELOPER_GEMINI_API_KEY.trim()
+}
+
+/**
+ * Reads a `.pdf` document from [uri], encodes the bytes to Base64 using `android.util.Base64.NO_WRAP`,
+ * sends an HTTP POST request via `java.net.HttpURLConnection` to the Google Gemini API
+ * (`generateContent`) using [DEVELOPER_GEMINI_API_KEY], and parses the returned JSON array of
+ * `question` / `answer` flashcards using `org.json.JSONObject` and `org.json.JSONArray`.
+ */
+suspend fun extractFlashcardsFromPdfWithGemini(
+  context: Context,
+  uri: Uri,
+  apiKey: String = DEVELOPER_GEMINI_API_KEY,
+  onStatusUpdate: (String) -> Unit
+): List<Pair<String, String>> {
+  val cleanKey = apiKey.trim()
+  if (
+    cleanKey.isBlank() ||
+    cleanKey.equals("YOUR_GEMINI_API_KEY", ignoreCase = true) ||
+    cleanKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)
+  ) {
+    throw IllegalStateException("Missing Gemini API key")
+  }
+
+  onStatusUpdate("Reading PDF document...")
+  val pdfBytes = withContext(Dispatchers.IO) {
+    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+  }
+  if (pdfBytes == null || pdfBytes.isEmpty()) {
+    throw IllegalArgumentException("Unable to read PDF bytes")
+  }
+
+  onStatusUpdate("Engr. Sibil is generating flashcards...")
+  return withContext(Dispatchers.IO) {
+    val base64Pdf = Base64.encodeToString(pdfBytes, Base64.NO_WRAP)
+    val promptText =
+      "Extract 5 to 8 core Civil Engineering study flashcards from this document. " +
+        "Respond strictly with a raw JSON array containing objects with 'question' and 'answer' fields. " +
+        "Do not include markdown codeblocks or explanation."
+
+    val inlineDataObj = JSONObject().apply {
+      put("mime_type", "application/pdf")
+      put("data", base64Pdf)
+    }
+    val partsArray = JSONArray().apply {
+      put(JSONObject().put("inline_data", inlineDataObj))
+      put(JSONObject().put("text", promptText))
+    }
+    val contentsArray = JSONArray().apply {
+      put(JSONObject().put("parts", partsArray))
+    }
+    val requestBodyJson = JSONObject().apply {
+      put("contents", contentsArray)
+    }.toString()
+
+    // Route PDF extraction HTTP POST requests directly using DEVELOPER_GEMINI_API_KEY
+    val modelEndpoints = listOf(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=$cleanKey",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$cleanKey"
+    )
+
+    var responseText: String? = null
+    var lastException: Exception? = null
+
+    for (endpointUrl in modelEndpoints) {
+      var connection: HttpURLConnection? = null
+      try {
+        val url = URL(endpointUrl)
+        connection = (url.openConnection() as HttpURLConnection).apply {
+          requestMethod = "POST"
+          connectTimeout = 25000
+          readTimeout = 45000
+          doInput = true
+          doOutput = true
+          setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+        }
+        connection.outputStream.use { output ->
+          output.write(requestBodyJson.toByteArray(Charsets.UTF_8))
+          output.flush()
+        }
+
+        val statusCode = connection.responseCode
+        if (statusCode in 200..299) {
+          responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+          break
+        } else {
+          val errBody = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+          lastException = IllegalStateException("HTTP $statusCode: $errBody")
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        lastException = e
+      } finally {
+        connection?.disconnect()
+      }
+    }
+
+    val rawResponse = responseText ?: throw (lastException ?: IllegalStateException("Network request failed"))
+
+    val rootResponseObj = JSONObject(rawResponse)
+    val candidates = rootResponseObj.optJSONArray("candidates")
+      ?: throw IllegalStateException("No candidates in Gemini response")
+    if (candidates.length() == 0) {
+      throw IllegalStateException("Empty candidates in Gemini response")
+    }
+
+    val firstCandidate = candidates.getJSONObject(0)
+    val contentObj = firstCandidate.optJSONObject("content")
+      ?: throw IllegalStateException("Missing content in Gemini response")
+    val responseParts = contentObj.optJSONArray("parts")
+      ?: throw IllegalStateException("Missing parts in Gemini response")
+
+    val combinedTextBuilder = StringBuilder()
+    for (i in 0 until responseParts.length()) {
+      val partObj = responseParts.optJSONObject(i) ?: continue
+      val textSegment = partObj.optString("text", "")
+      if (textSegment.isNotBlank()) {
+        combinedTextBuilder.append(textSegment)
+      }
+    }
+
+    var cleanedJsonText = combinedTextBuilder.toString().trim()
+    if (cleanedJsonText.startsWith("```")) {
+      cleanedJsonText = cleanedJsonText
+        .removePrefix("```json")
+        .removePrefix("```JSON")
+        .removePrefix("```")
+        .removeSuffix("```")
+        .trim()
+    }
+    val startBracket = cleanedJsonText.indexOf('[')
+    val endBracket = cleanedJsonText.lastIndexOf(']')
+    if (startBracket != -1 && endBracket != -1 && endBracket > startBracket) {
+      cleanedJsonText = cleanedJsonText.substring(startBracket, endBracket + 1)
+    }
+
+    val flashcardsArray = JSONArray(cleanedJsonText)
+    val extractedList = mutableListOf<Pair<String, String>>()
+    for (i in 0 until flashcardsArray.length()) {
+      val itemObj = flashcardsArray.optJSONObject(i) ?: continue
+      val question = itemObj.optString("question", "").trim()
+      val answer = itemObj.optString("answer", "").trim()
+      if (question.isNotEmpty() && answer.isNotEmpty()) {
+        extractedList.add(question to answer)
+      }
+    }
+
+    if (extractedList.isEmpty()) {
+      throw IllegalStateException("No flashcards extracted from PDF")
+    }
+    extractedList
+  }
+}
+
+/**
  * Result of validating user credentials against the `SharedPreferences` mock backend.
  */
 enum class LoginValidationResult {
@@ -406,8 +638,11 @@ fun isValidUsername(username: String): Boolean {
  * 1. Registered user accounts (`username` -> `password` map).
  * 2. Account-segregated `Task` lists (`tasks_[username]` or `tasks_guest`).
  * 3. Account-segregated `ClassSchedule` lists (`schedules_[username]` or `schedules_guest`).
- * 4. Active user session (`username`) and `isDarkMode`.
- * 5. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
+ * 4. Account-segregated `AlarmItem` lists (`alarms_[username]` or `alarms_guest`).
+ * 5. Account-segregated `FlashcardDeck` lists (`flashcards_[username]` or `flashcards_guest`),
+ *    automatically seeding default CE demo decks if storage is empty.
+ * 6. Active user session (`username`) and `isDarkMode`.
+ * 7. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
  */
 class LocalStorageManager(context: Context) {
   private val prefs: SharedPreferences =
@@ -415,6 +650,51 @@ class LocalStorageManager(context: Context) {
 
   init {
     migrateTaskSchemaIfNeeded()
+    clearLegacyPlaceholderFlashcardDecksIfNeeded()
+  }
+
+  /**
+   * One-time migration that removes previously seeded hardcoded demo flashcard decks
+   * (NSCP 2015 Provisions & Covers, Fluid Mechanics & Hydraulics, Geotechnical / Soil Mechanics)
+   * so the flashcard deck list starts completely empty unless the user created or imported decks.
+   */
+  private fun clearLegacyPlaceholderFlashcardDecksIfNeeded() {
+    val savedFlashcardSchemaVersion = prefs.getInt(KEY_FLASHCARD_SCHEMA_VERSION, 1)
+    if (savedFlashcardSchemaVersion >= CURRENT_FLASHCARD_SCHEMA_VERSION) return
+
+    val legacyPlaceholderDeckTitles = setOf(
+      "NSCP 2015 Provisions & Covers",
+      "Fluid Mechanics & Hydraulics",
+      "Geotechnical / Soil Mechanics"
+    )
+
+    val editor = prefs.edit()
+    val allEntries = prefs.all
+    for ((key, value) in allEntries) {
+      if (!key.startsWith(KEY_FLASHCARDS_PREFIX)) continue
+      val rawJson = value as? String
+      if (rawJson.isNullOrBlank()) {
+        editor.remove(key)
+        continue
+      }
+      try {
+        val jsonArray = JSONArray(rawJson)
+        val filteredArray = JSONArray()
+        for (i in 0 until jsonArray.length()) {
+          val obj = jsonArray.optJSONObject(i) ?: continue
+          val title = obj.optString("title", "").trim()
+          if (title in legacyPlaceholderDeckTitles) {
+            continue
+          }
+          filteredArray.put(obj)
+        }
+        editor.putString(key, filteredArray.toString())
+      } catch (_: Exception) {
+        editor.remove(key)
+      }
+    }
+    editor.putInt(KEY_FLASHCARD_SCHEMA_VERSION, CURRENT_FLASHCARD_SCHEMA_VERSION)
+    editor.apply()
   }
 
   /**
@@ -498,11 +778,17 @@ class LocalStorageManager(context: Context) {
     return "${KEY_ALARMS_PREFIX}${normalizeAccountKey(username)}"
   }
 
+  private fun flashcardDecksKeyFor(username: String): String {
+    return "${KEY_FLASHCARDS_PREFIX}${normalizeAccountKey(username)}"
+  }
+
   /**
    * Returns all registered users stored in `SharedPreferences` (normalized lowercase username -> password).
+   * Uses safe string default `""` and fallback parsing.
    */
   fun getRegisteredUsers(): Map<String, String> {
-    val rawJson = prefs.getString(KEY_REGISTERED_USERS, null) ?: return emptyMap()
+    val rawJson = prefs.getString(KEY_REGISTERED_USERS, "")?.trim().orEmpty()
+    if (rawJson.isEmpty()) return emptyMap()
     return try {
       val jsonObject = JSONObject(rawJson)
       val map = mutableMapOf<String, String>()
@@ -567,31 +853,34 @@ class LocalStorageManager(context: Context) {
   fun loadTasks(username: String = GUEST_ACCOUNT_KEY): List<Task>? {
     val storageKey = tasksKeyFor(username)
     if (!prefs.contains(storageKey)) return null
-    val rawJson = prefs.getString(storageKey, null) ?: return null
+    val rawJson = prefs.getString(storageKey, "")?.trim().orEmpty()
+    if (rawJson.isEmpty()) return emptyList()
     return try {
       val jsonArray = JSONArray(rawJson)
       val loaded = mutableListOf<Task>()
       for (i in 0 until jsonArray.length()) {
-        val obj = jsonArray.optJSONObject(i) ?: continue
-        val title = obj.optString("title", "").trim()
-        if (title.isEmpty()) continue
-        val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
-          .trim()
-          .ifEmpty { DEFAULT_TASK_CATEGORY }
-        loaded.add(
-          Task(
-            id = obj.optInt("id", i + 1),
-            title = title,
-            dueDate = obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" },
-            isCompleted = obj.optBoolean("isCompleted", false),
-            subjectCategory = category
+        try {
+          val obj = jsonArray.optJSONObject(i) ?: continue
+          val title = obj.optString("title", "").trim()
+          if (title.isEmpty()) continue
+          val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
+            .trim()
+            .ifEmpty { DEFAULT_TASK_CATEGORY }
+          loaded.add(
+            Task(
+              id = obj.optInt("id", i + 1),
+              title = title,
+              dueDate = obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" },
+              isCompleted = obj.optBoolean("isCompleted", false),
+              subjectCategory = category
+            )
           )
-        )
+        } catch (_: Exception) {
+          continue
+        }
       }
       loaded
     } catch (_: Exception) {
-      // Safely clear corrupted or incompatible task entries so JSON parsing never crashes
-      prefs.edit().remove(storageKey).apply()
       emptyList()
     }
   }
@@ -619,40 +908,45 @@ class LocalStorageManager(context: Context) {
   fun loadSchedules(username: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
     val storageKey = schedulesKeyFor(username)
     if (!prefs.contains(storageKey)) return null
-    val rawJson = prefs.getString(storageKey, null) ?: return null
+    val rawJson = prefs.getString(storageKey, "")?.trim().orEmpty()
+    if (rawJson.isEmpty()) return emptyList()
     return try {
       val jsonArray = JSONArray(rawJson)
       val loaded = mutableListOf<ClassSchedule>()
       for (i in 0 until jsonArray.length()) {
-        val obj = jsonArray.optJSONObject(i) ?: continue
-        val daysArray = obj.optJSONArray("days")
-        val daysList = mutableListOf<String>()
-        if (daysArray != null) {
-          for (j in 0 until daysArray.length()) {
-            val dayToken = daysArray.optString(j, "").trim()
-            if (dayToken.isNotEmpty()) {
-              daysList.add(dayToken)
+        try {
+          val obj = jsonArray.optJSONObject(i) ?: continue
+          val daysArray = obj.optJSONArray("days")
+          val daysList = mutableListOf<String>()
+          if (daysArray != null) {
+            for (j in 0 until daysArray.length()) {
+              val dayToken = daysArray.optString(j, "").trim()
+              if (dayToken.isNotEmpty()) {
+                daysList.add(dayToken)
+              }
             }
           }
-        }
-        val timeRange = obj.optString("timeRange", "7:00 AM - 9:00 AM")
-        val (fallbackStart, fallbackEnd) = extractStartEndTimeTokens(timeRange)
-        loaded.add(
-          ClassSchedule(
-            id = obj.optInt("id", 100 + i),
-            subjectName = obj.optString("subjectName", ""),
-            timeRange = timeRange,
-            days = if (daysList.isEmpty()) listOf("M") else daysList,
-            room = obj.optString("room", "ENG. 307"),
-            colorHex = obj.optLong("colorHex", 0xFF00C4CCL),
-            startTime = obj.optString("startTime", fallbackStart).ifBlank { fallbackStart },
-            endTime = obj.optString("endTime", fallbackEnd).ifBlank { fallbackEnd }
+          val timeRange = obj.optString("timeRange", "7:00 AM - 9:00 AM").ifBlank { "7:00 AM - 9:00 AM" }
+          val (fallbackStart, fallbackEnd) = extractStartEndTimeTokens(timeRange)
+          loaded.add(
+            ClassSchedule(
+              id = obj.optInt("id", 100 + i),
+              subjectName = obj.optString("subjectName", "").trim(),
+              timeRange = timeRange,
+              days = if (daysList.isEmpty()) listOf("M") else daysList,
+              room = obj.optString("room", "ENG. 307").ifBlank { "ENG. 307" },
+              colorHex = obj.optLong("colorHex", 0xFF00C4CCL),
+              startTime = obj.optString("startTime", fallbackStart).ifBlank { fallbackStart },
+              endTime = obj.optString("endTime", fallbackEnd).ifBlank { fallbackEnd }
+            )
           )
-        )
+        } catch (_: Exception) {
+          continue
+        }
       }
       loaded
     } catch (_: Exception) {
-      null
+      emptyList()
     }
   }
 
@@ -682,57 +976,144 @@ class LocalStorageManager(context: Context) {
   fun loadAlarms(username: String = GUEST_ACCOUNT_KEY): List<AlarmItem>? {
     val storageKey = alarmsKeyFor(username)
     if (!prefs.contains(storageKey)) return null
-    val rawJson = prefs.getString(storageKey, null) ?: return null
+    val rawJson = prefs.getString(storageKey, "")?.trim().orEmpty()
+    if (rawJson.isEmpty()) return emptyList()
     return try {
       val jsonArray = JSONArray(rawJson)
       val loaded = mutableListOf<AlarmItem>()
       for (i in 0 until jsonArray.length()) {
-        val obj = jsonArray.optJSONObject(i) ?: continue
-        val daysArray = obj.optJSONArray("activeDays")
-        val activeDays = mutableListOf<Int>()
-        if (daysArray != null) {
-          for (j in 0 until daysArray.length()) {
-            val dayIndex = daysArray.optInt(j, -1)
-            if (dayIndex in 0..6 && !activeDays.contains(dayIndex)) {
-              activeDays.add(dayIndex)
+        try {
+          val obj = jsonArray.optJSONObject(i) ?: continue
+          val daysArray = obj.optJSONArray("activeDays")
+          val activeDays = mutableListOf<Int>()
+          if (daysArray != null) {
+            for (j in 0 until daysArray.length()) {
+              val dayIndex = daysArray.optInt(j, -1)
+              if (dayIndex in 0..6 && !activeDays.contains(dayIndex)) {
+                activeDays.add(dayIndex)
+              }
             }
           }
-        }
-        val rawHour = obj.optString("hour", "07").trim()
-        val parsedHour = (rawHour.toIntOrNull() ?: 7).coerceIn(1, 12)
-        val rawMinute = obj.optString("minute", "00").trim()
-        val parsedMinute = (rawMinute.toIntOrNull() ?: 0).coerceIn(0, 59)
-        val rawAmPm = obj.optString("amPm", "AM").trim().uppercase(Locale.US)
-        val normalizedAmPm = if (rawAmPm == "PM") "PM" else "AM"
-        val name = obj.optString("name", "Alarm").trim().ifEmpty { "Alarm" }
-        loaded.add(
-          AlarmItem(
-            id = obj.optInt("id", i + 1),
-            name = name,
-            hour = String.format(Locale.US, "%02d", parsedHour),
-            minute = String.format(Locale.US, "%02d", parsedMinute),
-            amPm = normalizedAmPm,
-            activeDays = activeDays.sorted(),
-            isActive = obj.optBoolean("isActive", true)
+          val rawHour = obj.optString("hour", "07").trim()
+          val parsedHour = (rawHour.toIntOrNull() ?: 7).coerceIn(1, 12)
+          val rawMinute = obj.optString("minute", "00").trim()
+          val parsedMinute = (rawMinute.toIntOrNull() ?: 0).coerceIn(0, 59)
+          val rawAmPm = obj.optString("amPm", "AM").trim().uppercase(Locale.US)
+          val normalizedAmPm = if (rawAmPm == "PM") "PM" else "AM"
+          val name = obj.optString("name", "Alarm").trim().ifEmpty { "Alarm" }
+          loaded.add(
+            AlarmItem(
+              id = obj.optInt("id", i + 1),
+              name = name,
+              hour = String.format(Locale.US, "%02d", parsedHour),
+              minute = String.format(Locale.US, "%02d", parsedMinute),
+              amPm = normalizedAmPm,
+              activeDays = activeDays.sorted(),
+              isActive = obj.optBoolean("isActive", true)
+            )
           )
-        )
+        } catch (_: Exception) {
+          continue
+        }
       }
       loaded
     } catch (_: Exception) {
-      prefs.edit().remove(storageKey).apply()
+      emptyList()
+    }
+  }
+
+  fun saveFlashcardDecks(decks: List<FlashcardDeck>, username: String = GUEST_ACCOUNT_KEY) {
+    val jsonArray = JSONArray()
+    for (deck in decks) {
+      val cardsArray = JSONArray()
+      for (card in deck.cards) {
+        val cardObj = JSONObject().apply {
+          put("id", card.id)
+          put("question", card.question)
+          put("answer", card.answer)
+          put("category", card.category)
+          put("masteryLevel", card.masteryLevel.ifBlank { "New" })
+        }
+        cardsArray.put(cardObj)
+      }
+      val deckObj = JSONObject().apply {
+        put("id", deck.id)
+        put("title", deck.title.trim().ifEmpty { "Untitled Deck" })
+        put("subjectTag", deck.subjectTag.trim().ifEmpty { "General CE" })
+        put("cards", cardsArray)
+      }
+      jsonArray.put(deckObj)
+    }
+    prefs.edit().putString(flashcardDecksKeyFor(username), jsonArray.toString()).apply()
+  }
+
+  fun loadFlashcardDecks(username: String = GUEST_ACCOUNT_KEY): List<FlashcardDeck> {
+    val storageKey = flashcardDecksKeyFor(username)
+    if (!prefs.contains(storageKey)) return emptyList()
+    val rawJson = prefs.getString(storageKey, "")?.trim().orEmpty()
+    if (rawJson.isEmpty()) {
+      return emptyList()
+    }
+    return try {
+      val jsonArray = JSONArray(rawJson)
+      val loadedDecks = mutableListOf<FlashcardDeck>()
+      for (i in 0 until jsonArray.length()) {
+        try {
+          val deckObj = jsonArray.optJSONObject(i) ?: continue
+          val title = deckObj.optString("title", "").trim()
+          if (title.isEmpty()) continue
+          val subjectTag = deckObj.optString("subjectTag", "General CE").trim().ifEmpty { "General CE" }
+          val cardsArray = deckObj.optJSONArray("cards")
+          val loadedCards = mutableListOf<FlashcardItem>()
+          if (cardsArray != null) {
+            for (j in 0 until cardsArray.length()) {
+              try {
+                val cardObj = cardsArray.optJSONObject(j) ?: continue
+                val question = cardObj.optString("question", "").trim()
+                val answer = cardObj.optString("answer", "").trim()
+                if (question.isEmpty() || answer.isEmpty()) continue
+                loadedCards.add(
+                  FlashcardItem(
+                    id = cardObj.optInt("id", (i + 1) * 100 + j + 1),
+                    question = question,
+                    answer = answer,
+                    category = cardObj.optString("category", subjectTag).trim().ifEmpty { subjectTag },
+                    masteryLevel = cardObj.optString("masteryLevel", "New").trim().ifEmpty { "New" }
+                  )
+                )
+              } catch (_: Exception) {
+                continue
+              }
+            }
+          }
+          loadedDecks.add(
+            FlashcardDeck(
+              id = deckObj.optInt("id", i + 1),
+              title = title,
+              subjectTag = subjectTag,
+              cards = loadedCards
+            )
+          )
+        } catch (_: Exception) {
+          continue
+        }
+      }
+      loadedDecks
+    } catch (_: Exception) {
       emptyList()
     }
   }
 
   /**
    * Explicitly deletes all temporary data associated with the `"guest"` keys
-   * (`tasks_guest`, `schedules_guest`, and `alarms_guest`) when logging out of Guest mode.
+   * (`tasks_guest`, `schedules_guest`, `alarms_guest`, and `flashcards_guest`) when logging out of Guest mode.
    */
   fun clearGuestData() {
     val editor = prefs.edit()
       .remove(tasksKeyFor(GUEST_ACCOUNT_KEY))
       .remove(schedulesKeyFor(GUEST_ACCOUNT_KEY))
       .remove(alarmsKeyFor(GUEST_ACCOUNT_KEY))
+      .remove(flashcardDecksKeyFor(GUEST_ACCOUNT_KEY))
     prefs.all.keys
       .filter { key ->
         key.endsWith("_$GUEST_ACCOUNT_KEY")
@@ -750,8 +1131,8 @@ class LocalStorageManager(context: Context) {
   }
 
   fun loadUserName(): String? {
-    val saved = prefs.getString(KEY_USER_NAME, null)
-    return saved?.takeIf { it.isNotBlank() }
+    val saved = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
+    return saved.takeIf { it.isNotBlank() }
   }
 
   fun clearUserProfile() {
@@ -768,6 +1149,138 @@ class LocalStorageManager(context: Context) {
     return prefs.getBoolean(KEY_DARK_MODE, defaultValue)
   }
 
+  fun saveGeminiApiKey(apiKey: String) {
+    prefs.edit().putString(KEY_GEMINI_API_KEY, apiKey.trim()).apply()
+  }
+
+  fun loadGeminiApiKey(): String {
+    return prefs.getString(KEY_GEMINI_API_KEY, "")?.trim().orEmpty()
+  }
+
+  /**
+   * Reads all stored JSON strings from `SharedPreferences` (Schedules, Tasks, Alarms, Flashcards,
+   * User Profile, and all per-account keys) and combines them into a single encoded JSON string
+   * for One-Tap Clipboard Backup.
+   */
+  fun exportBackupJson(activeAccountKey: String = GUEST_ACCOUNT_KEY): String {
+    val resolvedAccount = normalizeAccountKey(activeAccountKey.ifBlank { loadUserName() })
+    val savedUser = prefs.getString(KEY_USER_NAME, "") ?: ""
+    val darkMode = prefs.getBoolean(KEY_DARK_MODE, false)
+    val registeredUsersJson = prefs.getString(KEY_REGISTERED_USERS, "{}") ?: "{}"
+    val schedulesJson = prefs.getString(schedulesKeyFor(resolvedAccount), "[]") ?: "[]"
+    val tasksJson = prefs.getString(tasksKeyFor(resolvedAccount), "[]") ?: "[]"
+    val alarmsJson = prefs.getString(alarmsKeyFor(resolvedAccount), "[]") ?: "[]"
+    val flashcardsJson = prefs.getString(flashcardDecksKeyFor(resolvedAccount), "[]") ?: "[]"
+
+    val allPrefsObj = JSONObject()
+    for ((key, value) in prefs.all) {
+      if (value is String) {
+        allPrefsObj.put(key, value)
+      }
+    }
+
+    return JSONObject().apply {
+      put("app", "Sibil")
+      put("version", SIBIL_APP_VERSION_TAG)
+      put("backupTimestamp", System.currentTimeMillis())
+      put("userProfile", savedUser)
+      put("activeAccountKey", resolvedAccount)
+      put("isDarkMode", darkMode)
+      put("registeredUsers", registeredUsersJson)
+      put("schedules", schedulesJson)
+      put("tasks", tasksJson)
+      put("alarms", alarmsJson)
+      put("flashcards", flashcardsJson)
+      put("allPreferences", allPrefsObj)
+    }.toString()
+  }
+
+  /**
+   * Parses a backup JSON string (from Clipboard Restore), repopulates `SharedPreferences`
+   * for Schedules, Tasks, Alarms, Flashcards, and User Profile, and returns `true` on success.
+   */
+  fun importBackupJson(rawBackupInput: String, fallbackAccountKey: String = GUEST_ACCOUNT_KEY): Boolean {
+    val trimmed = rawBackupInput.trim()
+    if (trimmed.isEmpty()) return false
+
+    return try {
+      val normalizedJsonText = if (trimmed.startsWith("{")) {
+        trimmed
+      } else {
+        String(Base64.decode(trimmed, Base64.DEFAULT), Charsets.UTF_8).trim()
+      }
+      val rootObj = JSONObject(normalizedJsonText)
+      val editor = prefs.edit()
+
+      // 1. Restore full string preferences map if included
+      val allPrefsObj = rootObj.optJSONObject("allPreferences")
+      if (allPrefsObj != null) {
+        val keys = allPrefsObj.keys()
+        while (keys.hasNext()) {
+          val k = keys.next()
+          val v = allPrefsObj.optString(k, "")
+          editor.putString(k, v)
+        }
+      }
+
+      // 2. Restore User Profile & Dark Mode
+      val restoredUserProfile = rootObj.optString("userProfile", "").trim()
+      if (restoredUserProfile.isNotEmpty()) {
+        editor.putString(KEY_USER_NAME, restoredUserProfile)
+      }
+      if (rootObj.has("isDarkMode")) {
+        editor.putBoolean(KEY_DARK_MODE, rootObj.optBoolean("isDarkMode", false))
+      }
+
+      val regUsersRaw = rootObj.optJSONObject("registeredUsers")?.toString()
+        ?: rootObj.optString("registeredUsers", "").trim()
+      if (regUsersRaw.isNotEmpty()) {
+        editor.putString(KEY_REGISTERED_USERS, regUsersRaw)
+      }
+
+      // 3. Determine target account key for Schedules, Tasks, Alarms, and Flashcards
+      val explicitAccountKey = rootObj.optString("activeAccountKey", "").trim()
+      val targetAccountKey = normalizeAccountKey(
+        when {
+          explicitAccountKey.isNotEmpty() -> explicitAccountKey
+          restoredUserProfile.isNotEmpty() -> restoredUserProfile
+          else -> fallbackAccountKey
+        }
+      )
+
+      val schedulesRaw = rootObj.optJSONArray("schedules")?.toString()
+        ?: rootObj.optString("schedules", "").trim()
+      if (schedulesRaw.isNotEmpty()) {
+        editor.putString(schedulesKeyFor(targetAccountKey), schedulesRaw)
+      }
+
+      val tasksRaw = rootObj.optJSONArray("tasks")?.toString()
+        ?: rootObj.optString("tasks", "").trim()
+      if (tasksRaw.isNotEmpty()) {
+        editor.putString(tasksKeyFor(targetAccountKey), tasksRaw)
+      }
+
+      val alarmsRaw = rootObj.optJSONArray("alarms")?.toString()
+        ?: rootObj.optString("alarms", "").trim()
+      if (alarmsRaw.isNotEmpty()) {
+        editor.putString(alarmsKeyFor(targetAccountKey), alarmsRaw)
+      }
+
+      val flashcardsRaw = rootObj.optJSONArray("flashcards")?.toString()
+        ?: rootObj.optString("flashcards", "").trim()
+      if (flashcardsRaw.isNotEmpty()) {
+        editor.putString(flashcardDecksKeyFor(targetAccountKey), flashcardsRaw)
+      }
+
+      editor.putInt(KEY_TASK_SCHEMA_VERSION, CURRENT_TASK_SCHEMA_VERSION)
+      editor.putInt(KEY_FLASHCARD_SCHEMA_VERSION, CURRENT_FLASHCARD_SCHEMA_VERSION)
+      editor.commit()
+      true
+    } catch (_: Exception) {
+      false
+    }
+  }
+
   companion object {
     const val GUEST_ACCOUNT_KEY = "guest"
     const val GUEST_DISPLAY_NAME = "Guest User"
@@ -776,10 +1289,14 @@ class LocalStorageManager(context: Context) {
     private const val KEY_TASKS_PREFIX = "tasks_"
     private const val KEY_SCHEDULES_PREFIX = "schedules_"
     private const val KEY_ALARMS_PREFIX = "alarms_"
+    private const val KEY_FLASHCARDS_PREFIX = "flashcards_"
     private const val KEY_USER_NAME = "saved_user_name"
     private const val KEY_DARK_MODE = "saved_dark_mode"
+    private const val KEY_GEMINI_API_KEY = "saved_gemini_api_key"
     private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
     private const val CURRENT_TASK_SCHEMA_VERSION = 2
+    private const val KEY_FLASHCARD_SCHEMA_VERSION = "flashcard_schema_version"
+    private const val CURRENT_FLASHCARD_SCHEMA_VERSION = 2
   }
 }
 
@@ -791,7 +1308,8 @@ class LocalStorageManager(context: Context) {
  * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager (`tasks_[username]`).
  * 5. Today's Schedule list on the Dashboard.
  * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View (`schedules_[username]`).
- * 7. Simulated Username Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
+ * 7. Account-segregated `FlashcardDeck` items for the Smart Flashcard reviewer (`flashcards_[username]`).
+ * 8. Simulated Username Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
  */
 class TaskViewModel(
   private var storageManager: LocalStorageManager? = null
@@ -824,7 +1342,22 @@ class TaskViewModel(
   private var nextId by mutableIntStateOf(1)
   private var nextScheduleId by mutableIntStateOf(100)
   private var nextAlarmId by mutableIntStateOf(1)
+  private var nextDeckId by mutableIntStateOf(1)
+  private var nextCardId by mutableIntStateOf(1000)
   private var hasLoadedFromStorage = false
+
+  var savedGeminiApiKey by mutableStateOf("")
+    private set
+
+  fun updateGeminiApiKey(newKey: String) {
+    val trimmed = newKey.trim()
+    savedGeminiApiKey = trimmed
+    storageManager?.saveGeminiApiKey(trimmed)
+  }
+
+  fun getEffectiveGeminiApiKey(): String {
+    return resolveActiveGeminiApiKey(savedGeminiApiKey)
+  }
 
   var selectedTaskFolder by mutableStateOf(DEFAULT_TASK_CATEGORY)
     private set
@@ -857,6 +1390,10 @@ class TaskViewModel(
   // Default state of the Alarm list is completely empty (no hardcoded mock alarms)
   private val _alarms = mutableStateListOf<AlarmItem>()
   val alarms: List<AlarmItem> get() = _alarms
+
+  // Default state of the Flashcard Decks list is completely empty (no hardcoded placeholder decks)
+  private val _flashcardDecks = mutableStateListOf<FlashcardDeck>()
+  val flashcardDecks: List<FlashcardDeck> get() = _flashcardDecks
 
   /**
    * Dynamically builds the list of Subject Folders:
@@ -892,6 +1429,7 @@ class TaskViewModel(
     hasLoadedFromStorage = true
 
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
+    savedGeminiApiKey = manager.loadGeminiApiKey()
 
     val savedUserName = manager.loadUserName()
     if (!savedUserName.isNullOrBlank()) {
@@ -907,7 +1445,17 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
     } else {
       hasSavedSession = false
+      loadFlashcardsForKey(manager, currentAccountKey)
     }
+  }
+
+  private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
+    val savedDecks = manager.loadFlashcardDecks(accountKey)
+    _flashcardDecks.clear()
+    _flashcardDecks.addAll(savedDecks)
+    nextDeckId = (savedDecks.maxOfOrNull { it.id } ?: 0) + 1
+    val maxCardId = savedDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
+    nextCardId = maxOf(1000, maxCardId + 1)
   }
 
   private fun loadAccountDataForKey(manager: LocalStorageManager, accountKey: String) {
@@ -939,6 +1487,8 @@ class TaskViewModel(
     } else {
       nextAlarmId = 1
     }
+
+    loadFlashcardsForKey(manager, accountKey)
 
     val validFolders = getSubjectFolders()
     if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
@@ -1178,9 +1728,12 @@ class TaskViewModel(
       _tasks.clear()
       _classSchedules.clear()
       _alarms.clear()
+      _flashcardDecks.clear()
       nextId = 1
       nextScheduleId = 100
       nextAlarmId = 1
+      nextDeckId = 1
+      nextCardId = 1000
     }
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
   }
@@ -1243,6 +1796,111 @@ class TaskViewModel(
     storageManager?.saveAlarms(_alarms, currentAccountKey)
   }
 
+  fun addFlashcardDeck(
+    title: String,
+    subjectTag: String,
+    initialCards: List<FlashcardItem>
+  ): FlashcardDeck {
+    val cleanTitle = title.trim().ifEmpty { "Custom CE Deck" }
+    val cleanTag = subjectTag.trim().ifEmpty { "General CE" }
+    val normalizedCards = initialCards.map { card ->
+      val assignedId = if (card.id <= 0) nextCardId++ else {
+        if (card.id >= nextCardId) nextCardId = card.id + 1
+        card.id
+      }
+      card.copy(
+        id = assignedId,
+        question = card.question.trim(),
+        answer = card.answer.trim(),
+        category = card.category.trim().ifEmpty { cleanTag },
+        masteryLevel = card.masteryLevel.ifBlank { "New" }
+      )
+    }
+    val newDeck = FlashcardDeck(
+      id = nextDeckId++,
+      title = cleanTitle,
+      subjectTag = cleanTag,
+      cards = normalizedCards
+    )
+    _flashcardDecks.add(0, newDeck)
+    storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    return newDeck
+  }
+
+  fun createStudyDeckFromExtractedPdf(
+    documentDisplayName: String,
+    extractedPairs: List<Pair<String, String>>
+  ): FlashcardDeck {
+    val cleanFileName = documentDisplayName
+      .substringBeforeLast(".")
+      .trim()
+      .ifEmpty { "Uploaded_PDF" }
+    val generatedCards = extractedPairs.map { (question, answer) ->
+      FlashcardItem(
+        id = nextCardId++,
+        question = question.trim(),
+        answer = answer.trim(),
+        category = "PDF Study Deck",
+        masteryLevel = "New"
+      )
+    }
+    return addFlashcardDeck(
+      title = "$cleanFileName - Study Deck",
+      subjectTag = "PDF Import",
+      initialCards = generatedCards
+    )
+  }
+
+  fun addCardToDeck(
+    deckId: Int,
+    question: String,
+    answer: String,
+    category: String
+  ) {
+    val index = _flashcardDecks.indexOfFirst { it.id == deckId }
+    val cleanQuestion = question.trim()
+    val cleanAnswer = answer.trim()
+    if (index != -1 && cleanQuestion.isNotEmpty() && cleanAnswer.isNotEmpty()) {
+      val deck = _flashcardDecks[index]
+      val cleanCategory = category.trim().ifEmpty { deck.subjectTag }
+      val newCard = FlashcardItem(
+        id = nextCardId++,
+        question = cleanQuestion,
+        answer = cleanAnswer,
+        category = cleanCategory,
+        masteryLevel = "New"
+      )
+      _flashcardDecks[index] = deck.copy(cards = deck.cards + newCard)
+      storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    }
+  }
+
+  fun updateFlashcardMastery(
+    deckId: Int,
+    cardId: Int,
+    newMasteryLevel: String
+  ) {
+    val deckIndex = _flashcardDecks.indexOfFirst { it.id == deckId }
+    if (deckIndex != -1) {
+      val currentDeck = _flashcardDecks[deckIndex]
+      val updatedCards = currentDeck.cards.map { card ->
+        if (card.id == cardId) {
+          card.masteryLevel = newMasteryLevel
+          card.copy(masteryLevel = newMasteryLevel)
+        } else {
+          card
+        }
+      }
+      _flashcardDecks[deckIndex] = currentDeck.copy(cards = updatedCards)
+      storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    }
+  }
+
+  fun deleteFlashcardDeck(deckId: Int) {
+    _flashcardDecks.removeAll { it.id == deckId }
+    storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+  }
+
   fun addTask(
     title: String,
     dueDate: String,
@@ -1279,6 +1937,38 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
+  }
+
+  /**
+   * Syncs active in-memory lists to `SharedPreferences` and returns a combined JSON backup string
+   * containing Schedules, Tasks, Alarms, Flashcards, and User Profile.
+   */
+  fun createBackupJsonString(context: Context): String {
+    val manager = storageManager ?: LocalStorageManager(context).also { storageManager = it }
+    manager.saveTasks(_tasks, currentAccountKey)
+    manager.saveSchedules(_classSchedules, currentAccountKey)
+    manager.saveAlarms(_alarms, currentAccountKey)
+    manager.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    manager.saveDarkMode(isDarkMode)
+    if (hasSavedSession || !isGuestMode) {
+      manager.saveUserProfile(username)
+    }
+    return manager.exportBackupJson(currentAccountKey)
+  }
+
+  /**
+   * Restores all Sibil data from a backup JSON string into `SharedPreferences`
+   * and immediately refreshes the active ViewModel states.
+   */
+  fun restoreFromBackupJsonString(context: Context, backupJson: String): Boolean {
+    val manager = storageManager ?: LocalStorageManager(context).also { storageManager = it }
+    val success = manager.importBackupJson(backupJson, currentAccountKey)
+    if (success) {
+      hasLoadedFromStorage = false
+      loadFromStorage(manager)
+      loadAccountDataForKey(manager, currentAccountKey)
+    }
+    return success
   }
 
   companion object {
@@ -2755,6 +3445,7 @@ private fun MainProductivityScaffold(
             .widthIn(max = metrics.maxContentWidth)
         )
         CeNavTab.EXTRAS -> ExtrasScreen(
+          viewModel = taskViewModel,
           modifier = Modifier
             .fillMaxSize()
             .widthIn(max = metrics.maxContentWidth)
@@ -2902,6 +3593,7 @@ private fun CustomDockedBottomTaskBar(
   Box(
     modifier = modifier
       .fillMaxWidth()
+      .navigationBarsPadding()
       .testTag("bottom_navigation_bar"),
     contentAlignment = Alignment.BottomCenter
   ) {
@@ -3374,6 +4066,23 @@ fun DashboardScreen(
           onToggleComplete = { taskId ->
             viewModel.toggleTaskCompletion(taskId)
           }
+        )
+      }
+
+      // 4. App Version Footer at the bottom of the Dashboard
+      item {
+        Text(
+          text = SIBIL_APP_VERSION_TAG,
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+          textAlign = TextAlign.Center,
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = metrics.scaledDp(4), bottom = metrics.scaledDp(8))
+            .testTag("dashboard_version_footer")
         )
       }
     }
@@ -3954,19 +4663,30 @@ private fun DashboardTaskMiniCard(
 
 /**
  * Dedicated Extras Screen (`ExtrasScreen`):
- * Contains the engineering tool placeholders arranged in a neat 2x2 grid with floating elevation
+ * Contains the engineering tool cards arranged in a neat 2x2 grid with floating elevation
  * and cream card styling (`#FFFBF0`):
  * - Scientific Calculator
  * - Unit Converter
  * - BOQ Estimator
- * - AI Study Assistant
+ * - Smart Flashcards (Active-recall CE decks, PDF/DOCX AI import simulator, & spaced-repetition study mode)
  */
 @Composable
 fun ExtrasScreen(
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  viewModel: TaskViewModel = viewModel()
 ) {
+  val context = LocalContext.current
+  val localStorageManager = remember(context) {
+    LocalStorageManager(context.applicationContext)
+  }
+  LaunchedEffect(localStorageManager) {
+    viewModel.attachStorage(localStorageManager)
+  }
+
   val metrics = rememberResponsiveMetrics()
   var selectedToolTitle by rememberSaveable { mutableStateOf<String?>(null) }
+  var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
+  var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
 
   val extraTools = remember {
     listOf(
@@ -3989,12 +4709,41 @@ fun ExtrasScreen(
         icon = Icons.Filled.RequestQuote
       ),
       ExtraToolItem(
-        id = "ai_study_assistant",
-        title = "AI Study Assistant",
-        subtitle = "CE concept companion",
+        id = "smart_flashcards",
+        title = "Smart Flashcards",
+        subtitle = "CE active-recall & PDF import",
         icon = Icons.Filled.AutoAwesome
       )
     )
+  }
+
+  val activeStudyDeck = viewModel.flashcardDecks.firstOrNull { it.id == activeStudyDeckId }
+
+  if (isFlashcardsOpen) {
+    if (activeStudyDeck != null) {
+      FlashcardStudyScreen(
+        deck = activeStudyDeck,
+        metrics = metrics,
+        onRateCard = { cardId, rating ->
+          viewModel.updateFlashcardMastery(
+            deckId = activeStudyDeck.id,
+            cardId = cardId,
+            newMasteryLevel = rating
+          )
+        },
+        onBackToDecks = { activeStudyDeckId = null },
+        modifier = modifier
+      )
+    } else {
+      FlashcardMainView(
+        viewModel = viewModel,
+        metrics = metrics,
+        onBackToExtras = { isFlashcardsOpen = false },
+        onStartReview = { deck -> activeStudyDeckId = deck.id },
+        modifier = modifier
+      )
+    }
+    return
   }
 
   Column(
@@ -4040,7 +4789,7 @@ fun ExtrasScreen(
       )
     }
 
-    // Neat 2x2 Grid of Floating Engineering Tool Placeholder Cards
+    // Neat 2x2 Grid of Floating Engineering Tool Cards
     Column(
       modifier = Modifier.fillMaxWidth(),
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
@@ -4076,7 +4825,7 @@ fun ExtrasScreen(
         ExtraToolPlaceholderCard(
           tool = extraTools[3],
           metrics = metrics,
-          onClick = { selectedToolTitle = extraTools[3].title },
+          onClick = { isFlashcardsOpen = true },
           modifier = Modifier.weight(1f)
         )
       }
@@ -4123,6 +4872,1558 @@ fun ExtrasScreen(
         }
       }
     )
+  }
+}
+
+/**
+ * Resolves a human-readable document filename from a content `Uri` (PDF or DOCX).
+ */
+private fun resolveDocumentFileName(context: Context, uri: Uri): String {
+  try {
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+      val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+      if (nameIndex != -1 && cursor.moveToFirst()) {
+        val displayName = cursor.getString(nameIndex)?.trim()
+        if (!displayName.isNullOrEmpty()) {
+          return displayName
+        }
+      }
+    }
+  } catch (_: Exception) {
+  }
+  val fallbackSegment = uri.lastPathSegment
+    ?.substringAfterLast("/")
+    ?.substringAfterLast(":")
+    ?.trim()
+  return if (!fallbackSegment.isNullOrEmpty()) {
+    fallbackSegment
+  } else {
+    "CE_Lecture_Handout.pdf"
+  }
+}
+
+/**
+ * Smart Flashcards Main View (`FlashcardMainView`) inside the Extras tab:
+ * - Top Header: "Smart Flashcards" with a back button returning to the Extras hub and a top-right
+ *   API Key Settings button so users can paste & save their free Gemini API key directly in `SharedPreferences`.
+ * - Action Bar with 2 buttons:
+ *   1. "Import Document" (Cloud/AI icon) launching `ActivityResultContracts.OpenDocument()` for `.pdf` files
+ *      and extracting real flashcards via the Google Gemini API (`HttpURLConnection`, `Base64`, `org.json`).
+ *   2. "+ New Deck" to manually add a custom deck and cards.
+ * - Empty State: When no decks exist, shows an elegant cream empty-state card with an icon,
+ *   "No Decks Available", and "Tap 'Import Document' above to upload a lecture PDF, or tap '+ New Deck' to create your own."
+ * - Decks List: Cream cards (`#FFFBF0`) placing the title & category on the left (`Modifier.weight(1f)`),
+ *   a trash Delete icon button on each deck card, "+ Add Card" button, and a sleek horizontal pill
+ *   "Start Review" button (`RoundedCornerShape(20.dp)`).
+ */
+@Composable
+fun FlashcardMainView(
+  viewModel: TaskViewModel,
+  metrics: ResponsiveMetrics,
+  onBackToExtras: () -> Unit,
+  onStartReview: (FlashcardDeck) -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
+  val decks = viewModel.flashcardDecks.toList()
+
+  var isNewDeckDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var extractionErrorAlertMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var addCardTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+  var importingDocumentName by rememberSaveable { mutableStateOf<String?>(null) }
+  var currentExtractionStatus by rememberSaveable {
+    mutableStateOf("Reading PDF document...")
+  }
+
+  BackHandler {
+    if (importingDocumentName == null) {
+      onBackToExtras()
+    }
+  }
+
+  // Native Android Document Picker for PDF files routed directly through DEVELOPER_GEMINI_API_KEY
+  val documentPickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument()
+  ) { uri: Uri? ->
+    if (uri != null) {
+      val resolvedName = resolveDocumentFileName(context, uri)
+      val fallbackMessage =
+        "Automated extraction failed. Please check your internet connection or build your deck manually using '+ New Deck'."
+
+      if (DEVELOPER_GEMINI_API_KEY.isBlank()) {
+        extractionErrorAlertMessage = fallbackMessage
+        Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
+        return@rememberLauncherForActivityResult
+      }
+
+      importingDocumentName = resolvedName
+      currentExtractionStatus = "Reading PDF document..."
+
+      coroutineScope.launch {
+        try {
+          val extractedCards = extractFlashcardsFromPdfWithGemini(
+            context = context,
+            uri = uri,
+            apiKey = DEVELOPER_GEMINI_API_KEY,
+            onStatusUpdate = { status ->
+              currentExtractionStatus = status
+            }
+          )
+          val createdDeck = viewModel.createStudyDeckFromExtractedPdf(
+            documentDisplayName = resolvedName,
+            extractedPairs = extractedCards
+          )
+          importingDocumentName = null
+          Toast.makeText(
+            context,
+            "Created \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
+            Toast.LENGTH_SHORT
+          ).show()
+        } catch (e: CancellationException) {
+          importingDocumentName = null
+          throw e
+        } catch (_: Exception) {
+          importingDocumentName = null
+          extractionErrorAlertMessage = fallbackMessage
+          Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
+        }
+      }
+    }
+  }
+
+  val creamCardColor = dashboardCreamCardColor()
+  val ivoryInnerColor = dashboardIvoryInnerColor()
+
+  LazyColumn(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = metrics.maxContentWidth)
+      .testTag("flashcard_main_view"),
+    contentPadding = PaddingValues(
+      start = metrics.scaledDp(20),
+      end = metrics.scaledDp(20),
+      top = metrics.scaledDp(20),
+      bottom = metrics.scaledDp(112)
+    ),
+    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+  ) {
+    // 1. Top Header with Back Button returning to Extras Hub (No API Key Settings icon)
+    item {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+      ) {
+        Surface(
+          onClick = onBackToExtras,
+          shape = CircleShape,
+          color = creamCardColor,
+          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+          shadowElevation = 4.dp,
+          modifier = Modifier
+            .size(48.dp)
+            .testTag("flashcards_back_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+              contentDescription = "Back to Extras",
+              tint = MaterialTheme.colorScheme.onSurface,
+              modifier = Modifier.size(26.dp)
+            )
+          }
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "Smart Flashcards",
+            style = MaterialTheme.typography.headlineLarge.copy(
+              fontSize = metrics.scaledSp(24),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("flashcards_header_title")
+          )
+          Text(
+            text = "Spaced-repetition CE board & formula decks",
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = metrics.scaledSp(13),
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+    }
+
+    // 2. Action Bar with 2 Buttons: "Import Document" and "+ New Deck"
+    item {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+      ) {
+        Button(
+          onClick = {
+            try {
+              documentPickerLauncher.launch(arrayOf("application/pdf"))
+            } catch (_: Exception) {
+              val fallbackMessage =
+                "Automated extraction failed. Please check your internet connection or build your deck manually using '+ New Deck'."
+              extractionErrorAlertMessage = fallbackMessage
+              Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
+            }
+          },
+          shape = RoundedCornerShape(18.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+          ),
+          elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 50.dp)
+            .testTag("import_document_button")
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Cloud,
+            contentDescription = "Import Document",
+            modifier = Modifier.size(20.dp)
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text(
+            text = "Import Document",
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = metrics.scaledSp(13),
+              fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+
+        OutlinedButton(
+          onClick = { isNewDeckDialogOpen = true },
+          shape = RoundedCornerShape(18.dp),
+          colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = creamCardColor,
+            contentColor = MaterialTheme.colorScheme.primary
+          ),
+          border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 50.dp)
+            .testTag("new_deck_button")
+        ) {
+          Text(
+            text = "+ New Deck",
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = metrics.scaledSp(13),
+              fontWeight = FontWeight.Bold
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+    }
+
+    // 3. Empty State or Decks List
+    if (decks.isEmpty()) {
+      item {
+        Card(
+          shape = RoundedCornerShape(22.dp),
+          colors = CardDefaults.cardColors(containerColor = creamCardColor),
+          elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+          border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("flashcards_empty_state_card")
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = metrics.scaledDp(24), vertical = metrics.scaledDp(32)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          ) {
+            Surface(
+              shape = CircleShape,
+              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+              modifier = Modifier.size(64.dp)
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Filled.AutoAwesome,
+                  contentDescription = "No Decks Available",
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(30.dp)
+                )
+              }
+            }
+
+            Text(
+              text = "No Decks Available",
+              style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = metrics.scaledSp(19),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.onSurface,
+              textAlign = TextAlign.Center
+            )
+
+            Text(
+              text = "Tap 'Import Document' above to upload a lecture PDF, or tap '+ New Deck' to create your own.",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(14)
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center
+            )
+          }
+        }
+      }
+    } else {
+      items(decks, key = { it.id }) { deck ->
+        val masteredCount = deck.cards.count { it.masteryLevel.equals("Good", ignoreCase = true) }
+        val hasCards = deck.cards.isNotEmpty()
+        Card(
+          shape = RoundedCornerShape(22.dp),
+          colors = CardDefaults.cardColors(containerColor = creamCardColor),
+          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+          border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("flashcard_deck_card_${deck.id}")
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(metrics.scaledDp(18)),
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.Top
+            ) {
+              Column(
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Surface(
+                  color = MaterialTheme.colorScheme.primaryContainer,
+                  shape = CircleShape
+                ) {
+                  Text(
+                    text = deck.subjectTag,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = metrics.scaledSp(11),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                  )
+                }
+
+                Text(
+                  text = deck.title,
+                  style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = metrics.scaledSp(18),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = MaterialTheme.colorScheme.onSurface,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis
+                )
+
+                Text(
+                  text = "${deck.cards.size} ${if (deck.cards.size == 1) "card" else "cards"} • $masteredCount mastered",
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = metrics.scaledSp(12),
+                    fontWeight = FontWeight.SemiBold
+                  ),
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+
+                if (!hasCards) {
+                  Text(
+                    text = "Add at least 1 card to start review",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = metrics.scaledSp(11),
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("empty_deck_review_hint_${deck.id}")
+                  )
+                }
+              }
+
+              IconButton(
+                onClick = { viewModel.deleteFlashcardDeck(deck.id) },
+                modifier = Modifier
+                  .size(48.dp)
+                  .testTag("delete_deck_button_${deck.id}")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Delete,
+                  contentDescription = "Delete Deck ${deck.title}",
+                  tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
+                  modifier = Modifier.size(20.dp)
+                )
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.End,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              TextButton(
+                onClick = { addCardTargetDeckId = deck.id },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("add_card_to_deck_${deck.id}")
+              ) {
+                Text(
+                  text = "+ Add Card",
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 1,
+                  softWrap = false
+                )
+              }
+
+              Spacer(modifier = Modifier.width(8.dp))
+
+              Button(
+                onClick = {
+                  if (hasCards) {
+                    onStartReview(deck)
+                  } else {
+                    Toast.makeText(
+                      context,
+                      "Add at least 1 card to start review",
+                      Toast.LENGTH_SHORT
+                    ).show()
+                  }
+                },
+                enabled = hasCards,
+                shape = RoundedCornerShape(20.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = MaterialTheme.colorScheme.primary,
+                  contentColor = Color.White,
+                  disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                  disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+                modifier = Modifier.testTag("start_review_button_${deck.id}")
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Start Review",
+                    tint = if (hasCards) {
+                      Color.White
+                    } else {
+                      MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    },
+                    modifier = Modifier.size(16.dp)
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    text = "Start Review",
+                    color = if (hasCards) {
+                      Color.White
+                    } else {
+                      MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Animated Gemini PDF Extraction Loading Dialog
+  if (importingDocumentName != null) {
+    val infiniteTransition = rememberInfiniteTransition(label = "ai_extraction_pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+      initialValue = 0.90f,
+      targetValue = 1.08f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(durationMillis = 650, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
+      ),
+      label = "pulse_scale"
+    )
+
+    Dialog(
+      onDismissRequest = { /* non-dismissible during PDF extraction */ },
+      properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+    ) {
+      Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("ai_extraction_simulator_dialog")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(24)),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+        ) {
+          Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier
+              .size(68.dp)
+              .graphicsLayer {
+                scaleX = pulseScale
+                scaleY = pulseScale
+              }
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = "Gemini PDF Extraction",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(34.dp)
+              )
+            }
+          }
+
+          Text(
+            text = "Gemini PDF Study Extractor",
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = metrics.scaledSp(20),
+              fontWeight = FontWeight.Bold
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+          )
+
+          Surface(
+            color = ivoryInnerColor,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(
+              1.dp,
+              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = importingDocumentName.orEmpty(),
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.primary,
+              textAlign = TextAlign.Center,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .testTag("ai_extraction_filename_text")
+            )
+          }
+
+          LinearProgressIndicator(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(8.dp)
+              .clip(CircleShape),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = WarmCreamTrackColor
+          )
+
+          Crossfade(
+            targetState = currentExtractionStatus,
+            label = "extraction_status_crossfade"
+          ) { statusLabel ->
+            Text(
+              text = statusLabel,
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("ai_extraction_status_text")
+            )
+          }
+        }
+      }
+    }
+  }
+
+  // Extraction Error & Offline Fallback Dialog
+  if (extractionErrorAlertMessage != null) {
+    AlertDialog(
+      onDismissRequest = { extractionErrorAlertMessage = null },
+      shape = RoundedCornerShape(24.dp),
+      containerColor = creamCardColor,
+      title = {
+        Text(
+          text = "Automated Extraction Failed",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontSize = metrics.scaledSp(19),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.onSurface
+        )
+      },
+      text = {
+        Text(
+          text = extractionErrorAlertMessage.orEmpty(),
+          style = MaterialTheme.typography.bodyMedium.copy(
+            fontSize = metrics.scaledSp(14)
+          ),
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            extractionErrorAlertMessage = null
+            isNewDeckDialogOpen = true
+          },
+          shape = RoundedCornerShape(20.dp)
+        ) {
+          Text(
+            text = "+ New Deck",
+            fontWeight = FontWeight.SemiBold
+          )
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { extractionErrorAlertMessage = null }) {
+          Text("Close")
+        }
+      }
+    )
+  }
+
+  // "+ New Deck" Creation Dialog
+  if (isNewDeckDialogOpen) {
+    CreateNewFlashcardDeckDialog(
+      metrics = metrics,
+      availableSubjects = viewModel.getSubjectFolders(),
+      onDismiss = { isNewDeckDialogOpen = false },
+      onCreateDeck = { title, subjectTag ->
+        viewModel.addFlashcardDeck(
+          title = title,
+          subjectTag = subjectTag,
+          initialCards = emptyList()
+        )
+        isNewDeckDialogOpen = false
+      }
+    )
+  }
+
+  // "+ Add Card" to Existing Deck Dialog
+  val targetDeckForNewCard = decks.firstOrNull { it.id == addCardTargetDeckId }
+  if (targetDeckForNewCard != null) {
+    AddCardToFlashcardDeckDialog(
+      deckTitle = targetDeckForNewCard.title,
+      defaultCategory = targetDeckForNewCard.subjectTag,
+      metrics = metrics,
+      onDismiss = { addCardTargetDeckId = null },
+      onSaveCard = { question, answer ->
+        viewModel.addCardToDeck(
+          deckId = targetDeckForNewCard.id,
+          question = question,
+          answer = answer,
+          category = targetDeckForNewCard.subjectTag
+        )
+        addCardTargetDeckId = null
+      }
+    )
+  }
+}
+
+@Composable
+private fun CreateNewFlashcardDeckDialog(
+  metrics: ResponsiveMetrics,
+  availableSubjects: List<String>,
+  onDismiss: () -> Unit,
+  onCreateDeck: (title: String, subjectTag: String) -> Unit
+) {
+  val defaultTags = remember(availableSubjects) {
+    (listOf("PSAD", "MSTE", "HPGE", "General") + availableSubjects)
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+      .distinctBy { it.lowercase(Locale.US) }
+  }
+  var deckTitle by rememberSaveable { mutableStateOf("") }
+  var subjectTag by rememberSaveable {
+    mutableStateOf(defaultTags.firstOrNull() ?: "PSAD")
+  }
+  var titleError by rememberSaveable { mutableStateOf(false) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = dashboardCreamCardColor(),
+    title = {
+      Text(
+        text = "Create New Deck",
+        style = MaterialTheme.typography.headlineSmall.copy(
+          fontSize = metrics.scaledSp(20),
+          fontWeight = FontWeight.Bold
+        ),
+        color = MaterialTheme.colorScheme.onSurface
+      )
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        OutlinedTextField(
+          value = deckTitle,
+          onValueChange = {
+            deckTitle = it
+            if (it.isNotBlank()) titleError = false
+          },
+          label = { Text("Deck Title") },
+          placeholder = { Text("e.g., Steel Design - Tension Members") },
+          isError = titleError,
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("new_deck_title_input")
+        )
+
+        OutlinedTextField(
+          value = subjectTag,
+          onValueChange = { subjectTag = it },
+          label = { Text("Subject Tag") },
+          placeholder = { Text("e.g., PSAD, MSTE, HPGE, General") },
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("new_deck_subject_input")
+        )
+
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          defaultTags.forEach { tagOption ->
+            val isSelected = subjectTag.trim().equals(tagOption, ignoreCase = true)
+            Surface(
+              onClick = { subjectTag = tagOption },
+              shape = CircleShape,
+              color = if (isSelected) {
+                MaterialTheme.colorScheme.primary
+              } else {
+                dashboardIvoryInnerColor()
+              },
+              border = BorderStroke(
+                width = 1.dp,
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                }
+              )
+            ) {
+              Text(
+                text = tagOption,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                ),
+                color = if (isSelected) {
+                  MaterialTheme.colorScheme.onPrimary
+                } else {
+                  MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+              )
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          if (deckTitle.isBlank()) {
+            titleError = true
+          } else {
+            onCreateDeck(
+              deckTitle.trim(),
+              subjectTag.trim().ifEmpty { "General" }
+            )
+          }
+        },
+        shape = CircleShape,
+        modifier = Modifier.testTag("confirm_create_deck_button")
+      ) {
+        Text(
+          text = "Create Deck",
+          style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+        )
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel")
+      }
+    }
+  )
+}
+
+@Composable
+private fun AddCardToFlashcardDeckDialog(
+  deckTitle: String,
+  defaultCategory: String,
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit,
+  onSaveCard: (question: String, answer: String) -> Unit
+) {
+  var question by rememberSaveable { mutableStateOf("") }
+  var answer by rememberSaveable { mutableStateOf("") }
+  var validationError by rememberSaveable { mutableStateOf(false) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = dashboardCreamCardColor(),
+    title = {
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+          text = "Add Flashcard",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontSize = metrics.scaledSp(20),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+          text = "Deck: $deckTitle ($defaultCategory)",
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = MaterialTheme.colorScheme.primary,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        OutlinedTextField(
+          value = question,
+          onValueChange = {
+            question = it
+            if (it.isNotBlank()) validationError = false
+          },
+          label = { Text("Question / Prompt") },
+          isError = validationError && question.isBlank(),
+          minLines = 3,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("add_card_question_input")
+        )
+
+        OutlinedTextField(
+          value = answer,
+          onValueChange = {
+            answer = it
+            if (it.isNotBlank()) validationError = false
+          },
+          label = { Text("Answer / Code Reference") },
+          isError = validationError && answer.isBlank(),
+          minLines = 3,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("add_card_answer_input")
+        )
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          if (question.isBlank() || answer.isBlank()) {
+            validationError = true
+          } else {
+            onSaveCard(question.trim(), answer.trim())
+          }
+        },
+        shape = CircleShape,
+        modifier = Modifier.testTag("confirm_add_card_button")
+      ) {
+        Text(
+          text = "Save Card",
+          style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+        )
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel")
+      }
+    }
+  )
+}
+
+/**
+ * Interactive Study Mode Screen (`FlashcardStudyScreen`):
+ * - Top Progress Bar displaying current card index (e.g., "Card 2 of 5") and a `LinearProgressIndicator`.
+ * - Large, centered cream flashcard with `12.dp` elevation, rounded corners, and a subtle border:
+ *   * Click to Flip (`isFlipped: Boolean`).
+ *   * Front Side: Small chip "QUESTION", bold question text, and helper tip "(Tap card to flip)".
+ *   * Back Side: Small chip "ANSWER / CODE PROVISION", answer text, and reference notes.
+ * - Bottom Spaced-Repetition Rating Controls:
+ *   * Row of 3 buttons: "Again" (Red/Salmon accent), "Hard" (Warm Amber accent), "Good" (Sage Green accent).
+ *   * Tapping any rating updates `masteryLevel` and advances to the next card with a smooth transition.
+ * - Deck Completed State:
+ *   * Celebratory card: "Deck Completed!", showing total cards reviewed, "Review Again", and "Back to Decks".
+ */
+@Composable
+fun FlashcardStudyScreen(
+  deck: FlashcardDeck,
+  metrics: ResponsiveMetrics,
+  onRateCard: (cardId: Int, masteryLevel: String) -> Unit,
+  onBackToDecks: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  BackHandler {
+    onBackToDecks()
+  }
+
+  val totalDeckSize = deck.cards.size
+  val studyQueue = remember(deck.id) {
+    mutableStateListOf<FlashcardItem>().apply { addAll(deck.cards) }
+  }
+  val masteredCards = remember(deck.id) {
+    mutableStateListOf<FlashcardItem>()
+  }
+  var isFlipped by remember(deck.id) { mutableStateOf(false) }
+
+  val currentCard = studyQueue.firstOrNull()
+
+  val creamCardColor = dashboardCreamCardColor()
+  val ivoryInnerColor = dashboardIvoryInnerColor()
+
+  val againAccentColor = Color(0xFFD9534F)
+  val hardAccentColor = Color(0xFFD9822B)
+  val goodAccentColor = Color(0xFF3B8754)
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = metrics.maxContentWidth)
+      .verticalScroll(rememberScrollState())
+      .padding(
+        horizontal = metrics.scaledDp(20),
+        vertical = metrics.scaledDp(20)
+      )
+      .testTag("flashcard_study_screen"),
+    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
+  ) {
+    // Top Header
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+    ) {
+      Surface(
+        onClick = onBackToDecks,
+        shape = CircleShape,
+        color = creamCardColor,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        shadowElevation = 4.dp,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag("study_back_to_decks_icon_button")
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to Decks",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(26.dp)
+          )
+        }
+      }
+
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = deck.title,
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontSize = metrics.scaledSp(17),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.onBackground,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+        Text(
+          text = "${deck.subjectTag} • Spaced Repetition Queue",
+          style = MaterialTheme.typography.labelLarge.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.Bold
+          ),
+          color = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.testTag("study_progress_label")
+        )
+      }
+    }
+
+    // Queue Immersion HUD (Head-Up Display)
+    Surface(
+      color = creamCardColor,
+      shape = RoundedCornerShape(20.dp),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+      shadowElevation = 4.dp,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("study_immersion_hud")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = metrics.scaledDp(14), vertical = metrics.scaledDp(12)),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          // Left pill: "Remaining: ${studyQueue.size}" (with a subtle amber/red dot)
+          Surface(
+            color = ivoryInnerColor,
+            shape = CircleShape,
+            border = BorderStroke(1.dp, hardAccentColor.copy(alpha = 0.45f)),
+            modifier = Modifier.testTag("hud_remaining_pill")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(8.dp)
+                  .clip(CircleShape)
+                  .background(if (studyQueue.size > 0) hardAccentColor else goodAccentColor)
+              )
+              Text(
+                text = "Remaining: ${studyQueue.size}",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+              )
+            }
+          }
+
+          // Right pill: "Mastered: ${masteredCards.size}/${deck.cards.size}" (with a green check dot)
+          Surface(
+            color = ivoryInnerColor,
+            shape = CircleShape,
+            border = BorderStroke(1.dp, goodAccentColor.copy(alpha = 0.45f)),
+            modifier = Modifier.testTag("hud_mastered_pill")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = null,
+                tint = goodAccentColor,
+                modifier = Modifier.size(13.dp)
+              )
+              Text(
+                text = "Mastered: ${masteredCards.size}/${deck.cards.size}",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+              )
+            }
+          }
+        }
+
+        val progressFraction = if (totalDeckSize == 0) {
+          1f
+        } else {
+          (masteredCards.size.toFloat() / deck.cards.size.toFloat()).coerceIn(0f, 1f)
+        }
+        val animatedProgress by animateFloatAsState(
+          targetValue = progressFraction,
+          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+          label = "study_linear_progress"
+        )
+
+        LinearProgressIndicator(
+          progress = { animatedProgress },
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(10.dp)
+            .clip(CircleShape)
+            .testTag("study_progress_bar"),
+          color = goodAccentColor,
+          trackColor = WarmCreamTrackColor
+        )
+      }
+    }
+
+    if (studyQueue.isEmpty() || currentCard == null) {
+      // Deck Mastered Celebratory Screen
+      Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+        border = BorderStroke(1.5.dp, goodAccentColor.copy(alpha = 0.55f)),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = metrics.scaledDp(12))
+          .testTag("deck_completed_card")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(26)),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+        ) {
+          Surface(
+            shape = CircleShape,
+            color = goodAccentColor.copy(alpha = 0.16f),
+            modifier = Modifier.size(72.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = "Deck Mastered!",
+                tint = goodAccentColor,
+                modifier = Modifier.size(42.dp)
+              )
+            }
+          }
+
+          Surface(
+            color = goodAccentColor.copy(alpha = 0.14f),
+            shape = CircleShape
+          ) {
+            Text(
+              text = "Deck Mastered!",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = goodAccentColor,
+              modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+            )
+          }
+
+          Text(
+            text = "All Cards Mastered!",
+            style = MaterialTheme.typography.headlineMedium.copy(
+              fontSize = metrics.scaledSp(26),
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+          )
+
+          Text(
+            text = "You cycled through every difficult card until 100% mastery was achieved.",
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = metrics.scaledSp(15),
+              lineHeight = metrics.scaledSp(22),
+              fontWeight = FontWeight.Medium
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.testTag("deck_completed_total_text")
+          )
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          ) {
+            OutlinedButton(
+              onClick = {
+                masteredCards.clear()
+                studyQueue.clear()
+                studyQueue.addAll(deck.cards)
+                isFlipped = false
+              },
+              shape = CircleShape,
+              border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("restart_deck_button")
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Replay,
+                contentDescription = "Restart Deck",
+                modifier = Modifier.size(18.dp)
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text(
+                text = "Restart Deck",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+              )
+            }
+
+            Button(
+              onClick = onBackToDecks,
+              shape = CircleShape,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+              ),
+              modifier = Modifier
+                .weight(1f)
+                .height(48.dp)
+                .testTag("back_to_decks_button")
+            ) {
+              Text(
+                text = "Back to Decks",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+              )
+            }
+          }
+        }
+      }
+    } else {
+      // Interactive Centered Flashcard (Click to Flip)
+      Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        elevation = CardDefaults.cardElevation(
+          defaultElevation = 12.dp,
+          pressedElevation = 16.dp
+        ),
+        border = BorderStroke(
+          width = 1.5.dp,
+          color = if (isFlipped) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+          } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+          }
+        ),
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = metrics.scaledDp(320))
+          .clip(RoundedCornerShape(28.dp))
+          .clickable { isFlipped = !isFlipped }
+          .testTag("interactive_flashcard")
+      ) {
+        Crossfade(
+          targetState = isFlipped,
+          animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+          label = "flashcard_flip_crossfade"
+        ) { flipped ->
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = metrics.scaledDp(320))
+              .padding(metrics.scaledDp(24)),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
+            // Top Row: Side Chip ("QUESTION" vs "ANSWER / CODE PROVISION") + Category Tag
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Surface(
+                color = if (flipped) {
+                  goodAccentColor.copy(alpha = 0.16f)
+                } else {
+                  MaterialTheme.colorScheme.primaryContainer
+                },
+                shape = CircleShape
+              ) {
+                Text(
+                  text = if (flipped) "ANSWER / CODE PROVISION" else "QUESTION",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = metrics.scaledSp(11),
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = if (flipped) {
+                    goodAccentColor
+                  } else {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                  },
+                  modifier = Modifier
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .testTag("flashcard_side_chip")
+                )
+              }
+
+              Text(
+                text = currentCard.category,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = metrics.scaledSp(11),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+
+            // Middle Content: Bold Question Text or Detailed Answer + Provision Reference
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = metrics.scaledDp(20)),
+              contentAlignment = Alignment.Center
+            ) {
+              if (!flipped) {
+                Text(
+                  text = currentCard.question,
+                  style = MaterialTheme.typography.headlineSmall.copy(
+                    fontSize = metrics.scaledSp(21),
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = metrics.scaledSp(29)
+                  ),
+                  color = MaterialTheme.colorScheme.onSurface,
+                  textAlign = TextAlign.Center,
+                  modifier = Modifier.testTag("flashcard_question_text")
+                )
+              } else {
+                Column(
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+                ) {
+                  Text(
+                    text = currentCard.answer,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontSize = metrics.scaledSp(19),
+                      fontWeight = FontWeight.Bold,
+                      lineHeight = metrics.scaledSp(27)
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("flashcard_answer_text")
+                  )
+
+                  Surface(
+                    color = ivoryInnerColor,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                      1.dp,
+                      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                  ) {
+                    Text(
+                      text = "Ref: ${currentCard.category} • Mastery: ${currentCard.masteryLevel}",
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = metrics.scaledSp(11),
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = MaterialTheme.colorScheme.primary,
+                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                  }
+                }
+              }
+            }
+
+            // Bottom Helper Tip
+            Text(
+              text = if (!flipped) "(Tap card to flip)" else "(Tap card to view question)",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              textAlign = TextAlign.Center
+            )
+          }
+        }
+      }
+
+      // Bottom Spaced Repetition Rating Controls ("Again", "Hard", "Good")
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+      ) {
+        Text(
+          text = "Rate your recall to schedule next review:",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        ) {
+          // 1. Again (Needs Immediate Review - re-insert at index 2 if size > 2, else append)
+          Button(
+            onClick = {
+              if (studyQueue.isNotEmpty()) {
+                val activeCard = studyQueue.first()
+                onRateCard(activeCard.id, "Again")
+                val updatedCard = activeCard.copy(masteryLevel = "Again")
+                if (studyQueue.size > 2) {
+                  studyQueue.removeAt(0)
+                  studyQueue.add(2, updatedCard)
+                } else {
+                  studyQueue.removeAt(0)
+                  studyQueue.add(updatedCard)
+                }
+                isFlipped = false
+              }
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = againAccentColor,
+              contentColor = Color.White
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+              .weight(1f)
+              .height(52.dp)
+              .testTag("rating_again_button")
+          ) {
+            Text(
+              text = "Again",
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.Bold
+              )
+            )
+          }
+
+          // 2. Hard (Needs Reinforcement - remove from front and push to end of studyQueue)
+          Button(
+            onClick = {
+              if (studyQueue.isNotEmpty()) {
+                val activeCard = studyQueue.removeAt(0)
+                onRateCard(activeCard.id, "Hard")
+                studyQueue.add(activeCard.copy(masteryLevel = "Hard"))
+                isFlipped = false
+              }
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = hardAccentColor,
+              contentColor = Color.White
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+              .weight(1f)
+              .height(52.dp)
+              .testTag("rating_hard_button")
+          ) {
+            Text(
+              text = "Hard",
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.Bold
+              )
+            )
+          }
+
+          // 3. Good (Mastered - remove from studyQueue and add to masteredCards)
+          Button(
+            onClick = {
+              if (studyQueue.isNotEmpty()) {
+                val activeCard = studyQueue.removeAt(0)
+                onRateCard(activeCard.id, "Good")
+                masteredCards.add(activeCard.copy(masteryLevel = "Good"))
+                isFlipped = false
+              }
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = goodAccentColor,
+              contentColor = Color.White
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+              .weight(1f)
+              .height(52.dp)
+              .testTag("rating_good_button")
+          ) {
+            Text(
+              text = "Good",
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.Bold
+              )
+            )
+          }
+        }
+      }
+    }
   }
 }
 
@@ -6166,7 +8467,201 @@ private fun ProfileAndSettingsDialog(
           }
         }
 
-        // 3. About Section Card
+        // 3. Data Management Section Card (One-Tap Backup & Restore)
+        val context = LocalContext.current
+        var isRestoreDialogOpen by rememberSaveable { mutableStateOf(false) }
+        var restoreJsonInput by rememberSaveable { mutableStateOf("") }
+        var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
+
+        Card(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("extras_data_management_card"),
+          shape = RoundedCornerShape(24.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+          ),
+          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(metrics.scaledDp(18)),
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          ) {
+            Text(
+              text = "Data Management",
+              style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = metrics.scaledSp(18),
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.onSurface,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+
+            Text(
+              text = "Back up your Schedules, Tasks, Alarms, Flashcards, and Profile to your clipboard or restore from a saved backup string.",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(13)
+              ),
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+            ) {
+              Button(
+                onClick = {
+                  val backupJson = viewModel.createBackupJsonString(context)
+                  val clipboard =
+                    context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                  val clip = ClipData.newPlainText("Sibil Data Backup", backupJson)
+                  clipboard?.setPrimaryClip(clip)
+                  Toast.makeText(
+                    context,
+                    "All Sibil data copied to clipboard! Paste and save it in your notes.",
+                    Toast.LENGTH_LONG
+                  ).show()
+                },
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 48.dp)
+                  .testTag("backup_data_button")
+              ) {
+                Text(
+                  text = "Backup Data",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = metrics.scaledSp(13),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+
+              OutlinedButton(
+                onClick = {
+                  restoreErrorText = null
+                  isRestoreDialogOpen = true
+                },
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 48.dp)
+                  .testTag("restore_data_button")
+              ) {
+                Text(
+                  text = "Restore Data",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = metrics.scaledSp(13),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = MaterialTheme.colorScheme.primary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+            }
+          }
+        }
+
+        if (isRestoreDialogOpen) {
+          AlertDialog(
+            onDismissRequest = { isRestoreDialogOpen = false },
+            shape = RoundedCornerShape(24.dp),
+            containerColor = dashboardCreamCardColor(),
+            title = {
+              Text(
+                text = "Restore Sibil Data",
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(19),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+              )
+            },
+            text = {
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                Text(
+                  text = "Paste your previously copied Sibil backup JSON string below to restore all Schedules, Tasks, Alarms, Flashcards, and Profile data.",
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = metrics.scaledSp(13)
+                  ),
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                  value = restoreJsonInput,
+                  onValueChange = {
+                    restoreJsonInput = it
+                    if (it.isNotBlank()) restoreErrorText = null
+                  },
+                  label = { Text("Backup JSON String") },
+                  placeholder = { Text("{\"app\":\"Sibil\", ...}") },
+                  isError = restoreErrorText != null,
+                  minLines = 5,
+                  maxLines = 10,
+                  shape = RoundedCornerShape(14.dp),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("restore_backup_json_input")
+                )
+
+                if (restoreErrorText != null) {
+                  Text(
+                    text = restoreErrorText.orEmpty(),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = MaterialTheme.colorScheme.error
+                  )
+                }
+              }
+            },
+            confirmButton = {
+              Button(
+                onClick = {
+                  val restored = viewModel.restoreFromBackupJsonString(context, restoreJsonInput)
+                  if (restored) {
+                    isRestoreDialogOpen = false
+                    restoreJsonInput = ""
+                    restoreErrorText = null
+                    Toast.makeText(
+                      context,
+                      "Data restored successfully!",
+                      Toast.LENGTH_LONG
+                    ).show()
+                  } else {
+                    restoreErrorText = "Invalid backup JSON string. Please check and try again."
+                  }
+                },
+                shape = CircleShape,
+                modifier = Modifier.testTag("confirm_restore_data_button")
+              ) {
+                Text(
+                  text = "Confirm Restore",
+                  style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                )
+              }
+            },
+            dismissButton = {
+              TextButton(onClick = { isRestoreDialogOpen = false }) {
+                Text("Cancel")
+              }
+            }
+          )
+        }
+
+        // 4. About Section Card
         Card(
           modifier = Modifier
             .fillMaxWidth()
@@ -6231,7 +8726,7 @@ private fun ProfileAndSettingsDialog(
                 shape = CircleShape
               ) {
                 Text(
-                  text = stringResource(R.string.app_version),
+                  text = SIBIL_APP_VERSION_TAG,
                   style = MaterialTheme.typography.labelMedium.copy(
                     fontSize = metrics.scaledSp(12),
                     fontWeight = FontWeight.Bold
@@ -7090,21 +9585,146 @@ private val CE_FOCUS_PRESETS = listOf(
   )
 )
 
+// ============================================================================
+// AUDIO & BACKGROUND TIMER NOTIFICATION HELPERS
+// ============================================================================
+
+const val TIMER_NOTIFICATION_CHANNEL_ID = "timer_alerts_channel"
+const val TIMER_NOTIFICATION_CHANNEL_NAME = "Timer Alerts"
+private const val TIMER_NOTIFICATION_ID = 4001
+private const val TIMER_ALARM_REQUEST_CODE = 4002
+
+var currentRingtone: Ringtone? = null
+var isAlarmSoundRinging by mutableStateOf(false)
+var activeRingingAlertMessage by mutableStateOf<String?>(null)
+
 /**
- * Plays the device's native alarm sound using RingtoneManager.
- * Uses TYPE_ALARM first as required, with safe fallback to TYPE_NOTIFICATION or TYPE_RINGTONE
- * if the device has no default alarm URI configured.
+ * Fetches `RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)` and plays it.
  */
-fun playNativeAlarmSound(context: Context): Ringtone? {
-  return try {
+fun playAlarmSound(context: Context) {
+  try {
+    currentRingtone?.stop()
+  } catch (_: Exception) {
+  }
+  try {
     val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
       ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
       ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-    val ringtone = RingtoneManager.getRingtone(context, alarmUri)
+    val ringtone = RingtoneManager.getRingtone(context.applicationContext, alarmUri)
+    currentRingtone = ringtone
     ringtone?.play()
-    ringtone
-  } catch (e: Exception) {
-    null
+    isAlarmSoundRinging = true
+  } catch (_: Exception) {
+    isAlarmSoundRinging = true
+  }
+}
+
+/**
+ * Stops `currentRingtone` when the user acknowledges the alarm/timer.
+ */
+fun stopAlarmSound() {
+  try {
+    currentRingtone?.stop()
+  } catch (_: Exception) {
+  }
+  currentRingtone = null
+  isAlarmSoundRinging = false
+  activeRingingAlertMessage = null
+}
+
+fun playNativeAlarmSound(context: Context): Ringtone? {
+  playAlarmSound(context)
+  return currentRingtone
+}
+
+/**
+ * Creates a Notification Channel (required for Android 8+) named "Timer Alerts" with `IMPORTANCE_HIGH`.
+ */
+fun createTimerNotificationChannel(context: Context) {
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    val channel = NotificationChannel(
+      TIMER_NOTIFICATION_CHANNEL_ID,
+      TIMER_NOTIFICATION_CHANNEL_NAME,
+      NotificationManager.IMPORTANCE_HIGH
+    ).apply {
+      description = "High-priority alerts when a countdown timer finishes"
+      enableVibration(true)
+    }
+    val notificationManager =
+      context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+    notificationManager?.createNotificationChannel(channel)
+  }
+}
+
+/**
+ * Schedules an exact background alarm pointing to `TimerReceiver` for the calculated end time in milliseconds.
+ */
+@SuppressLint("ScheduleExactAlarm")
+fun scheduleTimerExactAlarm(context: Context, durationSeconds: Long, label: String? = null) {
+  if (durationSeconds <= 0L) return
+  createTimerNotificationChannel(context)
+  val endTimeMillis = System.currentTimeMillis() + (durationSeconds * 1000L)
+  val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+  val intent = Intent(context, TimerReceiver::class.java).apply {
+    putExtra("timer_label", label ?: "Timer")
+  }
+  val pendingIntent = PendingIntent.getBroadcast(
+    context,
+    TIMER_ALARM_REQUEST_CODE,
+    intent,
+    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+  try {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      if (alarmManager.canScheduleExactAlarms()) {
+        alarmManager.setExactAndAllowWhileIdle(
+          AlarmManager.RTC_WAKEUP,
+          endTimeMillis,
+          pendingIntent
+        )
+      } else {
+        alarmManager.setAndAllowWhileIdle(
+          AlarmManager.RTC_WAKEUP,
+          endTimeMillis,
+          pendingIntent
+        )
+      }
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      alarmManager.setExactAndAllowWhileIdle(
+        AlarmManager.RTC_WAKEUP,
+        endTimeMillis,
+        pendingIntent
+      )
+    } else {
+      alarmManager.setExact(
+        AlarmManager.RTC_WAKEUP,
+        endTimeMillis,
+        pendingIntent
+      )
+    }
+  } catch (_: SecurityException) {
+    try {
+      alarmManager.set(AlarmManager.RTC_WAKEUP, endTimeMillis, pendingIntent)
+    } catch (_: Exception) {
+    }
+  }
+}
+
+/**
+ * Cancels any pending background `TimerReceiver` alarm when the timer is paused, reset, or cleared.
+ */
+fun cancelTimerExactAlarm(context: Context) {
+  val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+  val intent = Intent(context, TimerReceiver::class.java)
+  val pendingIntent = PendingIntent.getBroadcast(
+    context,
+    TIMER_ALARM_REQUEST_CODE,
+    intent,
+    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+  try {
+    alarmManager.cancel(pendingIntent)
+  } catch (_: Exception) {
   }
 }
 
@@ -7125,7 +9745,7 @@ fun ClockScreen(
 
   var selectedSubTab by rememberSaveable { mutableStateOf(ClockSubTab.ALARM) }
 
-  // Notification Permission state (Android 13+)
+  // Notification Permission state (Android 13+) & Exact Alarm Permission state (Android 12+)
   var hasNotificationPermission by remember {
     mutableStateOf(
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -7133,6 +9753,16 @@ fun ClockScreen(
           context,
           Manifest.permission.POST_NOTIFICATIONS
         ) == PackageManager.PERMISSION_GRANTED
+      } else {
+        true
+      }
+    )
+  }
+  var canScheduleExactAlarms by remember {
+    mutableStateOf(
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+        am?.canScheduleExactAlarms() ?: true
       } else {
         true
       }
@@ -7146,40 +9776,37 @@ fun ClockScreen(
     hasNotificationPermission = isGranted
   }
 
+  val exactAlarmSettingsLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.StartActivityForResult()
+  ) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+      canScheduleExactAlarms = am?.canScheduleExactAlarms() ?: true
+    }
+  }
+
   LaunchedEffect(Unit) {
+    createTimerNotificationChannel(context)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
       notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
   }
 
-  // Active Ringtone state so user can stop ringing alarm or timer
-  var activeRingtone by remember { mutableStateOf<Ringtone?>(null) }
+  // Local and global ringing state so user can stop ringing alarm or timer
   var ringingBannerMessage by remember { mutableStateOf<String?>(null) }
 
   fun triggerAlarmRingtone(message: String) {
-    try {
-      activeRingtone?.stop()
-    } catch (_: Exception) {
-    }
-    activeRingtone = playNativeAlarmSound(context)
+    playAlarmSound(context)
+    activeRingingAlertMessage = message
     ringingBannerMessage = message
   }
 
   fun stopActiveRingtone() {
-    try {
-      activeRingtone?.stop()
-    } catch (_: Exception) {
-    }
-    activeRingtone = null
+    stopAlarmSound()
     ringingBannerMessage = null
-  }
-
-  DisposableEffect(Unit) {
-    onDispose {
-      try {
-        activeRingtone?.stop()
-      } catch (_: Exception) {
-      }
+    try {
+      NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+    } catch (_: Exception) {
     }
   }
 
@@ -7384,8 +10011,8 @@ fun ClockScreen(
       }
     }
 
-    // Dismissible POST_NOTIFICATIONS Permission Rationale Card when denied
-    if (!hasNotificationPermission && !isPermissionRationaleDismissed) {
+    // Dismissible POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM Permission Rationale Card
+    if ((!hasNotificationPermission || !canScheduleExactAlarms) && !isPermissionRationaleDismissed) {
       Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = creamCardColor),
@@ -7430,19 +10057,42 @@ fun ClockScreen(
               ),
               color = MaterialTheme.colorScheme.onSurface
             )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-              TextButton(
-                onClick = {
-                  notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                },
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier.testTag("grant_notification_permission_button")
-              ) {
-                Text(
-                  text = "Grant Permission",
-                  style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                  color = MaterialTheme.colorScheme.primary
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+              if (!hasNotificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                TextButton(
+                  onClick = {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                  },
+                  contentPadding = PaddingValues(0.dp),
+                  modifier = Modifier.testTag("grant_notification_permission_button")
+                ) {
+                  Text(
+                    text = "Grant Permission",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                }
+              }
+              if (!canScheduleExactAlarms && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                TextButton(
+                  onClick = {
+                    try {
+                      val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                      }
+                      exactAlarmSettingsLauncher.launch(intent)
+                    } catch (_: Exception) {
+                    }
+                  },
+                  contentPadding = PaddingValues(0.dp),
+                  modifier = Modifier.testTag("grant_exact_alarm_permission_button")
+                ) {
+                  Text(
+                    text = "Allow Exact Alarms",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary
+                  )
+                }
               }
             }
           }
@@ -7463,8 +10113,12 @@ fun ClockScreen(
       }
     }
 
-    // Active ringing alarm/timer banner with Silence button
-    ringingBannerMessage?.let { activeMessage ->
+    // Active ringing alarm/timer banner with visible "Stop Alarm" button
+    val resolvedRingingMessage = ringingBannerMessage
+      ?: activeRingingAlertMessage
+      ?: if (isAlarmSoundRinging) "Alarm / Timer Ringing!" else null
+
+    if (isAlarmSoundRinging || resolvedRingingMessage != null) {
       Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -7497,7 +10151,7 @@ fun ClockScreen(
               tint = MaterialTheme.colorScheme.primary
             )
             Text(
-              text = activeMessage,
+              text = resolvedRingingMessage ?: "Alarm Ringing!",
               style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
               color = MaterialTheme.colorScheme.onPrimaryContainer
             )
@@ -7513,11 +10167,11 @@ fun ClockScreen(
           ) {
             Icon(
               imageVector = Icons.Filled.VolumeOff,
-              contentDescription = "Stop sound",
+              contentDescription = "Stop Alarm",
               modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text("Dismiss")
+            Text("Stop Alarm")
           }
         }
       }
@@ -7598,13 +10252,21 @@ fun ClockScreen(
             timerTotalDurationSeconds = 0L
             timerDigitInput = ""
             activePresetLabel = null
+            cancelTimerExactAlarm(context)
           },
           onStartOrPause = {
             if (isTimerRunning) {
               isTimerRunning = false
+              cancelTimerExactAlarm(context)
             } else {
+              stopActiveRingtone()
               if (timerRemainingSeconds > 0L) {
                 isTimerRunning = true
+                scheduleTimerExactAlarm(
+                  context = context,
+                  durationSeconds = timerRemainingSeconds,
+                  label = activePresetLabel
+                )
               } else {
                 val parsedSeconds = parseKeypadDigitsToSeconds(timerDigitInput)
                 if (parsedSeconds > 0L) {
@@ -7612,6 +10274,11 @@ fun ClockScreen(
                   timerRemainingSeconds = parsedSeconds
                   activePresetLabel = "Custom Timer"
                   isTimerRunning = true
+                  scheduleTimerExactAlarm(
+                    context = context,
+                    durationSeconds = parsedSeconds,
+                    label = activePresetLabel
+                  )
                 }
               }
             }
@@ -7621,6 +10288,7 @@ fun ClockScreen(
             timerRemainingSeconds = 0L
             timerTotalDurationSeconds = 0L
             activePresetLabel = null
+            cancelTimerExactAlarm(context)
           },
           onSelectPreset = { preset ->
             stopActiveRingtone()
@@ -7629,6 +10297,11 @@ fun ClockScreen(
             timerRemainingSeconds = preset.durationSeconds
             activePresetLabel = preset.label
             isTimerRunning = true
+            scheduleTimerExactAlarm(
+              context = context,
+              durationSeconds = preset.durationSeconds,
+              label = preset.label
+            )
           }
         )
 
@@ -8935,3 +11608,62 @@ private fun StopwatchSubScreen(
 fun CivilEngineeringProductivityAppPreview() {
   CivilEngineeringProductivityApp()
 }
+
+// TODO: Register <receiver android:name=".TimerReceiver" /> in AndroidManifest.xml for this to work when the app is completely force-closed.
+class TimerReceiver : BroadcastReceiver() {
+  @SuppressLint("MissingPermission")
+  override fun onReceive(context: Context, intent: Intent?) {
+    createTimerNotificationChannel(context)
+    playAlarmSound(context)
+
+    val label = intent?.getStringExtra("timer_label")
+    activeRingingAlertMessage = if (!label.isNullOrBlank()) {
+      "Timer Finished! ($label)"
+    } else {
+      "Timer Finished!"
+    }
+
+    val launchIntent = Intent(context, MainActivity::class.java).apply {
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    }
+    val contentPendingIntent = PendingIntent.getActivity(
+      context,
+      0,
+      launchIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val notification = NotificationCompat.Builder(context, TIMER_NOTIFICATION_CHANNEL_ID)
+      .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+      .setContentTitle("Timer Finished!")
+      .setContentText(
+        if (!label.isNullOrBlank()) {
+          "Your timer ($label) has reached 00:00:00."
+        } else {
+          "Your countdown timer has reached 00:00:00."
+        }
+      )
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setCategory(NotificationCompat.CATEGORY_ALARM)
+      .setAutoCancel(true)
+      .setContentIntent(contentPendingIntent)
+      .build()
+
+    val hasNotifPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS
+      ) == PackageManager.PERMISSION_GRANTED
+    } else {
+      true
+    }
+
+    if (hasNotifPerm) {
+      try {
+        NotificationManagerCompat.from(context).notify(TIMER_NOTIFICATION_ID, notification)
+      } catch (_: Exception) {
+      }
+    }
+  }
+}
+

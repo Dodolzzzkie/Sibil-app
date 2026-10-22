@@ -61,7 +61,7 @@
     <string name="display_section_title">Display</string>
     <string name="dark_mode_label">Dark Mode</string>
     <string name="about_section_title">About</string>
-    <string name="app_version">v1.0.0</string>
+    <string name="app_version">Sibil v1.0.1 (Build 2)</string>
     <string name="developed_by_text">Developed by: Group 6</string>
     <string name="switch_account_button">Switch Account / Log Out</string>
 </resources>
