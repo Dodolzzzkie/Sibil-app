@@ -18,10 +18,12 @@
  * 2. Android Manifest Configuration (`app/src/main/AndroidManifest.xml`):
  *    <application
  *        android:allowBackup="true"
+ *        android:fullBackupContent="true"
  *        android:hasFragileUserData="true"
  *        ... >
- *    (`android:hasFragileUserData="true"` prompts Android 10+ users to keep their app data
- *    even if they manually uninstall the app before installing a newer APK.)
+ *    (`android:allowBackup="true"`, `android:fullBackupContent="true"`, and
+ *    `android:hasFragileUserData="true"` ensure Android retains and backs up app data across
+ *    updates and reinstalls.)
  * =================================================================================================
  */
 package com.example
@@ -32,21 +34,30 @@ import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.backup.BackupManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -119,9 +130,11 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Flag
@@ -136,6 +149,7 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
@@ -240,7 +254,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
-import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -248,15 +261,21 @@ import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.Typography
-import android.util.Base64
-import java.net.HttpURLConnection
+import java.io.BufferedReader
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.InputStreamReader
 import java.net.URL
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.util.Calendar
 import java.util.Locale
+import java.util.zip.Inflater
+import java.util.zip.InflaterInputStream
+import java.util.zip.ZipInputStream
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -266,7 +285,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val DEVELOPER_GEMINI_API_KEY = "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew"
 const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.1 (Build 2)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
@@ -281,7 +299,7 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     WindowCompat.setDecorFitsSystemWindows(window, false)
     enableEdgeToEdge()
-    createTimerNotificationChannel(this)
+    createClockNotificationChannel(this)
     setContent {
       CivilEngineeringProductivityApp()
     }
@@ -456,162 +474,387 @@ data class FlashcardDeck(
 )
 
 /**
- * Resolves the effective Gemini API key directly from `DEVELOPER_GEMINI_API_KEY`.
+ * 100% Free, Offline, Zero-Fail Document & Text Flashcard Extractor (`OfflineDeckExtractor`).
+ * Requires no internet connection and no API keys.
+ * Supports `.docx` (via `ZipInputStream` reading `word/document.xml`), `.txt` (via `BufferedReader`),
+ * `.pdf` (scanning `BT...ET`, parenthesized strings `Regex("\\(([^()]{3,})\\)")`, FlateDecode streams,
+ * and clean ASCII runs), and direct pasted study notes.
  */
-fun resolveActiveGeminiApiKey(savedPrefsKey: String? = null): String {
-  return DEVELOPER_GEMINI_API_KEY.trim()
+object OfflineDeckExtractor {
+  val SUPPORTED_DOCUMENT_MIME_TYPES = arrayOf(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/pdf",
+    "text/plain"
+  )
+
+  /**
+   * Extracts raw text from a `.docx`, `.txt`, or `.pdf` document URI on `Dispatchers.IO`.
+   */
+  suspend fun extractRawTextFromUri(
+    context: Context,
+    uri: Uri,
+    fileName: String
+  ): String = withContext(Dispatchers.IO) {
+    val mimeType = try {
+      context.contentResolver.getType(uri).orEmpty().lowercase(Locale.US)
+    } catch (_: Exception) {
+      ""
+    }
+    val lowerName = fileName.lowercase(Locale.US)
+
+    when {
+      lowerName.endsWith(".docx") || mimeType.contains("wordprocessingml") -> {
+        extractTextFromDocx(context, uri)
+      }
+      lowerName.endsWith(".txt") || mimeType.startsWith("text/") -> {
+        extractTextFromTxt(context, uri)
+      }
+      lowerName.endsWith(".pdf") || mimeType.contains("pdf") -> {
+        extractTextFromPdf(context, uri)
+      }
+      else -> {
+        val docxAttempt = extractTextFromDocx(context, uri)
+        if (docxAttempt.isNotBlank()) {
+          docxAttempt
+        } else {
+          val txtAttempt = extractTextFromTxt(context, uri)
+          if (txtAttempt.isNotBlank()) txtAttempt else extractTextFromPdf(context, uri)
+        }
+      }
+    }
+  }
+
+  /**
+   * `.docx` Parser: Uses `ZipInputStream` on `context.contentResolver.openInputStream(uri)`,
+   * locates `"word/document.xml"`, replaces `</w:p>` with newlines, and strips XML tags (`Regex("<[^>]*>")`).
+   */
+  fun extractTextFromDocx(context: Context, uri: Uri): String {
+    return try {
+      context.contentResolver.openInputStream(uri)?.use { inputStream ->
+        ZipInputStream(inputStream).use { zipStream ->
+          var entry = zipStream.nextEntry
+          while (entry != null) {
+            if (entry.name.equals("word/document.xml", ignoreCase = true)) {
+              val xmlContent = zipStream.bufferedReader(Charsets.UTF_8).readText()
+              val withParagraphBreaks = xmlContent
+                .replace("</w:p>", "\n")
+                .replace("<w:br/>", "\n")
+                .replace("<w:tab/>", " ")
+              val stripped = withParagraphBreaks
+                .replace(Regex("<[^>]*>"), " ")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+              return@use stripped
+                .lines()
+                .map { it.replace(Regex("\\s+"), " ").trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+            }
+            zipStream.closeEntry()
+            entry = zipStream.nextEntry
+          }
+          ""
+        }
+      } ?: ""
+    } catch (_: Exception) {
+      ""
+    }
+  }
+
+  /**
+   * `.txt` Parser: Reads text directly via `BufferedReader`.
+   */
+  fun extractTextFromTxt(context: Context, uri: Uri): String {
+    return try {
+      context.contentResolver.openInputStream(uri)?.use { inputStream ->
+        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+          reader.readText().trim()
+        }
+      } ?: ""
+    } catch (_: Exception) {
+      ""
+    }
+  }
+
+  /**
+   * `.pdf` Parser: Scans the raw byte stream (and decompressed FlateDecode streams where present)
+   * for readable text inside PDF text blocks (`BT...ET`), parenthesized strings `Regex("\\(([^()]{3,})\\)")`,
+   * and clean ASCII runs.
+   */
+  fun extractTextFromPdf(context: Context, uri: Uri): String {
+    return try {
+      val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        ?: return ""
+      if (rawBytes.isEmpty()) return ""
+
+      val rawLatin = String(rawBytes, Charsets.ISO_8859_1)
+      val combinedStreamsBuilder = StringBuilder(rawLatin)
+
+      // Also attempt to inflate compressed PDF streams so compressed text blocks are readable
+      val streamRegex = Regex("stream\\r?\\n([\\s\\S]*?)\\r?\\nendstream")
+      for (match in streamRegex.findAll(rawLatin)) {
+        val streamContent = match.groupValues.getOrNull(1) ?: continue
+        if (streamContent.isEmpty() || streamContent.length > 500_000) continue
+        val streamBytes = streamContent.toByteArray(Charsets.ISO_8859_1)
+        val inflated = tryInflatePdfStream(streamBytes, nowrap = false)
+          ?: tryInflatePdfStream(streamBytes, nowrap = true)
+        if (!inflated.isNullOrBlank()) {
+          combinedStreamsBuilder.append("\n").append(inflated)
+        }
+      }
+
+      val fullPdfContent = combinedStreamsBuilder.toString()
+      val parenthesizedRegex = Regex("\\(([^()]{3,})\\)")
+      val btEtRegex = Regex("BT([\\s\\S]*?)ET")
+      val extractedSnippets = mutableListOf<String>()
+
+      // 1. Scan inside BT...ET text blocks for parenthesized text runs
+      for (btMatch in btEtRegex.findAll(fullPdfContent)) {
+        val block = btMatch.groupValues.getOrNull(1) ?: continue
+        val blockPieces = mutableListOf<String>()
+        for (pMatch in parenthesizedRegex.findAll(block)) {
+          val cleaned = cleanPdfStringLiteral(pMatch.groupValues[1])
+          if (isReadableStudySnippet(cleaned)) {
+            blockPieces.add(cleaned)
+          }
+        }
+        if (blockPieces.isNotEmpty()) {
+          val joinedLine = blockPieces.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+          if (isReadableStudySnippet(joinedLine)) {
+            extractedSnippets.add(joinedLine)
+          }
+        }
+      }
+
+      // 2. Scan parenthesized strings across the stream if BT...ET blocks were sparse
+      if (extractedSnippets.sumOf { it.length } < 180) {
+        for (pMatch in parenthesizedRegex.findAll(fullPdfContent)) {
+          val cleaned = cleanPdfStringLiteral(pMatch.groupValues[1])
+          if (isReadableStudySnippet(cleaned) && cleaned.length >= 6) {
+            extractedSnippets.add(cleaned)
+          }
+        }
+      }
+
+      // 3. Scan clean ASCII runs if still sparse
+      if (extractedSnippets.sumOf { it.length } < 180) {
+        val asciiRunRegex = Regex("[A-Za-z0-9][A-Za-z0-9 ,.:;=+\\-*/()%]{12,180}")
+        for (runMatch in asciiRunRegex.findAll(fullPdfContent)) {
+          val candidate = runMatch.value.replace(Regex("\\s+"), " ").trim()
+          if (isReadableStudySnippet(candidate)) {
+            extractedSnippets.add(candidate)
+          }
+        }
+      }
+
+      extractedSnippets
+        .distinct()
+        .joinToString("\n")
+        .trim()
+    } catch (_: Exception) {
+      ""
+    }
+  }
+
+  private fun tryInflatePdfStream(bytes: ByteArray, nowrap: Boolean): String? {
+    return try {
+      val inflater = Inflater(nowrap)
+      InflaterInputStream(ByteArrayInputStream(bytes), inflater).use { stream ->
+        val out = stream.readBytes()
+        inflater.end()
+        if (out.isNotEmpty()) String(out, Charsets.ISO_8859_1) else null
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun cleanPdfStringLiteral(raw: String): String {
+    return raw
+      .replace("\\n", "\n")
+      .replace("\\r", " ")
+      .replace("\\t", " ")
+      .replace("\\(", "(")
+      .replace("\\)", ")")
+      .replace("\\\\", "\\")
+      .filter { ch -> ch == '\n' || ch in ' '..'~' }
+      .replace(Regex("\\s+"), " ")
+      .trim()
+  }
+
+  private fun isReadableStudySnippet(text: String): Boolean {
+    if (text.length < 4) return false
+    val lower = text.lowercase(Locale.US)
+    val pdfInternalTokens = listOf(
+      "/type", "/font", "/page", "/catalog", "/filter", "flatedecode",
+      "endobj", "startxref", "mediabox", "resources", "procset", "xref",
+      "obj <<", "cidfont", "basefont", "encoding", "winansiencoding"
+    )
+    if (pdfInternalTokens.any { lower.contains(it) }) return false
+    val letterCount = text.count { it.isLetter() }
+    val printableCount = text.count { it.isLetterOrDigit() || it.isWhitespace() || it in ".,:;-=+/()%" }
+    return letterCount >= 3 &&
+      letterCount.toFloat() / text.length.toFloat() >= 0.38f &&
+      printableCount.toFloat() / text.length.toFloat() >= 0.88f
+  }
 }
 
 /**
- * Reads a `.pdf` document from [uri], encodes the bytes to Base64 using `android.util.Base64.NO_WRAP`,
- * sends an HTTP POST request via `java.net.HttpURLConnection` to the Google Gemini API
- * (`generateContent`) using [DEVELOPER_GEMINI_API_KEY], and parses the returned JSON array of
- * `question` / `answer` flashcards using `org.json.JSONObject` and `org.json.JSONArray`.
+ * Smart Heuristic Card Generation (`generateCardsFromText(rawText: String): List<FlashcardItem>`):
+ * - Splits extracted text into clean lines and sentences.
+ * - Rule 1 (Colon / Dash Definitions): Lines formatted like `"Term: Definition"` or `"Term - Definition"`
+ *   (where Term is 3–60 chars) -> Front: `"Define: [Term]"`, Back: `"[Definition]"`.
+ * - Rule 2 (Formulas & Equations): Sentences containing `"="` or keywords (`"formula"`, `"NSCP"`,
+ *   `"minimum"`, `"ratio"`, `"stress"`, `"pressure"`, `"moment"`) -> Front: Cloze or conceptual question
+ *   about the subject of the sentence, Back: Full provision/formula sentence.
+ * - Rule 3 (Key Concept Sentences): Groups remaining informative sentences (40–220 characters) into
+ *   structured concept review cards so the extractor ALWAYS generates at least 5 to 12 study cards
+ *   from any document or pasted text.
  */
-suspend fun extractFlashcardsFromPdfWithGemini(
-  context: Context,
-  uri: Uri,
-  apiKey: String = DEVELOPER_GEMINI_API_KEY,
-  onStatusUpdate: (String) -> Unit
-): List<Pair<String, String>> {
-  val cleanKey = apiKey.trim()
-  if (
-    cleanKey.isBlank() ||
-    cleanKey.equals("YOUR_GEMINI_API_KEY", ignoreCase = true) ||
-    cleanKey.equals("MY_GEMINI_API_KEY", ignoreCase = true)
-  ) {
-    throw IllegalStateException("Missing Gemini API key")
+fun generateCardsFromText(
+  rawText: String,
+  category: String = "Offline Study Deck"
+): List<FlashcardItem> {
+  val normalizedText = rawText
+    .replace("\r\n", "\n")
+    .replace('\r', '\n')
+    .trim()
+
+  val generatedPairs = mutableListOf<Pair<String, String>>()
+  val seenAnswers = mutableSetOf<String>()
+
+  fun addUniqueCard(front: String, back: String) {
+    val cleanFront = front.replace(Regex("\\s+"), " ").trim()
+    val cleanBack = back.replace(Regex("\\s+"), " ").trim()
+    val answerKey = cleanBack.lowercase(Locale.US)
+    if (cleanFront.isNotEmpty() && cleanBack.isNotEmpty() && seenAnswers.add(answerKey)) {
+      generatedPairs.add(cleanFront to cleanBack)
+    }
   }
 
-  onStatusUpdate("Reading PDF document...")
-  val pdfBytes = withContext(Dispatchers.IO) {
-    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+  val lines = normalizedText
+    .lines()
+    .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
+    .filter { it.length >= 6 }
+
+  val sentences = normalizedText
+    .split(Regex("(?<=[.!?])\\s+|\\n+"))
+    .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
+    .filter { it.length >= 10 }
+
+  // Rule 1 (Colon / Dash Definitions): "Term: Definition" or "Term - Definition" (Term 3..60 chars)
+  val definitionRegex = Regex("^([^:\\-–—]{3,60})\\s*(?::|\\s[-–—]\\s)\\s*(.{8,320})$")
+  for (line in lines) {
+    if (generatedPairs.size >= 12) break
+    val match = definitionRegex.find(line) ?: continue
+    val term = match.groupValues[1].trim()
+    val definition = match.groupValues[2].trim()
+    val letterCount = term.count { it.isLetter() }
+    if (term.length in 3..60 && letterCount >= 2 && definition.length >= 8) {
+      addUniqueCard(
+        front = "Define: $term",
+        back = definition
+      )
+    }
   }
-  if (pdfBytes == null || pdfBytes.isEmpty()) {
-    throw IllegalArgumentException("Unable to read PDF bytes")
+
+  // Rule 2 (Formulas & Equations): Sentences containing "=" or CE keywords
+  val formulaKeywords = listOf(
+    "formula", "nscp", "minimum", "ratio", "stress", "pressure", "moment"
+  )
+  for (sentence in sentences) {
+    if (generatedPairs.size >= 12) break
+    val lower = sentence.lowercase(Locale.US)
+    val hasEquals = sentence.contains("=")
+    val matchedKeyword = formulaKeywords.firstOrNull { lower.contains(it) }
+    if (hasEquals || matchedKeyword != null) {
+      val frontPrompt = if (hasEquals) {
+        val lhs = sentence.substringBefore("=").trim()
+        val subjectLabel = lhs.takeLast(48).trim().ifEmpty { "this engineering equation" }
+        "Formula & Cloze Recall: Complete the expression or state the equation for \"$subjectLabel = [ ___ ]\""
+      } else {
+        val topicSnippet = extractSubjectPhraseFromSentence(sentence, matchedKeyword ?: "concept")
+        "Engineering Provision (${matchedKeyword?.uppercase(Locale.US) ?: "CE"}): What is the rule or relationship regarding $topicSnippet?"
+      }
+      addUniqueCard(
+        front = frontPrompt,
+        back = sentence
+      )
+    }
   }
 
-  onStatusUpdate("Engr. Sibil is generating flashcards...")
-  return withContext(Dispatchers.IO) {
-    val base64Pdf = Base64.encodeToString(pdfBytes, Base64.NO_WRAP)
-    val promptText =
-      "Extract 5 to 8 core Civil Engineering study flashcards from this document. " +
-        "Respond strictly with a raw JSON array containing objects with 'question' and 'answer' fields. " +
-        "Do not include markdown codeblocks or explanation."
+  // Rule 3 (Key Concept Sentences): Remaining informative sentences (40..220 characters)
+  for (sentence in sentences) {
+    if (generatedPairs.size >= 12) break
+    if (sentence.length in 40..220) {
+      val subjectPhrase = extractSubjectPhraseFromSentence(sentence, "this concept")
+      addUniqueCard(
+        front = "Key Concept Review: Explain the principle or engineering significance of $subjectPhrase.",
+        back = sentence
+      )
+    }
+  }
 
-    val inlineDataObj = JSONObject().apply {
-      put("mime_type", "application/pdf")
-      put("data", base64Pdf)
-    }
-    val partsArray = JSONArray().apply {
-      put(JSONObject().put("inline_data", inlineDataObj))
-      put(JSONObject().put("text", promptText))
-    }
-    val contentsArray = JSONArray().apply {
-      put(JSONObject().put("parts", partsArray))
-    }
-    val requestBodyJson = JSONObject().apply {
-      put("contents", contentsArray)
-    }.toString()
+  // If fewer than 5 cards were found from 40..220 char sentences, also split/group any remaining clauses or lines
+  if (generatedPairs.size < 5) {
+    val allFragments = (sentences + lines + normalizedText.split(Regex("[,;]")))
+      .map { it.replace(Regex("\\s+"), " ").trim() }
+      .filter { it.length >= 6 }
+      .distinct()
 
-    // Route PDF extraction HTTP POST requests directly using DEVELOPER_GEMINI_API_KEY
-    val modelEndpoints = listOf(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=$cleanKey",
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$cleanKey"
+    for ((idx, fragment) in allFragments.withIndex()) {
+      if (generatedPairs.size >= 8) break
+      val topic = extractSubjectPhraseFromSentence(fragment, "Study Note #${idx + 1}")
+      addUniqueCard(
+        front = "Concept Check #${generatedPairs.size + 1}: Summarize the key takeaway regarding $topic.",
+        back = fragment
+      )
+    }
+  }
+
+  // Guarantee ALWAYS at least 5 to 12 study cards from any document or pasted text
+  if (generatedPairs.size < 5) {
+    val baseSnippet = normalizedText.ifBlank { "Civil Engineering Study Notes" }.take(180)
+    val fallbackTemplates = listOf(
+      "Core Concept Summary: What is the primary subject or definition stated in this study note?" to baseSnippet,
+      "Key Engineering Takeaway: Which provision, value, or relationship should be remembered from: \"$baseSnippet\"?" to
+        "Focus on the key terms, units, and boundary conditions described in: $baseSnippet",
+      "Active Recall Prompt: State the main engineering principle highlighted in this section." to baseSnippet,
+      "Application & Exam Check: How is \"$baseSnippet\" applied in Civil Engineering problem solving?" to
+        "Identify the governing parameters, sign conventions, and standard units for: $baseSnippet",
+      "Self-Verification Question: Recite the key statement or formula from memory." to baseSnippet
     )
-
-    var responseText: String? = null
-    var lastException: Exception? = null
-
-    for (endpointUrl in modelEndpoints) {
-      var connection: HttpURLConnection? = null
-      try {
-        val url = URL(endpointUrl)
-        connection = (url.openConnection() as HttpURLConnection).apply {
-          requestMethod = "POST"
-          connectTimeout = 25000
-          readTimeout = 45000
-          doInput = true
-          doOutput = true
-          setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-        }
-        connection.outputStream.use { output ->
-          output.write(requestBodyJson.toByteArray(Charsets.UTF_8))
-          output.flush()
-        }
-
-        val statusCode = connection.responseCode
-        if (statusCode in 200..299) {
-          responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-          break
-        } else {
-          val errBody = connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-          lastException = IllegalStateException("HTTP $statusCode: $errBody")
-        }
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        lastException = e
-      } finally {
-        connection?.disconnect()
-      }
+    for ((q, a) in fallbackTemplates) {
+      if (generatedPairs.size >= 5) break
+      generatedPairs.add(q to a)
     }
-
-    val rawResponse = responseText ?: throw (lastException ?: IllegalStateException("Network request failed"))
-
-    val rootResponseObj = JSONObject(rawResponse)
-    val candidates = rootResponseObj.optJSONArray("candidates")
-      ?: throw IllegalStateException("No candidates in Gemini response")
-    if (candidates.length() == 0) {
-      throw IllegalStateException("Empty candidates in Gemini response")
-    }
-
-    val firstCandidate = candidates.getJSONObject(0)
-    val contentObj = firstCandidate.optJSONObject("content")
-      ?: throw IllegalStateException("Missing content in Gemini response")
-    val responseParts = contentObj.optJSONArray("parts")
-      ?: throw IllegalStateException("Missing parts in Gemini response")
-
-    val combinedTextBuilder = StringBuilder()
-    for (i in 0 until responseParts.length()) {
-      val partObj = responseParts.optJSONObject(i) ?: continue
-      val textSegment = partObj.optString("text", "")
-      if (textSegment.isNotBlank()) {
-        combinedTextBuilder.append(textSegment)
-      }
-    }
-
-    var cleanedJsonText = combinedTextBuilder.toString().trim()
-    if (cleanedJsonText.startsWith("```")) {
-      cleanedJsonText = cleanedJsonText
-        .removePrefix("```json")
-        .removePrefix("```JSON")
-        .removePrefix("```")
-        .removeSuffix("```")
-        .trim()
-    }
-    val startBracket = cleanedJsonText.indexOf('[')
-    val endBracket = cleanedJsonText.lastIndexOf(']')
-    if (startBracket != -1 && endBracket != -1 && endBracket > startBracket) {
-      cleanedJsonText = cleanedJsonText.substring(startBracket, endBracket + 1)
-    }
-
-    val flashcardsArray = JSONArray(cleanedJsonText)
-    val extractedList = mutableListOf<Pair<String, String>>()
-    for (i in 0 until flashcardsArray.length()) {
-      val itemObj = flashcardsArray.optJSONObject(i) ?: continue
-      val question = itemObj.optString("question", "").trim()
-      val answer = itemObj.optString("answer", "").trim()
-      if (question.isNotEmpty() && answer.isNotEmpty()) {
-        extractedList.add(question to answer)
-      }
-    }
-
-    if (extractedList.isEmpty()) {
-      throw IllegalStateException("No flashcards extracted from PDF")
-    }
-    extractedList
   }
+
+  return generatedPairs.take(12).mapIndexed { index, (question, answer) ->
+    FlashcardItem(
+      id = index + 1,
+      question = question,
+      answer = answer,
+      category = category.ifBlank { "Offline Study Deck" },
+      masteryLevel = "New"
+    )
+  }
+}
+
+private fun extractSubjectPhraseFromSentence(sentence: String, fallback: String): String {
+  val cleaned = sentence
+    .replace(Regex("^(The|A|An|In|For|According to|Under|When)\\s+", RegexOption.IGNORE_CASE), "")
+    .trim()
+  val words = cleaned
+    .split(Regex("\\s+"))
+    .map { it.trim(',', '.', ';', ':', '(', ')', '"', '\'') }
+    .filter { it.isNotEmpty() }
+  if (words.isEmpty()) return fallback
+  val phrase = words.take(6).joinToString(" ")
+  return "\"$phrase\""
 }
 
 /**
@@ -645,12 +888,193 @@ fun isValidUsername(username: String): Boolean {
  * 7. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
  */
 class LocalStorageManager(context: Context) {
+  private val appContext: Context = context.applicationContext ?: context
   private val prefs: SharedPreferences =
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
   init {
     migrateTaskSchemaIfNeeded()
     clearLegacyPlaceholderFlashcardDecksIfNeeded()
+    restoreFromDeviceBackupIfUnauthenticated()
+  }
+
+  /**
+   * Obtains the persistent hardware identifier using `Settings.Secure.ANDROID_ID`.
+   */
+  @SuppressLint("HardwareIds")
+  fun getDeviceAndroidId(): String {
+    return try {
+      val id = Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID)
+      if (!id.isNullOrBlank()) id.trim() else "default_device"
+    } catch (_: Exception) {
+      "default_device"
+    }
+  }
+
+  fun getDeviceBackupFileName(): String {
+    return "sibil_device_backup_${getDeviceAndroidId()}.json"
+  }
+
+  /**
+   * On app startup, if `SharedPreferences` has no logged-in username (such as after an uninstall
+   * and fresh reinstall), automatically looks for `"sibil_device_backup_${androidId}.json"` in
+   * `MediaStore.Downloads` or `Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)`.
+   * If found, silently restores the username, tasks, schedules, alarms, and flashcard decks
+   * before rendering the screen so the user is logged right back into their account automatically.
+   */
+  private fun restoreFromDeviceBackupIfUnauthenticated() {
+    val existingUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
+    if (existingUser.isNotBlank()) return
+
+    val backupJson = readDeviceBackupFileFromDownloads()
+    if (!backupJson.isNullOrBlank()) {
+      importBackupJson(
+        rawBackupInput = backupJson,
+        fallbackAccountKey = GUEST_ACCOUNT_KEY,
+        syncToDeviceAfterImport = false
+      )
+    }
+  }
+
+  /**
+   * Triggers `BackupManager(context).dataChanged()` and writes `"sibil_device_backup_${androidId}.json"`
+   * into public shared storage (`MediaStore.Downloads` on Android 10+ and `DIRECTORY_DOWNLOADS`).
+   */
+  fun syncToDeviceStorage(activeAccountKey: String = GUEST_ACCOUNT_KEY) {
+    try {
+      BackupManager(appContext).dataChanged()
+    } catch (_: Exception) {
+    }
+
+    val currentSavedUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
+    val hasRegisteredAccounts = getRegisteredUsers().isNotEmpty()
+    if (currentSavedUser.isBlank() && !hasRegisteredAccounts) {
+      return
+    }
+
+    val backupPayload = exportBackupJson(activeAccountKey)
+    writeDeviceBackupFileToDownloads(backupPayload)
+  }
+
+  private fun writeDeviceBackupFileToDownloads(jsonContent: String) {
+    val fileName = getDeviceBackupFileName()
+    val bytes = jsonContent.toByteArray(Charsets.UTF_8)
+
+    // 1. Android 10+ (API 29+): Write via MediaStore.Downloads
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      try {
+        val resolver = appContext.contentResolver
+        val downloadsUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+        val selectionArgs = arrayOf(fileName)
+
+        var existingUri: Uri? = null
+        resolver.query(
+          downloadsUri,
+          arrayOf(MediaStore.MediaColumns._ID),
+          selection,
+          selectionArgs,
+          "${MediaStore.MediaColumns._ID} DESC"
+        )?.use { cursor ->
+          if (cursor.moveToFirst()) {
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val id = cursor.getLong(idCol)
+            existingUri = ContentUris.withAppendedId(downloadsUri, id)
+          }
+        }
+
+        val targetUri = existingUri ?: run {
+          val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+          }
+          resolver.insert(downloadsUri, values)
+        }
+
+        if (targetUri != null) {
+          resolver.openOutputStream(targetUri, "wt")?.use { out ->
+            out.write(bytes)
+            out.flush()
+          }
+        }
+      } catch (_: Exception) {
+      }
+    }
+
+    // 2. Direct Public Downloads File Fallback
+    try {
+      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      if (downloadsDir != null) {
+        if (!downloadsDir.exists()) {
+          downloadsDir.mkdirs()
+        }
+        val targetFile = File(downloadsDir, fileName)
+        targetFile.writeText(jsonContent, Charsets.UTF_8)
+      }
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun readDeviceBackupFileFromDownloads(): String? {
+    val androidId = getDeviceAndroidId()
+    val exactFileName = "sibil_device_backup_${androidId}.json"
+    val prefixPattern = "sibil_device_backup_${androidId}%"
+
+    // 1. Android 10+ (API 29+): Query MediaStore.Downloads
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      try {
+        val resolver = appContext.contentResolver
+        val downloadsUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val selection =
+          "${MediaStore.MediaColumns.DISPLAY_NAME} = ? OR ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?"
+        val selectionArgs = arrayOf(exactFileName, prefixPattern)
+
+        resolver.query(
+          downloadsUri,
+          arrayOf(MediaStore.MediaColumns._ID),
+          selection,
+          selectionArgs,
+          "${MediaStore.MediaColumns._ID} DESC"
+        )?.use { cursor ->
+          while (cursor.moveToNext()) {
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val id = cursor.getLong(idCol)
+            val itemUri = ContentUris.withAppendedId(downloadsUri, id)
+            val text = resolver.openInputStream(itemUri)?.bufferedReader(Charsets.UTF_8)?.use {
+              it.readText()
+            }?.trim()
+            if (!text.isNullOrBlank()) {
+              return text
+            }
+          }
+        }
+      } catch (_: Exception) {
+      }
+    }
+
+    // 2. Direct Public Downloads Directory Fallback
+    try {
+      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      if (downloadsDir != null && downloadsDir.exists()) {
+        val exactFile = File(downloadsDir, exactFileName)
+        if (exactFile.exists() && exactFile.canRead()) {
+          val text = exactFile.readText(Charsets.UTF_8).trim()
+          if (text.isNotBlank()) return text
+        }
+        val matchingFiles = downloadsDir.listFiles { file ->
+          file.name.startsWith("sibil_device_backup_${androidId}") && file.name.endsWith(".json")
+        }
+        val newestFile = matchingFiles?.maxByOrNull { it.lastModified() }
+        if (newestFile != null && newestFile.canRead()) {
+          val text = newestFile.readText(Charsets.UTF_8).trim()
+          if (text.isNotBlank()) return text
+        }
+      }
+    } catch (_: Exception) {
+    }
+
+    return null
   }
 
   /**
@@ -833,6 +1257,7 @@ class LocalStorageManager(context: Context) {
     val jsonObject = JSONObject()
     currentUsers.forEach { (k, v) -> jsonObject.put(k, v) }
     prefs.edit().putString(KEY_REGISTERED_USERS, jsonObject.toString()).apply()
+    syncToDeviceStorage(normalizedUsername)
   }
 
   fun saveTasks(tasks: List<Task>, username: String = GUEST_ACCOUNT_KEY) {
@@ -848,6 +1273,7 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(tasksKeyFor(username), jsonArray.toString()).apply()
+    syncToDeviceStorage(username)
   }
 
   fun loadTasks(username: String = GUEST_ACCOUNT_KEY): List<Task>? {
@@ -903,6 +1329,7 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(schedulesKeyFor(username), jsonArray.toString()).apply()
+    syncToDeviceStorage(username)
   }
 
   fun loadSchedules(username: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
@@ -971,6 +1398,7 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(alarmsKeyFor(username), jsonArray.toString()).apply()
+    syncToDeviceStorage(username)
   }
 
   fun loadAlarms(username: String = GUEST_ACCOUNT_KEY): List<AlarmItem>? {
@@ -1045,6 +1473,7 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(deckObj)
     }
     prefs.edit().putString(flashcardDecksKeyFor(username), jsonArray.toString()).apply()
+    syncToDeviceStorage(username)
   }
 
   fun loadFlashcardDecks(username: String = GUEST_ACCOUNT_KEY): List<FlashcardDeck> {
@@ -1125,9 +1554,11 @@ class LocalStorageManager(context: Context) {
   }
 
   fun saveUserProfile(username: String) {
+    val clean = username.trim()
     prefs.edit()
-      .putString(KEY_USER_NAME, username.trim())
+      .putString(KEY_USER_NAME, clean)
       .apply()
+    syncToDeviceStorage(clean)
   }
 
   fun loadUserName(): String? {
@@ -1143,24 +1574,17 @@ class LocalStorageManager(context: Context) {
 
   fun saveDarkMode(enabled: Boolean) {
     prefs.edit().putBoolean(KEY_DARK_MODE, enabled).apply()
+    syncToDeviceStorage(loadUserName().orEmpty())
   }
 
   fun loadDarkMode(defaultValue: Boolean = false): Boolean {
     return prefs.getBoolean(KEY_DARK_MODE, defaultValue)
   }
 
-  fun saveGeminiApiKey(apiKey: String) {
-    prefs.edit().putString(KEY_GEMINI_API_KEY, apiKey.trim()).apply()
-  }
-
-  fun loadGeminiApiKey(): String {
-    return prefs.getString(KEY_GEMINI_API_KEY, "")?.trim().orEmpty()
-  }
-
   /**
    * Reads all stored JSON strings from `SharedPreferences` (Schedules, Tasks, Alarms, Flashcards,
    * User Profile, and all per-account keys) and combines them into a single encoded JSON string
-   * for One-Tap Clipboard Backup.
+   * for One-Tap Clipboard Backup & Device-Bound Auto-Persistence.
    */
   fun exportBackupJson(activeAccountKey: String = GUEST_ACCOUNT_KEY): String {
     val resolvedAccount = normalizeAccountKey(activeAccountKey.ifBlank { loadUserName() })
@@ -1182,6 +1606,7 @@ class LocalStorageManager(context: Context) {
     return JSONObject().apply {
       put("app", "Sibil")
       put("version", SIBIL_APP_VERSION_TAG)
+      put("deviceId", getDeviceAndroidId())
       put("backupTimestamp", System.currentTimeMillis())
       put("userProfile", savedUser)
       put("activeAccountKey", resolvedAccount)
@@ -1196,10 +1621,14 @@ class LocalStorageManager(context: Context) {
   }
 
   /**
-   * Parses a backup JSON string (from Clipboard Restore), repopulates `SharedPreferences`
+   * Parses a backup JSON string (from Clipboard Restore or Device Auto-Restore), repopulates `SharedPreferences`
    * for Schedules, Tasks, Alarms, Flashcards, and User Profile, and returns `true` on success.
    */
-  fun importBackupJson(rawBackupInput: String, fallbackAccountKey: String = GUEST_ACCOUNT_KEY): Boolean {
+  fun importBackupJson(
+    rawBackupInput: String,
+    fallbackAccountKey: String = GUEST_ACCOUNT_KEY,
+    syncToDeviceAfterImport: Boolean = true
+  ): Boolean {
     val trimmed = rawBackupInput.trim()
     if (trimmed.isEmpty()) return false
 
@@ -1275,6 +1704,9 @@ class LocalStorageManager(context: Context) {
       editor.putInt(KEY_TASK_SCHEMA_VERSION, CURRENT_TASK_SCHEMA_VERSION)
       editor.putInt(KEY_FLASHCARD_SCHEMA_VERSION, CURRENT_FLASHCARD_SCHEMA_VERSION)
       editor.commit()
+      if (syncToDeviceAfterImport) {
+        syncToDeviceStorage(targetAccountKey)
+      }
       true
     } catch (_: Exception) {
       false
@@ -1292,7 +1724,6 @@ class LocalStorageManager(context: Context) {
     private const val KEY_FLASHCARDS_PREFIX = "flashcards_"
     private const val KEY_USER_NAME = "saved_user_name"
     private const val KEY_DARK_MODE = "saved_dark_mode"
-    private const val KEY_GEMINI_API_KEY = "saved_gemini_api_key"
     private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
     private const val CURRENT_TASK_SCHEMA_VERSION = 2
     private const val KEY_FLASHCARD_SCHEMA_VERSION = "flashcard_schema_version"
@@ -1309,7 +1740,7 @@ class LocalStorageManager(context: Context) {
  * 5. Today's Schedule list on the Dashboard.
  * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View (`schedules_[username]`).
  * 7. Account-segregated `FlashcardDeck` items for the Smart Flashcard reviewer (`flashcards_[username]`).
- * 8. Simulated Username Authentication & Guest Mode data wipe via `LocalStorageManager` (`SharedPreferences`).
+ * 8. Simulated Username Authentication, Device-Bound Auto-Persistence, & Guest Mode data wipe via `LocalStorageManager`.
  */
 class TaskViewModel(
   private var storageManager: LocalStorageManager? = null
@@ -1345,19 +1776,6 @@ class TaskViewModel(
   private var nextDeckId by mutableIntStateOf(1)
   private var nextCardId by mutableIntStateOf(1000)
   private var hasLoadedFromStorage = false
-
-  var savedGeminiApiKey by mutableStateOf("")
-    private set
-
-  fun updateGeminiApiKey(newKey: String) {
-    val trimmed = newKey.trim()
-    savedGeminiApiKey = trimmed
-    storageManager?.saveGeminiApiKey(trimmed)
-  }
-
-  fun getEffectiveGeminiApiKey(): String {
-    return resolveActiveGeminiApiKey(savedGeminiApiKey)
-  }
 
   var selectedTaskFolder by mutableStateOf(DEFAULT_TASK_CATEGORY)
     private set
@@ -1429,7 +1847,6 @@ class TaskViewModel(
     hasLoadedFromStorage = true
 
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
-    savedGeminiApiKey = manager.loadGeminiApiKey()
 
     val savedUserName = manager.loadUserName()
     if (!savedUserName.isNullOrBlank()) {
@@ -1695,8 +2112,8 @@ class TaskViewModel(
     username = if (cleanUsername.isEmpty()) LocalStorageManager.GUEST_DISPLAY_NAME else cleanUsername
     hasSavedSession = true
     storageManager?.let { manager ->
-      manager.saveUserProfile(username)
       loadAccountDataForKey(manager, currentAccountKey)
+      manager.saveUserProfile(username)
     }
   }
 
@@ -1704,8 +2121,8 @@ class TaskViewModel(
     username = LocalStorageManager.GUEST_DISPLAY_NAME
     hasSavedSession = true
     storageManager?.let { manager ->
-      manager.saveUserProfile(username)
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
+      manager.saveUserProfile(username)
     }
   }
 
@@ -1768,6 +2185,39 @@ class TaskViewModel(
     storageManager?.saveAlarms(_alarms, currentAccountKey)
   }
 
+  /**
+   * Schedules a temporary snooze alarm for 5 minutes from now (`Calendar.getInstance()`).
+   */
+  fun scheduleFiveMinuteSnoozeAlarm(baseTitle: String) {
+    val cal = Calendar.getInstance().apply {
+      add(Calendar.MINUTE, 5)
+    }
+    val hour24 = cal.get(Calendar.HOUR_OF_DAY)
+    val minute = cal.get(Calendar.MINUTE)
+    val amPm = if (hour24 < 12) "AM" else "PM"
+    val hour12 = when {
+      hour24 == 0 -> 12
+      hour24 > 12 -> hour24 - 12
+      else -> hour24
+    }
+    val dayIndex = (cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)
+    val cleanLabel = baseTitle
+      .removePrefix("Snoozed: ")
+      .trim()
+      .ifEmpty { "Alarm" }
+
+    // Replace any previous temporary snooze alarm with the new 5-minute target
+    _alarms.removeAll { it.name.startsWith("Snooze: ") }
+    addAlarm(
+      name = "Snooze: $cleanLabel",
+      hour = String.format(Locale.US, "%02d", hour12),
+      minute = String.format(Locale.US, "%02d", minute),
+      amPm = amPm,
+      activeDays = listOf(dayIndex),
+      isActive = true
+    )
+  }
+
   fun toggleAlarmActive(alarmId: Int, isActive: Boolean) {
     val index = _alarms.indexOfFirst { it.id == alarmId }
     if (index != -1) {
@@ -1827,27 +2277,27 @@ class TaskViewModel(
     return newDeck
   }
 
-  fun createStudyDeckFromExtractedPdf(
-    documentDisplayName: String,
-    extractedPairs: List<Pair<String, String>>
+  /**
+   * Generates a `FlashcardDeck` offline using `generateCardsFromText(rawText)` and saves it
+   * immediately to `SharedPreferences`.
+   */
+  fun createDeckFromOfflineText(
+    deckTitle: String,
+    subjectTag: String,
+    rawText: String
   ): FlashcardDeck {
-    val cleanFileName = documentDisplayName
+    val cleanTitle = deckTitle
       .substringBeforeLast(".")
       .trim()
-      .ifEmpty { "Uploaded_PDF" }
-    val generatedCards = extractedPairs.map { (question, answer) ->
-      FlashcardItem(
-        id = nextCardId++,
-        question = question.trim(),
-        answer = answer.trim(),
-        category = "PDF Study Deck",
-        masteryLevel = "New"
-      )
+      .ifEmpty { "Study Notes Deck" }
+    val cleanTag = subjectTag.trim().ifEmpty { "Offline Import" }
+    val heuristicCards = generateCardsFromText(rawText = rawText, category = cleanTag).map { card ->
+      card.copy(id = nextCardId++)
     }
     return addFlashcardDeck(
-      title = "$cleanFileName - Study Deck",
-      subjectTag = "PDF Import",
-      initialCards = generatedCards
+      title = cleanTitle,
+      subjectTag = cleanTag,
+      initialCards = heuristicCards
     )
   }
 
@@ -3358,6 +3808,7 @@ private fun MainProductivityScaffold(
   taskViewModel: TaskViewModel,
   onLogout: () -> Unit
 ) {
+  val context = LocalContext.current
   val metrics = rememberResponsiveMetrics()
   var selectedTab by rememberSaveable { mutableStateOf(CeNavTab.DASHBOARD) }
   var selectedScheduleWeekDay by rememberSaveable { mutableStateOf(resolveInitialScheduleWeekDay()) }
@@ -3365,6 +3816,65 @@ private fun MainProductivityScaffold(
   var isAddScheduleDialogOpen by rememberSaveable { mutableStateOf(false) }
   var editingSchedule by remember { mutableStateOf<ClassSchedule?>(null) }
   var isProfileSettingsDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var lastGlobalTriggeredAlarmKey by remember { mutableStateOf("") }
+
+  // Continuous 1-second ticker checking active alarms and snooze countdown across the whole app
+  LaunchedEffect(Unit) {
+    while (true) {
+      val cal = Calendar.getInstance()
+      val currentHour24 = cal.get(Calendar.HOUR_OF_DAY)
+      val currentMinute = cal.get(Calendar.MINUTE)
+      val currentAmPm = if (currentHour24 < 12) "AM" else "PM"
+      val currentHour12 = when {
+        currentHour24 == 0 -> 12
+        currentHour24 > 12 -> currentHour24 - 12
+        else -> currentHour24
+      }
+      // Calendar.DAY_OF_WEEK is 1 (Sun) .. 7 (Sat) -> map to 0 (Sun) .. 6 (Sat)
+      val currentDayIndex = (cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)
+
+      // Check active user alarms & snoozed alarms
+      val activeAlarmsSnapshot = taskViewModel.alarms.toList()
+      val matchingAlarm = activeAlarmsSnapshot.firstOrNull { alarm ->
+        val alarmHour = alarm.hour.toIntOrNull() ?: -1
+        val alarmMinute = alarm.minute.toIntOrNull() ?: -1
+        val isDayMatch = alarm.activeDays.isEmpty() || alarm.activeDays.contains(currentDayIndex)
+        alarm.isActive &&
+          isDayMatch &&
+          alarmHour == currentHour12 &&
+          alarmMinute == currentMinute &&
+          alarm.amPm.equals(currentAmPm, ignoreCase = true)
+      }
+
+      if (matchingAlarm != null) {
+        val triggerKey = "${matchingAlarm.id}_${currentHour24}_$currentMinute"
+        if (lastGlobalTriggeredAlarmKey != triggerKey) {
+          lastGlobalTriggeredAlarmKey = triggerKey
+          val formattedTime = "${matchingAlarm.hour}:${matchingAlarm.minute} ${matchingAlarm.amPm}"
+          triggerClockAlert(
+            context = context,
+            title = matchingAlarm.name.ifBlank { "Alarm" },
+            message = "Alarm ringing: $formattedTime (${matchingAlarm.name.ifBlank { "Alarm" }})"
+          )
+        }
+      }
+
+      // Also check any active 5-minute snooze target timestamp
+      val targetSnooze = snoozeTargetEpochMillis
+      if (targetSnooze != null && System.currentTimeMillis() >= targetSnooze) {
+        val snoozedTitle = snoozeTargetTitle ?: "Snoozed Alarm"
+        snoozeTargetEpochMillis = null
+        snoozeTargetTitle = null
+        triggerClockAlert(
+          context = context,
+          title = snoozedTitle,
+          message = "$snoozedTitle (Snooze ended)"
+        )
+      }
+
+      delay(1000L)
+    }
+  }
 
   // Return to Dashboard when pressing system Back on any secondary bottom tab
   if (selectedTab != CeNavTab.DASHBOARD) {
@@ -3559,6 +4069,38 @@ private fun MainProductivityScaffold(
         onSwitchAccount = {
           isProfileSettingsDialogOpen = false
           onLogout()
+        }
+      )
+    }
+
+    val currentRingingTitle = ringingAlertTitle
+    if (currentRingingTitle != null) {
+      RingingAlertDialog(
+        alertTitle = currentRingingTitle,
+        alertDetail = activeRingingAlertMessage,
+        metrics = metrics,
+        onStop = {
+          AlarmSoundController.stopRinging()
+          try {
+            NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+          } catch (_: Exception) {
+          }
+        },
+        onSnoozeFiveMinutes = {
+          AlarmSoundController.stopRinging()
+          try {
+            NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+          } catch (_: Exception) {
+          }
+          snoozeTargetEpochMillis = System.currentTimeMillis() + 5L * 60L * 1000L
+          snoozeTargetTitle = currentRingingTitle
+          taskViewModel.scheduleFiveMinuteSnoozeAlarm(currentRingingTitle)
+          scheduleTimerExactAlarm(
+            context = context,
+            durationSeconds = 5L * 60L,
+            label = "$currentRingingTitle (Snooze)"
+          )
+          Toast.makeText(context, "Snoozed for 5 minutes", Toast.LENGTH_SHORT).show()
         }
       )
     }
@@ -4066,23 +4608,6 @@ fun DashboardScreen(
           onToggleComplete = { taskId ->
             viewModel.toggleTaskCompletion(taskId)
           }
-        )
-      }
-
-      // 4. App Version Footer at the bottom of the Dashboard
-      item {
-        Text(
-          text = SIBIL_APP_VERSION_TAG,
-          style = MaterialTheme.typography.labelMedium.copy(
-            fontSize = metrics.scaledSp(12),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-          textAlign = TextAlign.Center,
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = metrics.scaledDp(4), bottom = metrics.scaledDp(8))
-            .testTag("dashboard_version_footer")
         )
       }
     }
@@ -4904,14 +5429,13 @@ private fun resolveDocumentFileName(context: Context, uri: Uri): String {
 
 /**
  * Smart Flashcards Main View (`FlashcardMainView`) inside the Extras tab:
- * - Top Header: "Smart Flashcards" with a back button returning to the Extras hub and a top-right
- *   API Key Settings button so users can paste & save their free Gemini API key directly in `SharedPreferences`.
- * - Action Bar with 2 buttons:
- *   1. "Import Document" (Cloud/AI icon) launching `ActivityResultContracts.OpenDocument()` for `.pdf` files
- *      and extracting real flashcards via the Google Gemini API (`HttpURLConnection`, `Base64`, `org.json`).
- *   2. "+ New Deck" to manually add a custom deck and cards.
- * - Empty State: When no decks exist, shows an elegant cream empty-state card with an icon,
- *   "No Decks Available", and "Tap 'Import Document' above to upload a lecture PDF, or tap '+ New Deck' to create your own."
+ * - Top Header: "Smart Flashcards" with a back button returning to the Extras hub.
+ * - Action Bar with:
+ *   1. "Import Document" launching `ActivityResultContracts.OpenDocument()` for `.docx`, `.pdf`, and `.txt`
+ *      and extracting study flashcards 100% offline via `OfflineDeckExtractor`.
+ *   2. "Paste Text / Notes" opening a dialog where students can paste any text/lecture notes and convert them
+ *      into a 5–12 card study deck in one tap (also serves as automatic fallback for scanned/image-only PDFs).
+ *   3. "+ New Deck" to manually create a custom deck and cards.
  * - Decks List: Cream cards (`#FFFBF0`) placing the title & category on the left (`Modifier.weight(1f)`),
  *   a trash Delete icon button on each deck card, "+ Add Card" button, and a sleek horizontal pill
  *   "Start Review" button (`RoundedCornerShape(20.dp)`).
@@ -4929,11 +5453,13 @@ fun FlashcardMainView(
   val decks = viewModel.flashcardDecks.toList()
 
   var isNewDeckDialogOpen by rememberSaveable { mutableStateOf(false) }
-  var extractionErrorAlertMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var isPasteTextDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var pasteDialogInitialTitle by rememberSaveable { mutableStateOf("") }
+  var pasteDialogNoticeMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var addCardTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
   var importingDocumentName by rememberSaveable { mutableStateOf<String?>(null) }
   var currentExtractionStatus by rememberSaveable {
-    mutableStateOf("Reading PDF document...")
+    mutableStateOf("Reading document offline...")
   }
 
   BackHandler {
@@ -4942,51 +5468,71 @@ fun FlashcardMainView(
     }
   }
 
-  // Native Android Document Picker for PDF files routed directly through DEVELOPER_GEMINI_API_KEY
+  // Native Android Document Picker for .docx, .pdf, and .txt files processed 100% offline
   val documentPickerLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.OpenDocument()
   ) { uri: Uri? ->
     if (uri != null) {
       val resolvedName = resolveDocumentFileName(context, uri)
-      val fallbackMessage =
-        "Automated extraction failed. Please check your internet connection or build your deck manually using '+ New Deck'."
-
-      if (DEVELOPER_GEMINI_API_KEY.isBlank()) {
-        extractionErrorAlertMessage = fallbackMessage
-        Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
-        return@rememberLauncherForActivityResult
-      }
+      val cleanTitle = resolvedName
+        .substringBeforeLast(".")
+        .replace(Regex("[_\\-]+"), " ")
+        .trim()
+        .ifEmpty { "Imported CE Reviewers" }
 
       importingDocumentName = resolvedName
-      currentExtractionStatus = "Reading PDF document..."
+      currentExtractionStatus = "Extracting text locally from $resolvedName..."
 
       coroutineScope.launch {
         try {
-          val extractedCards = extractFlashcardsFromPdfWithGemini(
+          val extractedText = OfflineDeckExtractor.extractRawTextFromUri(
             context = context,
             uri = uri,
-            apiKey = DEVELOPER_GEMINI_API_KEY,
-            onStatusUpdate = { status ->
-              currentExtractionStatus = status
-            }
-          )
-          val createdDeck = viewModel.createStudyDeckFromExtractedPdf(
-            documentDisplayName = resolvedName,
-            extractedPairs = extractedCards
+            fileName = resolvedName
           )
           importingDocumentName = null
-          Toast.makeText(
-            context,
-            "Created \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
-            Toast.LENGTH_SHORT
-          ).show()
+
+          if (extractedText.isBlank()) {
+            // Scanned or image-only PDF fallback: open Paste Text / Notes dialog automatically
+            pasteDialogInitialTitle = cleanTitle
+            pasteDialogNoticeMessage =
+              "\"$resolvedName\" appears to be a scanned/image-only document. Paste your lecture notes or text below to generate your study deck offline in one tap!"
+            isPasteTextDialogOpen = true
+          } else {
+            val inferredTag = when {
+              extractedText.contains("moment", ignoreCase = true) ||
+                extractedText.contains("shear", ignoreCase = true) ||
+                extractedText.contains("rebar", ignoreCase = true) ||
+                extractedText.contains("concrete", ignoreCase = true) -> "PSAD"
+              extractedText.contains("manning", ignoreCase = true) ||
+                extractedText.contains("reynolds", ignoreCase = true) ||
+                extractedText.contains("soil", ignoreCase = true) ||
+                extractedText.contains("atterberg", ignoreCase = true) -> "HPGE"
+              extractedText.contains("derivative", ignoreCase = true) ||
+                extractedText.contains("curve", ignoreCase = true) ||
+                extractedText.contains("economy", ignoreCase = true) -> "MSTE"
+              else -> "General"
+            }
+            val createdDeck = viewModel.createDeckFromOfflineText(
+              deckTitle = cleanTitle,
+              subjectTag = inferredTag,
+              rawText = extractedText
+            )
+            Toast.makeText(
+              context,
+              "Created \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
+              Toast.LENGTH_SHORT
+            ).show()
+          }
         } catch (e: CancellationException) {
           importingDocumentName = null
           throw e
         } catch (_: Exception) {
           importingDocumentName = null
-          extractionErrorAlertMessage = fallbackMessage
-          Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
+          pasteDialogInitialTitle = cleanTitle
+          pasteDialogNoticeMessage =
+            "Could not read binary structure of \"$resolvedName\". Paste your text or notes below to convert them into flashcards offline!"
+          isPasteTextDialogOpen = true
         }
       }
     }
@@ -5008,7 +5554,7 @@ fun FlashcardMainView(
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
   ) {
-    // 1. Top Header with Back Button returning to Extras Hub (No API Key Settings icon)
+    // 1. Top Header with Back Button returning to Extras Hub
     item {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -5048,7 +5594,7 @@ fun FlashcardMainView(
             modifier = Modifier.testTag("flashcards_header_title")
           )
           Text(
-            text = "Spaced-repetition CE board & formula decks",
+            text = "Offline Document (.docx, .pdf, .txt) & Notes Study Engine",
             style = MaterialTheme.typography.bodyMedium.copy(
               fontSize = metrics.scaledSp(13),
               fontWeight = FontWeight.SemiBold
@@ -5061,50 +5607,89 @@ fun FlashcardMainView(
       }
     }
 
-    // 2. Action Bar with 2 Buttons: "Import Document" and "+ New Deck"
+    // 2. Action Bar with "Import Document", "Paste Text / Notes", and "+ New Deck"
     item {
-      Row(
+      Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
       ) {
-        Button(
-          onClick = {
-            try {
-              documentPickerLauncher.launch(arrayOf("application/pdf"))
-            } catch (_: Exception) {
-              val fallbackMessage =
-                "Automated extraction failed. Please check your internet connection or build your deck manually using '+ New Deck'."
-              extractionErrorAlertMessage = fallbackMessage
-              Toast.makeText(context, fallbackMessage, Toast.LENGTH_LONG).show()
-            }
-          },
-          shape = RoundedCornerShape(18.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary
-          ),
-          elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-          modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 50.dp)
-            .testTag("import_document_button")
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
         ) {
-          Icon(
-            imageVector = Icons.Filled.Cloud,
-            contentDescription = "Import Document",
-            modifier = Modifier.size(20.dp)
-          )
-          Spacer(modifier = Modifier.width(8.dp))
-          Text(
-            text = "Import Document",
-            style = MaterialTheme.typography.labelLarge.copy(
-              fontSize = metrics.scaledSp(13),
-              fontWeight = FontWeight.Bold
+          Button(
+            onClick = {
+              try {
+                documentPickerLauncher.launch(OfflineDeckExtractor.SUPPORTED_DOCUMENT_MIME_TYPES)
+              } catch (_: Exception) {
+                pasteDialogInitialTitle = ""
+                pasteDialogNoticeMessage = null
+                isPasteTextDialogOpen = true
+              }
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary,
+              contentColor = MaterialTheme.colorScheme.onPrimary
             ),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 50.dp)
+              .testTag("import_document_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Description,
+              contentDescription = "Import Document",
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Import Document",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
+              ),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Button(
+            onClick = {
+              pasteDialogInitialTitle = ""
+              pasteDialogNoticeMessage = null
+              isPasteTextDialogOpen = true
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.secondary,
+              contentColor = MaterialTheme.colorScheme.onSecondary
+            ),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 50.dp)
+              .testTag("paste_text_notes_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.ContentPaste,
+              contentDescription = "Paste Text / Notes",
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Paste Text / Notes",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
+              ),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
         }
 
         OutlinedButton(
@@ -5115,14 +5700,14 @@ fun FlashcardMainView(
             contentColor = MaterialTheme.colorScheme.primary
           ),
           border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
           modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 50.dp)
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .testTag("new_deck_button")
         ) {
           Text(
-            text = "+ New Deck",
+            text = "+ New Deck (Manual Card Builder)",
             style = MaterialTheme.typography.labelLarge.copy(
               fontSize = metrics.scaledSp(13),
               fontWeight = FontWeight.Bold
@@ -5182,7 +5767,7 @@ fun FlashcardMainView(
             )
 
             Text(
-              text = "Tap 'Import Document' above to upload a lecture PDF, or tap '+ New Deck' to create your own.",
+              text = "Tap 'Import Document' (.docx, .pdf, .txt), 'Paste Text / Notes', or '+ New Deck' above to build your offline study deck.",
               style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = metrics.scaledSp(14)
               ),
@@ -5372,9 +5957,9 @@ fun FlashcardMainView(
     }
   }
 
-  // Animated Gemini PDF Extraction Loading Dialog
+  // Animated Offline Document Extraction Loading Dialog
   if (importingDocumentName != null) {
-    val infiniteTransition = rememberInfiniteTransition(label = "ai_extraction_pulse")
+    val infiniteTransition = rememberInfiniteTransition(label = "offline_extraction_pulse")
     val pulseScale by infiniteTransition.animateFloat(
       initialValue = 0.90f,
       targetValue = 1.08f,
@@ -5386,7 +5971,7 @@ fun FlashcardMainView(
     )
 
     Dialog(
-      onDismissRequest = { /* non-dismissible during PDF extraction */ },
+      onDismissRequest = { /* non-dismissible during extraction */ },
       properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
     ) {
       Card(
@@ -5418,7 +6003,7 @@ fun FlashcardMainView(
             Box(contentAlignment = Alignment.Center) {
               Icon(
                 imageVector = Icons.Filled.AutoAwesome,
-                contentDescription = "Gemini PDF Extraction",
+                contentDescription = "Offline Document Extraction",
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(34.dp)
               )
@@ -5426,7 +6011,7 @@ fun FlashcardMainView(
           }
 
           Text(
-            text = "Gemini PDF Study Extractor",
+            text = "Offline Study Deck Extractor",
             style = MaterialTheme.typography.titleLarge.copy(
               fontSize = metrics.scaledSp(20),
               fontWeight = FontWeight.Bold
@@ -5493,49 +6078,30 @@ fun FlashcardMainView(
     }
   }
 
-  // Extraction Error & Offline Fallback Dialog
-  if (extractionErrorAlertMessage != null) {
-    AlertDialog(
-      onDismissRequest = { extractionErrorAlertMessage = null },
-      shape = RoundedCornerShape(24.dp),
-      containerColor = creamCardColor,
-      title = {
-        Text(
-          text = "Automated Extraction Failed",
-          style = MaterialTheme.typography.titleLarge.copy(
-            fontSize = metrics.scaledSp(19),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onSurface
+  // "Paste Text / Notes" One-Tap Offline Deck Generator Dialog
+  if (isPasteTextDialogOpen) {
+    PasteTextToDeckDialog(
+      metrics = metrics,
+      initialDeckTitle = pasteDialogInitialTitle,
+      noticeMessage = pasteDialogNoticeMessage,
+      availableSubjects = viewModel.getSubjectFolders(),
+      onDismiss = {
+        isPasteTextDialogOpen = false
+        pasteDialogNoticeMessage = null
+      },
+      onGenerateDeck = { deckTitle, subjectTag, rawText ->
+        val createdDeck = viewModel.createDeckFromOfflineText(
+          deckTitle = deckTitle,
+          subjectTag = subjectTag,
+          rawText = rawText
         )
-      },
-      text = {
-        Text(
-          text = extractionErrorAlertMessage.orEmpty(),
-          style = MaterialTheme.typography.bodyMedium.copy(
-            fontSize = metrics.scaledSp(14)
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-      },
-      confirmButton = {
-        Button(
-          onClick = {
-            extractionErrorAlertMessage = null
-            isNewDeckDialogOpen = true
-          },
-          shape = RoundedCornerShape(20.dp)
-        ) {
-          Text(
-            text = "+ New Deck",
-            fontWeight = FontWeight.SemiBold
-          )
-        }
-      },
-      dismissButton = {
-        TextButton(onClick = { extractionErrorAlertMessage = null }) {
-          Text("Close")
-        }
+        isPasteTextDialogOpen = false
+        pasteDialogNoticeMessage = null
+        Toast.makeText(
+          context,
+          "Generated \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
+          Toast.LENGTH_SHORT
+        ).show()
       }
     )
   }
@@ -5576,6 +6142,184 @@ fun FlashcardMainView(
       }
     )
   }
+}
+
+@Composable
+private fun PasteTextToDeckDialog(
+  metrics: ResponsiveMetrics,
+  initialDeckTitle: String,
+  noticeMessage: String?,
+  availableSubjects: List<String>,
+  onDismiss: () -> Unit,
+  onGenerateDeck: (deckTitle: String, subjectTag: String, rawText: String) -> Unit
+) {
+  val defaultTags = remember(availableSubjects) {
+    (listOf("PSAD", "MSTE", "HPGE", "General") + availableSubjects)
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+      .distinctBy { it.lowercase(Locale.US) }
+  }
+  var deckTitle by rememberSaveable(initialDeckTitle) {
+    mutableStateOf(initialDeckTitle.ifBlank { "Lecture Notes Study Deck" })
+  }
+  var subjectTag by rememberSaveable {
+    mutableStateOf(defaultTags.firstOrNull() ?: "PSAD")
+  }
+  var rawNotesText by rememberSaveable { mutableStateOf("") }
+  var notesError by rememberSaveable { mutableStateOf(false) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = dashboardCreamCardColor(),
+    title = {
+      Text(
+        text = "Paste Text / Notes",
+        style = MaterialTheme.typography.headlineSmall.copy(
+          fontSize = metrics.scaledSp(20),
+          fontWeight = FontWeight.Bold
+        ),
+        color = MaterialTheme.colorScheme.onSurface
+      )
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+      ) {
+        if (!noticeMessage.isNullOrBlank()) {
+          Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+            shape = RoundedCornerShape(12.dp)
+          ) {
+            Text(
+              text = noticeMessage,
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.padding(10.dp)
+            )
+          }
+        } else {
+          Text(
+            text = "Paste definitions (Term: Definition), formulas (Q = A * V), or key engineering concepts. Sibil extracts 5–12 flashcards 100% offline.",
+            style = MaterialTheme.typography.bodySmall.copy(
+              fontSize = metrics.scaledSp(12)
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+
+        OutlinedTextField(
+          value = deckTitle,
+          onValueChange = { deckTitle = it },
+          label = { Text("Deck Title") },
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("paste_notes_deck_title_input")
+        )
+
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          defaultTags.forEach { tag ->
+            val selected = subjectTag.equals(tag, ignoreCase = true)
+            Surface(
+              onClick = { subjectTag = tag },
+              shape = CircleShape,
+              color = if (selected) {
+                MaterialTheme.colorScheme.primary
+              } else {
+                dashboardIvoryInnerColor()
+              },
+              border = BorderStroke(
+                1.dp,
+                if (selected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.outlineVariant
+                }
+              )
+            ) {
+              Text(
+                text = tag,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                ),
+                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+              )
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = rawNotesText,
+          onValueChange = {
+            rawNotesText = it
+            notesError = false
+          },
+          label = { Text("Paste Lecture Notes, Definitions, or Formulas") },
+          placeholder = {
+            Text(
+              "Example:\nEffective Stress: Total stress minus pore water pressure.\nDarcy's Law: Q = k * i * A\nManning's Equation calculates open-channel flow velocity."
+            )
+          },
+          isError = notesError,
+          minLines = 5,
+          maxLines = 10,
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("paste_notes_raw_text_input")
+        )
+
+        if (notesError) {
+          Text(
+            text = "Please paste or type some notes to generate flashcards.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error
+          )
+        }
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          if (rawNotesText.trim().isEmpty()) {
+            notesError = true
+          } else {
+            onGenerateDeck(
+              deckTitle.trim().ifEmpty { "Lecture Notes Study Deck" },
+              subjectTag.trim().ifEmpty { "General" },
+              rawNotesText
+            )
+          }
+        },
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.testTag("confirm_generate_paste_deck_button")
+      ) {
+        Text(
+          text = "Generate Flashcards",
+          fontWeight = FontWeight.Bold
+        )
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel")
+      }
+    }
+  )
 }
 
 @Composable
@@ -9586,68 +10330,140 @@ private val CE_FOCUS_PRESETS = listOf(
 )
 
 // ============================================================================
-// AUDIO & BACKGROUND TIMER NOTIFICATION HELPERS
+// AUDIO, CONTINUOUS LOOPING MEDIAPLAYER, SNOOZE & SYSTEM NOTIFICATION HELPERS
 // ============================================================================
 
-const val TIMER_NOTIFICATION_CHANNEL_ID = "timer_alerts_channel"
-const val TIMER_NOTIFICATION_CHANNEL_NAME = "Timer Alerts"
+const val SIBIL_ALARM_CHANNEL_ID = "sibil_alarm_channel"
+const val SIBIL_ALARM_CHANNEL_NAME = "Sibil Alarms & Timers"
+const val TIMER_NOTIFICATION_CHANNEL_ID = SIBIL_ALARM_CHANNEL_ID
+const val TIMER_NOTIFICATION_CHANNEL_NAME = SIBIL_ALARM_CHANNEL_NAME
 private const val TIMER_NOTIFICATION_ID = 4001
 private const val TIMER_ALARM_REQUEST_CODE = 4002
 
 var currentRingtone: Ringtone? = null
 var isAlarmSoundRinging by mutableStateOf(false)
 var activeRingingAlertMessage by mutableStateOf<String?>(null)
+var ringingAlertTitle by mutableStateOf<String?>(null)
+var snoozeTargetEpochMillis by mutableStateOf<Long?>(null)
+var snoozeTargetTitle by mutableStateOf<String?>(null)
 
 /**
- * Fetches `RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)` and plays it.
+ * Continuous Audio Engine (`AlarmSoundController` singleton object):
+ * - Uses `android.media.MediaPlayer` with `AudioAttributes.USAGE_ALARM` and `CONTENT_TYPE_SONIFICATION`.
+ * - Sets `mediaPlayer.isLooping = true` before calling `prepare()` and `start()` so the alarm/timer
+ *   continues ringing until the user explicitly taps "Stop" or "Snooze (5m)".
  */
-fun playAlarmSound(context: Context) {
-  try {
-    currentRingtone?.stop()
-  } catch (_: Exception) {
-  }
-  try {
+object AlarmSoundController {
+  private var mediaPlayer: MediaPlayer? = null
+
+  @Synchronized
+  fun startRinging(context: Context) {
+    stopMediaPlayerOnly()
+    val appCtx = context.applicationContext
     val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
       ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
       ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-    val ringtone = RingtoneManager.getRingtone(context.applicationContext, alarmUri)
-    currentRingtone = ringtone
-    ringtone?.play()
+
+    var startedWithMediaPlayer = false
+    if (alarmUri != null) {
+      try {
+        val player = MediaPlayer()
+        player.setDataSource(appCtx, alarmUri)
+        player.setAudioAttributes(
+          AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        )
+        player.isLooping = true
+        player.prepare()
+        player.start()
+        mediaPlayer = player
+        startedWithMediaPlayer = true
+      } catch (_: Exception) {
+        try {
+          mediaPlayer?.release()
+        } catch (_: Exception) {
+        }
+        mediaPlayer = null
+      }
+    }
+
+    if (!startedWithMediaPlayer && alarmUri != null) {
+      try {
+        val fallbackRingtone = RingtoneManager.getRingtone(appCtx, alarmUri)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          fallbackRingtone?.isLooping = true
+        }
+        currentRingtone = fallbackRingtone
+        fallbackRingtone?.play()
+      } catch (_: Exception) {
+      }
+    }
+
     isAlarmSoundRinging = true
-  } catch (_: Exception) {
-    isAlarmSoundRinging = true
+  }
+
+  @Synchronized
+  private fun stopMediaPlayerOnly() {
+    try {
+      mediaPlayer?.let { player ->
+        if (player.isPlaying) {
+          player.stop()
+        }
+        player.reset()
+        player.release()
+      }
+    } catch (_: Exception) {
+    }
+    mediaPlayer = null
+
+    try {
+      currentRingtone?.stop()
+    } catch (_: Exception) {
+    }
+    currentRingtone = null
+  }
+
+  @Synchronized
+  fun stopRinging() {
+    stopMediaPlayerOnly()
+    isAlarmSoundRinging = false
+    activeRingingAlertMessage = null
+    ringingAlertTitle = null
   }
 }
 
 /**
- * Stops `currentRingtone` when the user acknowledges the alarm/timer.
+ * Legacy-compatible wrapper delegating to `AlarmSoundController.startRinging(context)`.
+ */
+fun playAlarmSound(context: Context) {
+  AlarmSoundController.startRinging(context)
+}
+
+/**
+ * Legacy-compatible wrapper delegating to `AlarmSoundController.stopRinging()`.
  */
 fun stopAlarmSound() {
-  try {
-    currentRingtone?.stop()
-  } catch (_: Exception) {
-  }
-  currentRingtone = null
-  isAlarmSoundRinging = false
-  activeRingingAlertMessage = null
+  AlarmSoundController.stopRinging()
 }
 
 fun playNativeAlarmSound(context: Context): Ringtone? {
-  playAlarmSound(context)
+  AlarmSoundController.startRinging(context)
   return currentRingtone
 }
 
 /**
- * Creates a Notification Channel (required for Android 8+) named "Timer Alerts" with `IMPORTANCE_HIGH`.
+ * Creates the high-importance Notification Channel `"sibil_alarm_channel"` ("Sibil Alarms & Timers").
  */
-fun createTimerNotificationChannel(context: Context) {
+fun createClockNotificationChannel(context: Context) {
   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
     val channel = NotificationChannel(
-      TIMER_NOTIFICATION_CHANNEL_ID,
-      TIMER_NOTIFICATION_CHANNEL_NAME,
+      SIBIL_ALARM_CHANNEL_ID,
+      SIBIL_ALARM_CHANNEL_NAME,
       NotificationManager.IMPORTANCE_HIGH
     ).apply {
-      description = "High-priority alerts when a countdown timer finishes"
+      description = "High-priority alerts for Sibil Alarms and Countdown Timers"
       enableVibration(true)
     }
     val notificationManager =
@@ -9656,13 +10472,235 @@ fun createTimerNotificationChannel(context: Context) {
   }
 }
 
+fun createTimerNotificationChannel(context: Context) {
+  createClockNotificationChannel(context)
+}
+
+/**
+ * System Notification Helper:
+ * Creates the `"sibil_alarm_channel"` (`IMPORTANCE_HIGH`) and displays a high-priority system
+ * notification whenever an Alarm triggers or a Timer reaches `00:00:00`.
+ */
+@SuppressLint("MissingPermission")
+fun showClockNotification(context: Context, title: String, message: String) {
+  createClockNotificationChannel(context)
+
+  val launchIntent = Intent(context, MainActivity::class.java).apply {
+    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+  }
+  val contentPendingIntent = PendingIntent.getActivity(
+    context,
+    0,
+    launchIntent,
+    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+
+  val notification = NotificationCompat.Builder(context, SIBIL_ALARM_CHANNEL_ID)
+    .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+    .setContentTitle(title)
+    .setContentText(message)
+    .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+    .setPriority(NotificationCompat.PRIORITY_HIGH)
+    .setCategory(NotificationCompat.CATEGORY_ALARM)
+    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+    .setAutoCancel(true)
+    .setContentIntent(contentPendingIntent)
+    .build()
+
+  val hasNotifPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.POST_NOTIFICATIONS
+    ) == PackageManager.PERMISSION_GRANTED
+  } else {
+    true
+  }
+
+  if (hasNotifPerm) {
+    try {
+      NotificationManagerCompat.from(context).notify(TIMER_NOTIFICATION_ID, notification)
+    } catch (_: Exception) {
+    }
+  }
+}
+
+/**
+ * Triggers continuous looping alarm audio, sets `ringingAlertTitle` so the non-dismissible
+ * `RingingAlertDialog` pops up immediately, and posts a system notification.
+ */
+fun triggerClockAlert(context: Context, title: String, message: String) {
+  ringingAlertTitle = title
+  activeRingingAlertMessage = message
+  AlarmSoundController.startRinging(context)
+  showClockNotification(context = context, title = title, message = message)
+}
+
+/**
+ * Non-dismissible Ringing & Snooze AlertDialog displayed whenever `ringingAlertTitle` is non-null:
+ * - Pulsing alarm icon
+ * - Displays the Alarm Name or `"Timer Reached 00:00:00!"`
+ * - Two prominent buttons:
+ *   1. `"Stop"`: Calls `AlarmSoundController.stopRinging()` and dismisses the dialog.
+ *   2. `"Snooze (5m)"`: Stops the ringing, dismisses the dialog, schedules a 5-minute snooze alarm,
+ *      and displays `"Snoozed for 5 minutes"`.
+ */
+@Composable
+fun RingingAlertDialog(
+  alertTitle: String,
+  alertDetail: String?,
+  metrics: ResponsiveMetrics,
+  onStop: () -> Unit,
+  onSnoozeFiveMinutes: () -> Unit
+) {
+  val infiniteTransition = rememberInfiniteTransition(label = "ringing_alarm_pulse")
+  val iconScale by infiniteTransition.animateFloat(
+    initialValue = 0.88f,
+    targetValue = 1.16f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 480, easing = FastOutSlowInEasing),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "ringing_icon_scale"
+  )
+
+  AlertDialog(
+    onDismissRequest = { /* Non-dismissible until user taps Stop or Snooze (5m) */ },
+    properties = DialogProperties(
+      dismissOnBackPress = false,
+      dismissOnClickOutside = false
+    ),
+    shape = RoundedCornerShape(28.dp),
+    containerColor = dashboardCreamCardColor(),
+    icon = {
+      Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+        modifier = Modifier
+          .size(72.dp)
+          .graphicsLayer {
+            scaleX = iconScale
+            scaleY = iconScale
+          }
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.Filled.NotificationsActive,
+            contentDescription = "Ringing Alarm Icon",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(36.dp)
+          )
+        }
+      }
+    },
+    title = {
+      Text(
+        text = alertTitle,
+        style = MaterialTheme.typography.headlineSmall.copy(
+          fontSize = metrics.scaledSp(21),
+          fontWeight = FontWeight.ExtraBold
+        ),
+        color = MaterialTheme.colorScheme.onSurface,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("ringing_alert_dialog_title")
+      )
+    },
+    text = {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        Text(
+          text = alertDetail ?: "Your scheduled Sibil alert is ringing.",
+          style = MaterialTheme.typography.bodyMedium.copy(
+            fontSize = metrics.scaledSp(14),
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          textAlign = TextAlign.Center
+        )
+        Text(
+          text = "Audio loops continuously until stopped or snoozed.",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = metrics.scaledSp(11)
+          ),
+          color = MaterialTheme.colorScheme.primary,
+          textAlign = TextAlign.Center
+        )
+      }
+    },
+    confirmButton = {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        OutlinedButton(
+          onClick = onSnoozeFiveMinutes,
+          shape = RoundedCornerShape(50),
+          border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+          colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = dashboardIvoryInnerColor(),
+            contentColor = MaterialTheme.colorScheme.primary
+          ),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("ringing_dialog_snooze_button")
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Snooze,
+            contentDescription = "Snooze 5 minutes",
+            modifier = Modifier.size(18.dp)
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            text = "Snooze (5m)",
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+          )
+        }
+
+        Button(
+          onClick = onStop,
+          shape = RoundedCornerShape(50),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+          ),
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("ringing_dialog_stop_button")
+        ) {
+          Icon(
+            imageVector = Icons.Filled.VolumeOff,
+            contentDescription = "Stop Ringing",
+            modifier = Modifier.size(18.dp)
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            text = "Stop",
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+          )
+        }
+      }
+    },
+    modifier = Modifier.testTag("ringing_alert_dialog")
+  )
+}
+
 /**
  * Schedules an exact background alarm pointing to `TimerReceiver` for the calculated end time in milliseconds.
  */
 @SuppressLint("ScheduleExactAlarm")
 fun scheduleTimerExactAlarm(context: Context, durationSeconds: Long, label: String? = null) {
   if (durationSeconds <= 0L) return
-  createTimerNotificationChannel(context)
+  createClockNotificationChannel(context)
   val endTimeMillis = System.currentTimeMillis() + (durationSeconds * 1000L)
   val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
   val intent = Intent(context, TimerReceiver::class.java).apply {
@@ -9786,23 +10824,22 @@ fun ClockScreen(
   }
 
   LaunchedEffect(Unit) {
-    createTimerNotificationChannel(context)
+    createClockNotificationChannel(context)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
       notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
   }
 
-  // Local and global ringing state so user can stop ringing alarm or timer
+  // Local and global ringing state so user can stop or snooze ringing alarm or timer
   var ringingBannerMessage by remember { mutableStateOf<String?>(null) }
 
-  fun triggerAlarmRingtone(message: String) {
-    playAlarmSound(context)
-    activeRingingAlertMessage = message
+  fun triggerAlarmRingtone(title: String, message: String) {
     ringingBannerMessage = message
+    triggerClockAlert(context = context, title = title, message = message)
   }
 
   fun stopActiveRingtone() {
-    stopAlarmSound()
+    AlarmSoundController.stopRinging()
     ringingBannerMessage = null
     try {
       NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
@@ -9821,20 +10858,19 @@ fun ClockScreen(
   var isAddAlarmDialogOpen by rememberSaveable { mutableStateOf(false) }
   var lastTriggeredAlarmKey by remember { mutableStateOf("") }
 
-  // Check current device time every second while ClockScreen is open
+  // Check current device time every second using Calendar.getInstance()
   LaunchedEffect(alarms.toList()) {
     while (true) {
-      val now = LocalTime.now()
-      val currentHour24 = now.hour
-      val currentMinute = now.minute
+      val cal = Calendar.getInstance()
+      val currentHour24 = cal.get(Calendar.HOUR_OF_DAY)
+      val currentMinute = cal.get(Calendar.MINUTE)
       val currentAmPm = if (currentHour24 < 12) "AM" else "PM"
       val currentHour12 = when {
         currentHour24 == 0 -> 12
         currentHour24 > 12 -> currentHour24 - 12
         else -> currentHour24
       }
-      // Map Java DayOfWeek (1=Mon..7=Sun) to 0..6 (0=Sun..6=Sat)
-      val currentDayIndex = LocalDate.now().dayOfWeek.value % 7
+      val currentDayIndex = (cal.get(Calendar.DAY_OF_WEEK) - 1).coerceIn(0, 6)
 
       val matchingAlarm = alarms.firstOrNull { alarm ->
         val alarmHour = alarm.hour.toIntOrNull() ?: -1
@@ -9852,7 +10888,10 @@ fun ClockScreen(
         if (lastTriggeredAlarmKey != triggerKey) {
           lastTriggeredAlarmKey = triggerKey
           val formattedTime = "${matchingAlarm.hour}:${matchingAlarm.minute} ${matchingAlarm.amPm}"
-          triggerAlarmRingtone("Alarm ringing: $formattedTime (${matchingAlarm.name})")
+          triggerAlarmRingtone(
+            title = matchingAlarm.name.ifBlank { "Alarm" },
+            message = "Alarm ringing: $formattedTime (${matchingAlarm.name.ifBlank { "Alarm" }})"
+          )
         }
       }
       delay(1000L)
@@ -9877,7 +10916,10 @@ fun ClockScreen(
         if (timerRemainingSeconds == 0L) {
           isTimerRunning = false
           val labelSuffix = activePresetLabel?.let { " ($it)" } ?: ""
-          triggerAlarmRingtone("Timer finished: 00:00:00$labelSuffix")
+          triggerAlarmRingtone(
+            title = "Timer Reached 00:00:00!",
+            message = "Timer finished: 00:00:00$labelSuffix"
+          )
         }
       }
     }
@@ -10116,6 +11158,7 @@ fun ClockScreen(
     // Active ringing alarm/timer banner with visible "Stop Alarm" button
     val resolvedRingingMessage = ringingBannerMessage
       ?: activeRingingAlertMessage
+      ?: ringingAlertTitle
       ?: if (isAlarmSoundRinging) "Alarm / Timer Ringing!" else null
 
     if (isAlarmSoundRinging || resolvedRingingMessage != null) {
@@ -10222,7 +11265,10 @@ fun ClockScreen(
           },
           onTestRingNow = { alarm ->
             val formattedTime = "${alarm.hour}:${alarm.minute} ${alarm.amPm}"
-            triggerAlarmRingtone("Alarm ringing: $formattedTime (${alarm.name})")
+            triggerAlarmRingtone(
+              title = alarm.name.ifBlank { "Alarm" },
+              message = "Alarm ringing: $formattedTime (${alarm.name.ifBlank { "Alarm" }})"
+            )
           }
         )
 
@@ -10335,6 +11381,50 @@ fun ClockScreen(
         )
       }
     }
+  }
+
+  // If ClockScreen is rendered standalone without MainProductivityScaffold, still show RingingAlertDialog
+  val standaloneRingingTitle = ringingAlertTitle
+  if (viewModel == null && standaloneRingingTitle != null) {
+    RingingAlertDialog(
+      alertTitle = standaloneRingingTitle,
+      alertDetail = activeRingingAlertMessage,
+      metrics = metrics,
+      onStop = {
+        stopActiveRingtone()
+      },
+      onSnoozeFiveMinutes = {
+        stopActiveRingtone()
+        val cal = Calendar.getInstance().apply { add(Calendar.MINUTE, 5) }
+        val hour24 = cal.get(Calendar.HOUR_OF_DAY)
+        val minute = cal.get(Calendar.MINUTE)
+        val amPm = if (hour24 < 12) "AM" else "PM"
+        val hour12 = when {
+          hour24 == 0 -> 12
+          hour24 > 12 -> hour24 - 12
+          else -> hour24
+        }
+        val nextId = (fallbackAlarms.maxOfOrNull { it.id } ?: 0) + 1
+        fallbackAlarms.add(
+          AlarmItem(
+            id = nextId,
+            name = "$standaloneRingingTitle (Snooze)",
+            hour = String.format(Locale.US, "%02d", hour12),
+            minute = String.format(Locale.US, "%02d", minute),
+            amPm = amPm,
+            activeDays = emptyList(),
+            isActive = true
+          )
+        )
+        localStorageManager.saveAlarms(fallbackAlarms, LocalStorageManager.GUEST_ACCOUNT_KEY)
+        scheduleTimerExactAlarm(
+          context = context,
+          durationSeconds = 5L * 60L,
+          label = "$standaloneRingingTitle (Snooze)"
+        )
+        Toast.makeText(context, "Snoozed for 5 minutes", Toast.LENGTH_SHORT).show()
+      }
+    )
   }
 
   if (isAddAlarmDialogOpen) {
@@ -11609,61 +12699,26 @@ fun CivilEngineeringProductivityAppPreview() {
   CivilEngineeringProductivityApp()
 }
 
-// TODO: Register <receiver android:name=".TimerReceiver" /> in AndroidManifest.xml for this to work when the app is completely force-closed.
+// Registered in AndroidManifest.xml: <receiver android:name=".TimerReceiver" />
 class TimerReceiver : BroadcastReceiver() {
   @SuppressLint("MissingPermission")
   override fun onReceive(context: Context, intent: Intent?) {
-    createTimerNotificationChannel(context)
-    playAlarmSound(context)
-
     val label = intent?.getStringExtra("timer_label")
-    activeRingingAlertMessage = if (!label.isNullOrBlank()) {
-      "Timer Finished! ($label)"
+    val alertTitle = if (!label.isNullOrBlank()) {
+      "Timer Reached 00:00:00! ($label)"
     } else {
-      "Timer Finished!"
+      "Timer Reached 00:00:00!"
     }
-
-    val launchIntent = Intent(context, MainActivity::class.java).apply {
-      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    val alertMessage = if (!label.isNullOrBlank()) {
+      "Your timer ($label) has reached 00:00:00."
+    } else {
+      "Your countdown timer has reached 00:00:00."
     }
-    val contentPendingIntent = PendingIntent.getActivity(
-      context,
-      0,
-      launchIntent,
-      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    triggerClockAlert(
+      context = context,
+      title = alertTitle,
+      message = alertMessage
     )
-
-    val notification = NotificationCompat.Builder(context, TIMER_NOTIFICATION_CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-      .setContentTitle("Timer Finished!")
-      .setContentText(
-        if (!label.isNullOrBlank()) {
-          "Your timer ($label) has reached 00:00:00."
-        } else {
-          "Your countdown timer has reached 00:00:00."
-        }
-      )
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
-      .setCategory(NotificationCompat.CATEGORY_ALARM)
-      .setAutoCancel(true)
-      .setContentIntent(contentPendingIntent)
-      .build()
-
-    val hasNotifPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.POST_NOTIFICATIONS
-      ) == PackageManager.PERMISSION_GRANTED
-    } else {
-      true
-    }
-
-    if (hasNotifPerm) {
-      try {
-        NotificationManagerCompat.from(context).notify(TIMER_NOTIFICATION_ID, notification)
-      } catch (_: Exception) {
-      }
-    }
   }
 }
 
