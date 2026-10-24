@@ -166,6 +166,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Timer
@@ -312,6 +313,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlin.math.tan
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -323,7 +325,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 // Gizmo-style Multi-Batch AI Flashcard Generator & Sibil Release Configuration
-private const val DEFAULT_GEMINI_API_KEY = "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew"
+private val EMBEDDED_API_KEYS = listOf(
+  "AQ.Ab8RN6Ia2Rly95l54ks_QUPy10VdlpDGIJULcZtQlDuEeo22rw",
+  "AQ.Ab8RN6IlkYztF3OYLD5yPCbpAPR5W5S506w_qPbNrbC_0VxHKA",
+  "AQ.Ab8RN6KklCymJljMd9Wi3bQpmbaoaycUWgAm_UGugy1KaOm-Fg",
+  "AQ.Ab8RN6L3lQrfGG58COizOgsRc3_ox8zDVPRMa2eGmGWfHWBzxA",
+  "AQ.Ab8RN6IiildWfw-2Acfq_B1B3uvdnj0dy47ftJ3juAWyHFjf0w"
+)
+private val DEFAULT_GEMINI_API_KEY = EMBEDDED_API_KEYS.first()
 const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.1 (Build 2)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
@@ -1044,13 +1053,13 @@ object GizmoBatchFlashcardEngine {
   const val OFFLINE_ERROR_MESSAGE =
     "Internet connection required to analyze documents with Gemini AI."
 
-  val primaryModel: String = "gemini-3.8-flash"
+  val primaryModel: String = "gemini-3.5-flash-lite"
 
   val fallbackModels: List<String> = listOf(
+    "gemini-3.5-flash-lite",
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
     "gemini-flash-latest"
   )
 
@@ -1062,6 +1071,128 @@ object GizmoBatchFlashcardEngine {
 
   @Volatile
   private var fallbackStepIndex: Int = 0
+
+  @Volatile
+  private var activeClassroomKeyIndex: Int = Random.nextInt(EMBEDDED_API_KEYS.size)
+
+  /**
+   * Builds the valid multi-key pool for classroom load-balancing.
+   * Includes any user-supplied keys alongside `EMBEDDED_API_KEYS`.
+   */
+  fun buildValidKeyPool(userConfiguredKey: String = ""): List<String> {
+    val customKeys = userConfiguredKey
+      .split(',', '\n', ';', ' ')
+      .map { it.trim() }
+      .filter { it.isNotEmpty() && !EMBEDDED_API_KEYS.contains(it) }
+    val combined = (customKeys + EMBEDDED_API_KEYS).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    return combined.ifEmpty { EMBEDDED_API_KEYS }
+  }
+
+  /**
+   * Randomizes the starting key index when a student initiates deck generation
+   * so 50+ concurrent students distribute evenly across the classroom key pool.
+   */
+  fun selectRandomizedKeyIndex(validPool: List<String>): Int {
+    if (validPool.isEmpty()) return 0
+    val chosen = Random.nextInt(validPool.size)
+    activeClassroomKeyIndex = chosen
+    return chosen
+  }
+
+  /**
+   * Encodes a `FlashcardDeck` (title, subjectTag/domain, and all Q&A cards) into a compact
+   * Base64/JSON share code that classmates can import with zero API calls.
+   */
+  fun encodeDeckToShareCode(deck: FlashcardDeck): String {
+    val root = JSONObject().apply {
+      put("v", 1)
+      put("title", deck.title.trim().ifEmpty { "Shared Study Deck" })
+      put("domain", deck.subjectTag.trim().ifEmpty { "General" })
+      val cardsArray = JSONArray()
+      for (card in deck.cards) {
+        if (card.question.isNotBlank() && card.answer.isNotBlank()) {
+          cardsArray.put(
+            JSONObject().apply {
+              put("q", card.question.trim())
+              put("a", card.answer.trim())
+              put("c", card.category.trim().ifEmpty { deck.subjectTag.trim().ifEmpty { "General" } })
+            }
+          )
+        }
+      }
+      put("cards", cardsArray)
+    }
+    val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
+    return Base64.encodeToString(jsonBytes, Base64.NO_WRAP)
+  }
+
+  /**
+   * Decodes a Base64/JSON share code from a classmate back into a `FlashcardDeck`
+   * with zero API calls and zero token consumption.
+   */
+  fun decodeDeckFromShareCode(rawCode: String): FlashcardDeck? {
+    val cleanedInput = rawCode.trim()
+    if (cleanedInput.isEmpty()) return null
+
+    val jsonString = try {
+      if (cleanedInput.startsWith("{")) {
+        cleanedInput
+      } else {
+        val normalizedBase64 = cleanedInput.replace("\\s+".toRegex(), "")
+        val decodedBytes = Base64.decode(normalizedBase64, Base64.DEFAULT)
+        String(decodedBytes, Charsets.UTF_8).trim()
+      }
+    } catch (_: Exception) {
+      return null
+    }
+
+    return try {
+      val root = JSONObject(jsonString)
+      val title = root.optString("title", "")
+        .ifBlank { root.optString("t", "Shared Study Deck") }
+        .trim()
+      val domain = root.optString("domain", "")
+        .ifBlank { root.optString("subjectTag", "") }
+        .ifBlank { root.optString("s", "General") }
+        .trim()
+      val cardsArray = root.optJSONArray("cards") ?: root.optJSONArray("items") ?: return null
+      val decodedCards = mutableListOf<FlashcardItem>()
+      for (i in 0 until cardsArray.length()) {
+        val cardObj = cardsArray.optJSONObject(i) ?: continue
+        val q = cardObj.optString("q", "")
+          .ifBlank { cardObj.optString("question", "") }
+          .trim()
+        val a = cardObj.optString("a", "")
+          .ifBlank { cardObj.optString("answer", "") }
+          .trim()
+        val c = cardObj.optString("c", "")
+          .ifBlank { cardObj.optString("category", domain) }
+          .trim()
+          .ifEmpty { domain }
+        if (q.isNotEmpty() && a.isNotEmpty()) {
+          decodedCards.add(
+            FlashcardItem(
+              id = i + 1,
+              question = q,
+              answer = a,
+              category = c,
+              masteryLevel = "New",
+              isMastered = false
+            )
+          )
+        }
+      }
+      if (decodedCards.isEmpty()) return null
+      FlashcardDeck(
+        id = 0,
+        title = title.ifEmpty { "Shared Study Deck" },
+        subjectTag = domain.ifEmpty { "General" },
+        cards = decodedCards
+      )
+    } catch (_: Exception) {
+      null
+    }
+  }
 
   val SYSTEM_PROMPT_INSTRUCTION = """
 You are an expert academic flashcard generator for university students and board exam examinees.
@@ -1274,7 +1405,9 @@ GUIDELINES:
       latestAnswer: String
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
-    val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
+    val validPool = buildValidKeyPool(activeApiKey)
+    val startIdx = selectRandomizedKeyIndex(validPool)
+    val initialKey = validPool[startIdx]
     val mimeType = try {
       context.contentResolver.getType(uri).orEmpty().lowercase(Locale.US)
     } catch (_: Exception) {
@@ -1287,7 +1420,7 @@ GUIDELINES:
       processPdfInPageBatches(
         context = context,
         uri = uri,
-        activeApiKey = cleanKey,
+        activeApiKey = initialKey,
         defaultCategory = defaultCategory,
         onProgressUpdate = onProgressUpdate
       )
@@ -1312,7 +1445,7 @@ GUIDELINES:
       }
       processTextInChunks(
         rawText = extractedText,
-        activeApiKey = cleanKey,
+        activeApiKey = initialKey,
         defaultCategory = defaultCategory,
         onProgressUpdate = onProgressUpdate
       )
@@ -1515,6 +1648,8 @@ GUIDELINES:
       )
     }
 
+    val validPool = buildValidKeyPool(activeApiKey)
+    selectRandomizedKeyIndex(validPool)
     val totalBatches = chunks.size
     val accumulatedCards = mutableListOf<FlashcardItem>()
     val seenQuestions = mutableSetOf<String>()
@@ -1771,93 +1906,122 @@ GUIDELINES:
       )
     }.toString()
 
-    val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
-    val primaryEndpointUrl =
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$cleanKey"
-    val activeModel = resolveWorkingGeminiModel(cleanKey, forceRefresh = false)
-    val endpointUrl = if (activeModel == primaryModel) {
-      primaryEndpointUrl
-    } else {
-      "https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$cleanKey"
-    }
-    var connection: HttpURLConnection? = null
+    val validPool = buildValidKeyPool(activeApiKey)
+    var keyIndex = activeClassroomKeyIndex.coerceIn(0, maxOf(0, validPool.size - 1))
+    var lastException: GeminiBatchExtractionException? = null
 
-    try {
-      connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        connectTimeout = 60_000
-        readTimeout = 60_000
-        doInput = true
-        doOutput = true
-        setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-      }
+    for (attempt in 0 until validPool.size) {
+      val activeKey = validPool[keyIndex]
+      activeClassroomKeyIndex = keyIndex
 
-      OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-        writer.write(requestBodyJson)
-        writer.flush()
-      }
-
-      val responseCode = connection.responseCode
-      if (responseCode in 200..299) {
-        hasVerifiedWorkingModel = true
-        val responseBody = BufferedReader(
-          InputStreamReader(connection.inputStream, Charsets.UTF_8)
-        ).use { it.readText() }
-        return parseGeminiFlashcardsJsonResponse(responseBody, defaultCategory)
+      val primaryEndpointUrl =
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$activeKey"
+      val activeModel = resolveWorkingGeminiModel(activeKey, forceRefresh = false)
+      val endpointUrl = if (activeModel == primaryModel) {
+        primaryEndpointUrl
       } else {
-        val rawErrorBody = try {
-          connection.errorStream?.let { errStream ->
-            BufferedReader(InputStreamReader(errStream, Charsets.UTF_8)).use { it.readText() }
-          }.orEmpty()
-        } catch (_: Exception) {
-          ""
+        "https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$activeKey"
+      }
+      var connection: HttpURLConnection? = null
+
+      try {
+        connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+          requestMethod = "POST"
+          connectTimeout = 60_000
+          readTimeout = 60_000
+          doInput = true
+          doOutput = true
+          setRequestProperty("Content-Type", "application/json; charset=UTF-8")
         }
 
-        val isModelNotFound = responseCode == 404 ||
-          (responseCode == 400 && rawErrorBody.contains("not found", ignoreCase = true))
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+          writer.write(requestBodyJson)
+          writer.flush()
+        }
 
-        if (isModelNotFound && allowModelDiscoveryFallback) {
-          connection.disconnect()
-          connection = null
-          val candidates = discoverAvailableFlashModels(cleanKey)
-          for (candidateModel in candidates) {
-            if (candidateModel.equals(activeModel, ignoreCase = true)) continue
-            cachedWorkingModelName = candidateModel
-            try {
-              val result = executeGeminiGenerateContentCall(
-                activeApiKey = cleanKey,
-                partsArray = partsArray,
-                defaultCategory = defaultCategory,
-                allowModelDiscoveryFallback = false
-              )
-              hasVerifiedWorkingModel = true
-              return result
-            } catch (retryEx: GeminiBatchExtractionException) {
-              if (retryEx.statusCode != 404 && retryEx.statusCode != 400) {
-                throw retryEx
+        val responseCode = connection.responseCode
+        if (responseCode in 200..299) {
+          hasVerifiedWorkingModel = true
+          val responseBody = BufferedReader(
+            InputStreamReader(connection.inputStream, Charsets.UTF_8)
+          ).use { it.readText() }
+          return parseGeminiFlashcardsJsonResponse(responseBody, defaultCategory)
+        } else {
+          val rawErrorBody = try {
+            connection.errorStream?.let { errStream ->
+              BufferedReader(InputStreamReader(errStream, Charsets.UTF_8)).use { it.readText() }
+            }.orEmpty()
+          } catch (_: Exception) {
+            ""
+          }
+
+          val isModelNotFound = responseCode == 404 ||
+            (responseCode == 400 && rawErrorBody.contains("not found", ignoreCase = true))
+
+          if (isModelNotFound && allowModelDiscoveryFallback) {
+            connection.disconnect()
+            connection = null
+            // Automatic fallback to gemini-3.8-flash first, then discovered Flash models
+            val fallbackCandidates = (listOf("gemini-3.8-flash") + discoverAvailableFlashModels(activeKey)).distinct()
+            for (candidateModel in fallbackCandidates) {
+              if (candidateModel.equals(activeModel, ignoreCase = true)) continue
+              cachedWorkingModelName = candidateModel
+              try {
+                val result = executeGeminiGenerateContentCall(
+                  activeApiKey = activeKey,
+                  partsArray = partsArray,
+                  defaultCategory = defaultCategory,
+                  allowModelDiscoveryFallback = false
+                )
+                hasVerifiedWorkingModel = true
+                return result
+              } catch (retryEx: GeminiBatchExtractionException) {
+                if (retryEx.statusCode != 404 && retryEx.statusCode != 400) {
+                  throw retryEx
+                }
               }
             }
           }
-        }
 
-        val parsedApiErrorMessage = extractDetailedErrorFromPayload(responseCode, rawErrorBody)
+          val parsedApiErrorMessage = extractDetailedErrorFromPayload(responseCode, rawErrorBody)
+          lastException = GeminiBatchExtractionException(
+            statusCode = responseCode,
+            message = parsedApiErrorMessage
+          )
+
+          // If rate-limited (429) or key quota/auth error (403/400), rotate to next classroom key in pool
+          if (responseCode == 429 || responseCode == 403 || responseCode == 400) {
+            keyIndex = (keyIndex + 1) % validPool.size
+            activeClassroomKeyIndex = keyIndex
+            continue
+          } else {
+            throw lastException
+          }
+        }
+      } catch (e: GeminiBatchExtractionException) {
+        lastException = e
+        if (e.statusCode == 429 || e.statusCode == 403) {
+          keyIndex = (keyIndex + 1) % validPool.size
+          activeClassroomKeyIndex = keyIndex
+          continue
+        }
+        throw e
+      } catch (e: CancellationException) {
+        throw e
+      } catch (_: Exception) {
         throw GeminiBatchExtractionException(
-          statusCode = responseCode,
-          message = parsedApiErrorMessage
+          statusCode = -1,
+          message = OFFLINE_ERROR_MESSAGE
         )
+      } finally {
+        connection?.disconnect()
       }
-    } catch (e: GeminiBatchExtractionException) {
-      throw e
-    } catch (e: CancellationException) {
-      throw e
-    } catch (_: Exception) {
-      throw GeminiBatchExtractionException(
-        statusCode = -1,
-        message = OFFLINE_ERROR_MESSAGE
-      )
-    } finally {
-      connection?.disconnect()
     }
+
+    throw (lastException ?: GeminiBatchExtractionException(
+      statusCode = 429,
+      message = "All classroom API keys are currently busy. Please wait a few seconds or share a classmate's deck code."
+    ))
   }
 
   /**
@@ -7337,6 +7501,7 @@ fun FlashcardMainView(
   val decks = viewModel.flashcardDecks.toList()
 
   var isNewDeckDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var isImportDeckCodeDialogOpen by rememberSaveable { mutableStateOf(false) }
   var isPasteTextDialogOpen by rememberSaveable { mutableStateOf(false) }
   var pasteDialogInitialTitle by rememberSaveable { mutableStateOf("") }
   var pasteDialogNoticeMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -7345,21 +7510,6 @@ fun FlashcardMainView(
 
   // API Key Quick-Verify & Override Dialog state
   var isApiKeyDialogOpen by rememberSaveable { mutableStateOf(false) }
-  var hasCheckedInitialApiKeyPrompt by rememberSaveable { mutableStateOf(false) }
-
-  // Automatically pop up the clean Quick-Verify API Key dialog if the hardcoded constant is still
-  // the default key and no key has been saved in SharedPreferences yet.
-  LaunchedEffect(Unit) {
-    if (!hasCheckedInitialApiKeyPrompt) {
-      hasCheckedInitialApiKeyPrompt = true
-      if (
-        DEFAULT_GEMINI_API_KEY == "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew" &&
-        !viewModel.hasSavedGeminiApiKey()
-      ) {
-        isApiKeyDialogOpen = true
-      }
-    }
-  }
 
   // Gizmo-Style Multi-Batch Progress Modal State
   var isBatchExtracting by remember { mutableStateOf(false) }
@@ -7665,11 +7815,11 @@ fun FlashcardMainView(
       }
     }
 
-    // 2. Cleaner Action Bar with Theme-Aware Frosted Glass Pills ("Import Document" & "+ New Deck")
+    // 2. Cleaner Action Bar with Theme-Aware Frosted Glass Pills ("Import Document", "📥 Import Code", & "+ New Deck")
     item {
       Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
         verticalAlignment = Alignment.CenterVertically
       ) {
         Surface(
@@ -7695,7 +7845,7 @@ fun FlashcardMainView(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 14.dp, vertical = 10.dp),
+              .padding(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
           ) {
@@ -7703,13 +7853,47 @@ fun FlashcardMainView(
               imageVector = Icons.Filled.Description,
               contentDescription = "Import Document",
               tint = palette.accentIndigo,
-              modifier = Modifier.size(16.dp)
+              modifier = Modifier.size(15.dp)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(5.dp))
             Text(
-              text = "Import Document",
+              text = "Import Doc",
               style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = 12.sp,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            isImportDeckCodeDialogOpen = true
+          },
+          shape = CircleShape,
+          color = palette.nestedCardFill,
+          border = palette.glassBorder,
+          shadowElevation = 2.dp,
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("import_deck_code_button")
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 10.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = "📥 Import Code",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 11.5.sp,
                 fontWeight = FontWeight.SemiBold
               ),
               color = palette.textPrimary,
@@ -7736,7 +7920,7 @@ fun FlashcardMainView(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 14.dp, vertical = 10.dp),
+              .padding(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
           ) {
@@ -7744,13 +7928,13 @@ fun FlashcardMainView(
               imageVector = Icons.Filled.Add,
               contentDescription = "New Deck",
               tint = palette.accentIndigo,
-              modifier = Modifier.size(16.dp)
+              modifier = Modifier.size(15.dp)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
               text = "+ New Deck",
               style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = 12.sp,
+                fontSize = 11.5.sp,
                 fontWeight = FontWeight.SemiBold
               ),
               color = palette.textPrimary,
@@ -8033,6 +8217,30 @@ fun FlashcardMainView(
                         )
                       }
                     }
+                  }
+
+                  IconButton(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      val shareCode = GizmoBatchFlashcardEngine.encodeDeckToShareCode(deck)
+                      val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                      clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", shareCode))
+                      Toast.makeText(
+                        context,
+                        "Deck code copied to clipboard! Share this with your classmates.",
+                        Toast.LENGTH_LONG
+                      ).show()
+                    },
+                    modifier = Modifier
+                      .size(48.dp)
+                      .testTag("share_deck_button_${deck.id}")
+                  ) {
+                    Icon(
+                      imageVector = Icons.Default.Share,
+                      contentDescription = "Share Deck ${deck.title}",
+                      tint = palette.accentIndigo,
+                      modifier = Modifier.size(20.dp)
+                    )
                   }
 
                   IconButton(
@@ -8669,6 +8877,179 @@ fun FlashcardMainView(
       }
     )
   }
+
+  // "📥 Import Code" Zero-Quota Shared Deck Dialog
+  if (isImportDeckCodeDialogOpen) {
+    ImportSharedDeckCodeDialog(
+      metrics = metrics,
+      onDismiss = { isImportDeckCodeDialogOpen = false },
+      onImportDeck = { importedDeck ->
+        val savedDeck = viewModel.addFlashcardDeck(
+          title = importedDeck.title,
+          subjectTag = importedDeck.subjectTag,
+          initialCards = importedDeck.cards
+        )
+        isImportDeckCodeDialogOpen = false
+        Toast.makeText(
+          context,
+          "Imported \"${savedDeck.title}\" (${savedDeck.cards.size} cards) with zero quota used!",
+          Toast.LENGTH_LONG
+        ).show()
+      }
+    )
+  }
+}
+
+@Composable
+private fun ImportSharedDeckCodeDialog(
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit,
+  onImportDeck: (FlashcardDeck) -> Unit
+) {
+  val context = LocalContext.current
+  val palette = currentGlassPalette()
+  var deckCodeInput by rememberSaveable { mutableStateOf("") }
+  var decodeError by rememberSaveable { mutableStateOf<String?>(null) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = palette.dialogSurface,
+    title = {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Default.Share,
+          contentDescription = null,
+          tint = palette.accentIndigo,
+          modifier = Modifier.size(22.dp)
+        )
+        Text(
+          text = "Import Classmate Deck",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(19),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textPrimary
+        )
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        Text(
+          text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Paste their deck code below to load the full deck instantly with zero AI quota usage.",
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = metrics.scaledSp(12)
+          ),
+          color = palette.textSecondary
+        )
+
+        OutlinedTextField(
+          value = deckCodeInput,
+          onValueChange = {
+            deckCodeInput = it
+            decodeError = null
+          },
+          label = { Text("Paste Deck Code from Classmate") },
+          placeholder = { Text("eyJ2IjoxLCJ0aXRsZSI6...") },
+          isError = decodeError != null,
+          minLines = 3,
+          maxLines = 6,
+          shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("import_deck_code_input")
+        )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          TextButton(
+            onClick = {
+              val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+              val pasted = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
+              if (!pasted.isNullOrEmpty()) {
+                deckCodeInput = pasted
+                decodeError = null
+              } else {
+                Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+              }
+            },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.ContentPaste,
+              contentDescription = "Paste Deck Code",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Paste from Clipboard",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = palette.accentIndigo
+            )
+          }
+
+          if (deckCodeInput.isNotEmpty()) {
+            TextButton(
+              onClick = {
+                deckCodeInput = ""
+                decodeError = null
+              },
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+              Text("Clear", fontSize = 12.sp, color = palette.textSecondary)
+            }
+          }
+        }
+
+        if (decodeError != null) {
+          Text(
+            text = decodeError.orEmpty(),
+            style = MaterialTheme.typography.labelSmall,
+            color = palette.accentRed
+          )
+        }
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          val decoded = GizmoBatchFlashcardEngine.decodeDeckFromShareCode(deckCodeInput)
+          if (decoded == null) {
+            decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
+          } else {
+            onImportDeck(decoded)
+          }
+        },
+        shape = RoundedCornerShape(18.dp),
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF4F46E5),
+          contentColor = Color.White
+        ),
+        modifier = Modifier.testTag("confirm_import_deck_code_button")
+      ) {
+        Text("Import Deck", fontWeight = FontWeight.Bold)
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Cancel", color = palette.textSecondary)
+      }
+    }
+  )
 }
 
 @Composable
