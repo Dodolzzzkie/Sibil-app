@@ -333,7 +333,7 @@ private val EMBEDDED_API_KEYS = listOf(
   "AQ.Ab8RN6IiildWfw-2Acfq_B1B3uvdnj0dy47ftJ3juAWyHFjf0w"
 )
 private val DEFAULT_GEMINI_API_KEY = EMBEDDED_API_KEYS.first()
-const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.1 (Build 2)"
+const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.0 (Official Release)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
 private const val DEFAULT_FALLBACK_LONGITUDE = 124.03
@@ -352,11 +352,6 @@ private val LiquidDeepIndigo = Color(0xFF4F46E5)
 private val LiquidIndigoCore = Color(0xFF4338CA)
 private val LiquidElectricViolet = Color(0xFF7C3AED)
 private val LiquidInactiveCharcoal = Color(0xFF475569)
-
-// Legacy fallback tokens kept for static non-composable references
-private val CreamCardColor = Color.White.copy(alpha = 0.66f)
-private val IvoryInnerCardColor = Color(0xFFEEF2FF).copy(alpha = 0.75f)
-private val WarmCreamTrackColor = Color(0xFFCBD5E1).copy(alpha = 0.75f)
 
 private val LiquidOrbBrush: Brush = Brush.linearGradient(
   colors = listOf(
@@ -944,16 +939,6 @@ data class Task(
 )
 
 /**
- * Data Model for Today's Class Schedule items on the Dashboard.
- */
-data class ClassScheduleItem(
-  val id: String,
-  val subject: String,
-  val timeRange: String,
-  val room: String
-)
-
-/**
  * Data Model for the colored Timetable Schedule on the "Schedule" tab:
  * `id: Int, subjectName: String, timeRange: String, days: List<String>, room: String, colorHex: Long`.
  */
@@ -1195,13 +1180,23 @@ object GizmoBatchFlashcardEngine {
   }
 
   val SYSTEM_PROMPT_INSTRUCTION = """
-You are an expert academic flashcard generator for university students and board exam examinees.
+You are an expert academic flashcard generator for university students and engineering board exam examinees.
 Analyze the provided document material and generate high-yield, comprehensive active-recall flashcards.
-GUIDELINES:
-1. ACCURACY FIRST: Never hallucinate or invent garbled characters. Use clean, readable language and standard technical terms.
-2. EXISTING QUESTIONS & ANSWERS: If the document contains review questions, multiple choice items, quizzes, or problem sets, extract EVERY question and its correct answer verbatim.
-3. KEY CONCEPTS & DEFINITIONS: For lecture notes or textbook chapters, turn every key term, formula (with variable definitions), and engineering provision into a clear Question and Answer pair.
-4. FORMATTING: Front of the card must be a self-contained Question. Back of the card must be the direct Answer with any necessary explanation.
+
+STRICT EXCLUSION RULES (DO NOT CREATE FLASHCARDS FOR ANY OF THE FOLLOWING):
+1. Administrative & Metadata: Ignore school/university names, department headers, instructor/professor names, course codes, semester/academic year, student names, and dates.
+2. Classroom Policies: Ignore grading rubrics, attendance rules, assignment deadlines, syllabus outlines, honor codes, or submission instructions.
+3. Structural Fillers: Ignore tables of contents, page numbers, document titles, copyright notices, and generic chapter headings.
+
+ACADEMIC FOCUS (ONLY EXTRACT HIGH-YIELD CONTENT):
+- Engineering & Technical Definitions: Specific terms, principles, hypotheses, and physical meanings.
+- Formulas & Equations: Standard engineering equations with variable designations (e.g., NSCP provisions, structural mechanics, fluid dynamics).
+- Explicit Review Questions: Numbered questions, multiple-choice items, and review problem sets with their correct answers.
+- Enumerations & Criteria: Design steps, classifications, and code limitations.
+
+FORMATTING REQUIREMENT:
+Respond strictly with a valid JSON array matching the schema: [{"question": "...", "answer": "..."}].
+Never output garbled ASCII or non-academic metadata.
   """.trimIndent()
 
   private const val PAGES_PER_PDF_BATCH = 2
@@ -1533,21 +1528,25 @@ GUIDELINES:
 
           val bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
           try {
-            // Render onto high-contrast white background
-            android.graphics.Canvas(bitmap).drawColor(android.graphics.Color.WHITE)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            try {
+              // Render onto high-contrast white background
+              android.graphics.Canvas(bitmap).drawColor(android.graphics.Color.WHITE)
+              page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            } finally {
+              page.close()
+            }
+
+            val jpegBytes = ByteArrayOutputStream().use { baos ->
+              bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
+              baos.toByteArray()
+            }
+            val encodedBase64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+            base64PageImages.add(encodedBase64)
           } finally {
-            page.close()
+            if (!bitmap.isRecycled) {
+              bitmap.recycle()
+            }
           }
-
-          val jpegBytes = ByteArrayOutputStream().use { baos ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
-            baos.toByteArray()
-          }
-          bitmap.recycle()
-
-          val encodedBase64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
-          base64PageImages.add(encodedBase64)
         }
 
         coroutineContext.ensureActive()
@@ -2915,6 +2914,14 @@ class LocalStorageManager(context: Context) {
     return saved.ifEmpty { DEFAULT_GEMINI_API_KEY }
   }
 
+  fun shouldShowWhatsNew(context: Context = appContext, currentVersionCode: Int): Boolean {
+    return currentVersionCode > prefs.getInt(PREF_LAST_SEEN_VERSION, 0)
+  }
+
+  fun markWhatsNewSeen(context: Context = appContext, currentVersionCode: Int) {
+    prefs.edit().putInt(PREF_LAST_SEEN_VERSION, currentVersionCode).apply()
+  }
+
   /**
    * Reads all stored JSON strings from `SharedPreferences` (Schedules, Tasks, Alarms, Flashcards,
    * User Profile, and all per-account keys) and combines them into a single encoded JSON string
@@ -3058,11 +3065,22 @@ class LocalStorageManager(context: Context) {
     private const val KEY_FLASHCARDS_PREFIX = "flashcards_"
     private const val KEY_USER_NAME = "saved_user_name"
     private const val KEY_DARK_MODE = "saved_dark_mode"
+    const val PREF_LAST_SEEN_VERSION = "last_seen_version_code"
     private const val KEY_GEMINI_API_KEY = "saved_gemini_api_key"
     private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
     private const val CURRENT_TASK_SCHEMA_VERSION = 2
     private const val KEY_FLASHCARD_SCHEMA_VERSION = "flashcard_schema_version"
     private const val CURRENT_FLASHCARD_SCHEMA_VERSION = 2
+
+    fun shouldShowWhatsNew(context: Context, currentVersionCode: Int): Boolean {
+      val sharedPrefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      return currentVersionCode > sharedPrefs.getInt(PREF_LAST_SEEN_VERSION, 0)
+    }
+
+    fun markWhatsNewSeen(context: Context, currentVersionCode: Int) {
+      val sharedPrefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+      sharedPrefs.edit().putInt(PREF_LAST_SEEN_VERSION, currentVersionCode).apply()
+    }
   }
 }
 
@@ -3158,8 +3176,6 @@ class TaskViewModel(
   // Default state of the Task list is completely empty (no hardcoded placeholder tasks)
   private val _tasks = mutableStateListOf<Task>()
   val tasks: List<Task> get() = _tasks
-
-  val todaysSchedule: List<ClassScheduleItem> = emptyList()
 
   private val _classSchedules = mutableStateListOf<ClassSchedule>()
   val classSchedules: List<ClassSchedule> get() = _classSchedules
@@ -5841,6 +5857,24 @@ fun DashboardScreen(
     }
   }
 
+  val currentVersionCode = remember(context) {
+    try {
+      val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+      val rawCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        pkgInfo.longVersionCode.toInt()
+      } else {
+        @Suppress("DEPRECATION")
+        pkgInfo.versionCode
+      }
+      maxOf(100, rawCode)
+    } catch (_: Exception) {
+      100
+    }
+  }
+  var showWhatsNewModal by rememberSaveable {
+    mutableStateOf(LocalStorageManager.shouldShowWhatsNew(context, currentVersionCode))
+  }
+
   Box(
     modifier = modifier.fillMaxSize(),
     contentAlignment = Alignment.TopCenter
@@ -6054,6 +6088,155 @@ fun DashboardScreen(
             viewModel.toggleTaskCompletion(taskId)
           }
         )
+      }
+    }
+
+    if (showWhatsNewModal) {
+      WhatsNewDialog(
+        metrics = metrics,
+        onExploreUpdates = {
+          LocalStorageManager.markWhatsNewSeen(context, currentVersionCode)
+          showWhatsNewModal = false
+        }
+      )
+    }
+  }
+}
+
+@Composable
+fun WhatsNewDialog(
+  metrics: ResponsiveMetrics,
+  onExploreUpdates: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  val changelogBullets = remember {
+    listOf(
+      "🗂️ Smart Flashcards: AI document-to-card generator with multi-key failover and 3D card physics.",
+      "🎨 Refined Liquid Glass: True daylight contrast in Light Mode and deep obsidian in Dark Mode.",
+      "⏱️ CE Time Suite: Segmented pill navigation with scrollable Lap Splits and background alarms.",
+      "⚡ Offline Deck Sharing: Export and import decks directly with classmates via code."
+    )
+  }
+
+  Dialog(
+    onDismissRequest = onExploreUpdates,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    LiquidGlassCard(
+      shape = RoundedCornerShape(28.dp),
+      elevation = 14.dp,
+      borderStroke = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.50f)),
+      modifier = Modifier
+        .fillMaxWidth(0.92f)
+        .widthIn(max = 460.dp)
+        .testTag("whats_new_dialog")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(metrics.scaledDp(22)),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+      ) {
+        // Header: Sparkle icon + "What's New in Sibil" + "v1.0.0 (Official Launch)" badge
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          Box(
+            modifier = Modifier
+              .size(46.dp)
+              .clip(RoundedCornerShape(14.dp))
+              .background(brush = LiquidOrbBrush)
+              .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)), RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = Icons.Filled.AutoAwesome,
+              contentDescription = "Sparkle",
+              tint = Color.White,
+              modifier = Modifier.size(24.dp)
+            )
+          }
+
+          Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            Text(
+              text = "What's New in Sibil",
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = metrics.scaledSp(20),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.textPrimary
+            )
+            Surface(
+              shape = CircleShape,
+              color = Color(0xFF6366F1).copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
+            ) {
+              Text(
+                text = "v1.0.0 (Official Launch)",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+              )
+            }
+          }
+        }
+
+        // Concise Bullet List
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          changelogBullets.forEach { bullet ->
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = palette.nestedCardFill,
+              border = palette.nestedBorder,
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = bullet,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = metrics.scaledSp(13),
+                  lineHeight = metrics.scaledSp(18),
+                  fontWeight = FontWeight.Medium
+                ),
+                color = palette.textPrimary,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+              )
+            }
+          }
+        }
+
+        // Action Button: Full-width vibrant indigo button "Explore Updates"
+        Button(
+          onClick = onExploreUpdates,
+          shape = RoundedCornerShape(18.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFF4F46E5),
+            contentColor = Color.White
+          ),
+          contentPadding = PaddingValues(vertical = 14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("whats_new_explore_button")
+        ) {
+          Text(
+            text = "Explore Updates",
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = 14.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = Color.White
+          )
+        }
       }
     }
   }
@@ -6641,6 +6824,7 @@ fun ExtrasScreen(
   viewModel: TaskViewModel = viewModel()
 ) {
   val context = LocalContext.current
+  val localView = LocalView.current
   val localStorageManager = remember(context) {
     LocalStorageManager(context.applicationContext)
   }
@@ -6650,42 +6834,43 @@ fun ExtrasScreen(
 
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
-  var selectedToolTitle by rememberSaveable { mutableStateOf<String?>(null) }
   var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
   var isFormulaVaultOpen by rememberSaveable { mutableStateOf(false) }
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+  var comingSoonSnackbarMessage by remember { mutableStateOf<String?>(null) }
 
-  val extraTools = remember {
+  LaunchedEffect(comingSoonSnackbarMessage) {
+    if (comingSoonSnackbarMessage != null) {
+      delay(2600L)
+      comingSoonSnackbarMessage = null
+    }
+  }
+
+  val comingSoonModules = remember {
     listOf(
+      ExtraToolItem(
+        id = "unit_converter",
+        title = "Unit Converter",
+        subtitle = "SI & Imperial engineering units",
+        icon = Icons.Filled.SwapHoriz
+      ),
+      ExtraToolItem(
+        id = "gpa_calculator",
+        title = "GPA Calculator",
+        subtitle = "Semester GWA & board weighting",
+        icon = Icons.Filled.Calculate
+      ),
       ExtraToolItem(
         id = "scientific_calculator",
         title = "Scientific Calculator",
         subtitle = "Beam & matrix solver",
-        icon = Icons.Filled.Calculate
-      ),
-      ExtraToolItem(
-        id = "unit_converter",
-        title = "Unit Converter",
-        subtitle = "SI & Imperial units",
-        icon = Icons.Filled.SwapHoriz
+        icon = Icons.Filled.Architecture
       ),
       ExtraToolItem(
         id = "boq_estimator",
-        title = "BOQ Estimator",
+        title = "Quick Tools & BOQ",
         subtitle = "Material & cost takeoff",
         icon = Icons.Filled.RequestQuote
-      ),
-      ExtraToolItem(
-        id = "smart_flashcards",
-        title = "Smart Flashcards",
-        subtitle = "CE active-recall & PDF import",
-        icon = Icons.Filled.AutoAwesome
-      ),
-      ExtraToolItem(
-        id = "ce_formula_vault",
-        title = "CE Formula Vault",
-        subtitle = "Interactive structural & hydro solvers",
-        icon = Icons.Filled.Functions
       )
     )
   }
@@ -6731,144 +6916,334 @@ fun ExtrasScreen(
     return
   }
 
-  Column(
-    modifier = modifier
-      .fillMaxSize()
-      .widthIn(max = metrics.maxContentWidth)
-      .verticalScroll(rememberScrollState())
-      .padding(
-        horizontal = metrics.scaledDp(20),
-        vertical = metrics.scaledDp(24)
-      )
-      .testTag("extras_tools_page"),
-    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(20))
-  ) {
-    // Top Header
+  val deckCount = viewModel.flashcardDecks.size
+  val totalCardCount = viewModel.flashcardDecks.sumOf { it.cards.size }
+
+  Box(modifier = modifier.fillMaxSize()) {
     Column(
-      modifier = Modifier.fillMaxWidth(),
-      verticalArrangement = Arrangement.spacedBy(4.dp)
+      modifier = Modifier
+        .fillMaxSize()
+        .widthIn(max = metrics.maxContentWidth)
+        .verticalScroll(rememberScrollState())
+        .padding(
+          start = metrics.scaledDp(20),
+          end = metrics.scaledDp(20),
+          top = metrics.scaledDp(24),
+          bottom = metrics.scaledDp(116)
+        )
+        .testTag("extras_tools_page"),
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
     ) {
-      Text(
-        text = stringResource(R.string.extras_screen_title),
-        style = MaterialTheme.typography.headlineLarge.copy(
-          fontSize = metrics.scaledSp(26),
-          fontWeight = FontWeight.Bold
-        ),
-        color = palette.textPrimary,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("extras_screen_title")
-      )
-      Text(
-        text = "Civil Engineering utilities & companion tools",
-        style = MaterialTheme.typography.bodyMedium.copy(
-          fontSize = metrics.scaledSp(14),
-          fontWeight = FontWeight.SemiBold
-        ),
-        color = palette.textSecondary,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.fillMaxWidth()
-      )
-    }
-
-    // 3D Frosted Glass Engineering Tool Grid
-    Column(
-      modifier = Modifier.fillMaxWidth(),
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
-    ) {
-      Row(
+      // Top Header
+      Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+        verticalArrangement = Arrangement.spacedBy(4.dp)
       ) {
-        ExtraToolPlaceholderCard(
-          tool = extraTools[0],
-          metrics = metrics,
-          onClick = { selectedToolTitle = extraTools[0].title },
-          modifier = Modifier.weight(1f)
-        )
-        ExtraToolPlaceholderCard(
-          tool = extraTools[1],
-          metrics = metrics,
-          onClick = { selectedToolTitle = extraTools[1].title },
-          modifier = Modifier.weight(1f)
-        )
-      }
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
-      ) {
-        ExtraToolPlaceholderCard(
-          tool = extraTools[2],
-          metrics = metrics,
-          onClick = { selectedToolTitle = extraTools[2].title },
-          modifier = Modifier.weight(1f)
-        )
-        ExtraToolPlaceholderCard(
-          tool = extraTools[3],
-          metrics = metrics,
-          onClick = { isFlashcardsOpen = true },
-          modifier = Modifier.weight(1f)
-        )
-      }
-
-      // Featured Full-Width CE Formula Vault Card
-      ExtraToolPlaceholderCard(
-        tool = extraTools[4],
-        metrics = metrics,
-        onClick = { isFormulaVaultOpen = true },
-        modifier = Modifier.fillMaxWidth()
-      )
-    }
-  }
-
-  if (selectedToolTitle != null) {
-    AlertDialog(
-      onDismissRequest = { selectedToolTitle = null },
-      shape = RoundedCornerShape(28.dp),
-      containerColor = palette.dialogSurface,
-      title = {
         Text(
-          text = selectedToolTitle ?: "",
-          style = MaterialTheme.typography.headlineMedium.copy(
-            fontSize = metrics.scaledSp(22),
+          text = stringResource(R.string.extras_screen_title),
+          style = MaterialTheme.typography.headlineLarge.copy(
+            fontSize = metrics.scaledSp(26),
             fontWeight = FontWeight.Bold
           ),
           color = palette.textPrimary,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("extras_screen_title")
         )
-      },
-      text = {
         Text(
-          text = "$selectedToolTitle module placeholder. Ready for upcoming Civil Engineering calculations.",
-          style = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = metrics.scaledSp(15)
+          text = "AI Study Suite & Civil Engineering companion modules",
+          style = MaterialTheme.typography.bodyMedium.copy(
+            fontSize = metrics.scaledSp(14),
+            fontWeight = FontWeight.SemiBold
           ),
-          color = palette.textSecondary
+          color = palette.textSecondary,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.fillMaxWidth()
         )
-      },
-      confirmButton = {
-        Button(
-          onClick = { selectedToolTitle = null },
-          shape = CircleShape,
-          colors = ButtonDefaults.buttonColors(
-            containerColor = palette.accentIndigo,
-            contentColor = Color.White
-          )
+      }
+
+      // 1. TOP HERO CARD: Smart Flashcards Premier Featured Card
+      LiquidGlassCard(
+        onClick = {
+          playCardHapticSound(context, localView)
+          isFlashcardsOpen = true
+        },
+        shape = RoundedCornerShape(28.dp),
+        elevation = 12.dp,
+        borderStroke = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("extra_tool_card_smart_flashcards")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(20)),
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
-          Text(
-            text = "Close",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontWeight = FontWeight.Bold
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+          ) {
+            Box(
+              modifier = Modifier
+                .size(54.dp)
+                .shadow(
+                  elevation = 8.dp,
+                  shape = RoundedCornerShape(16.dp),
+                  ambientColor = LiquidDeepIndigo.copy(alpha = 0.30f),
+                  spotColor = LiquidElectricViolet.copy(alpha = 0.30f)
+                )
+                .clip(RoundedCornerShape(16.dp))
+                .background(brush = LiquidOrbBrush)
+                .border(
+                  BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
+                  RoundedCornerShape(16.dp)
+                ),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = "Smart Flashcards",
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
+              )
+            }
+
+            // Gradient Badges ("AI Powered", "Multi-Batch") + Deck Counter
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Box(
+                modifier = Modifier
+                  .clip(CircleShape)
+                  .background(brush = LiquidVioletChipGradient)
+                  .padding(horizontal = 10.dp, vertical = 4.dp)
+              ) {
+                Text(
+                  text = "AI Powered",
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = Color.White
+                )
+              }
+
+              Surface(
+                shape = CircleShape,
+                color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
+              ) {
+                Text(
+                  text = "Multi-Batch",
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = palette.accentIndigo,
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+              }
+            }
+          }
+
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Text(
+              text = "Smart Flashcards",
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = metrics.scaledSp(21),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.textPrimary
             )
+            Text(
+              text = "Convert PDFs, DOCX handouts, and lecture notes into active-recall engineering decks with 3D flip physics and classmate code sharing.",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(13),
+                lineHeight = metrics.scaledSp(18),
+                fontWeight = FontWeight.Medium
+              ),
+              color = palette.textSecondary
+            )
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Surface(
+              shape = CircleShape,
+              color = palette.nestedCardFill,
+              border = palette.nestedBorder
+            ) {
+              Text(
+                text = "🗂️ $deckCount ${if (deckCount == 1) "Deck" else "Decks"} • $totalCardCount Cards",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 11.5.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+              )
+            }
+
+            Button(
+              onClick = {
+                playCardHapticSound(context, localView)
+                isFlashcardsOpen = true
+              },
+              shape = RoundedCornerShape(18.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF4F46E5),
+                contentColor = Color.White
+              ),
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+              modifier = Modifier.testTag("launch_flashcards_hero_button")
+            ) {
+              Text(
+                text = "Launch Flashcards",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = 12.5.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = Color.White
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Icon(
+                imageVector = Icons.Filled.ArrowForward,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(16.dp)
+              )
+            }
+          }
+        }
+      }
+
+      // 2. Active Companion Module: CE Formula Vault
+      ExtraToolPlaceholderCard(
+        tool = ExtraToolItem(
+          id = "ce_formula_vault",
+          title = "CE Formula Vault",
+          subtitle = "Interactive structural, hydraulics, geotech & MSTE solvers",
+          icon = Icons.Filled.Functions
+        ),
+        metrics = metrics,
+        isComingSoon = false,
+        onClick = {
+          playCardHapticSound(context, localView)
+          isFormulaVaultOpen = true
+        },
+        modifier = Modifier.fillMaxWidth()
+      )
+
+      // 3. Secondary Modules ("Coming Soon" Frosted Cards)
+      Text(
+        text = "UPCOMING MODULES",
+        style = MaterialTheme.typography.labelMedium.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 1.2.sp
+        ),
+        color = palette.textSecondary
+      )
+
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+        ) {
+          ExtraToolPlaceholderCard(
+            tool = comingSoonModules[0],
+            metrics = metrics,
+            isComingSoon = true,
+            onClick = {
+              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+            },
+            modifier = Modifier.weight(1f)
+          )
+          ExtraToolPlaceholderCard(
+            tool = comingSoonModules[1],
+            metrics = metrics,
+            isComingSoon = true,
+            onClick = {
+              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+            },
+            modifier = Modifier.weight(1f)
+          )
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+        ) {
+          ExtraToolPlaceholderCard(
+            tool = comingSoonModules[2],
+            metrics = metrics,
+            isComingSoon = true,
+            onClick = {
+              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+            },
+            modifier = Modifier.weight(1f)
+          )
+          ExtraToolPlaceholderCard(
+            tool = comingSoonModules[3],
+            metrics = metrics,
+            isComingSoon = true,
+            onClick = {
+              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+            },
+            modifier = Modifier.weight(1f)
           )
         }
       }
-    )
+    }
+
+    // Smooth micro-snackbar when tapping any "Coming Soon" module
+    if (comingSoonSnackbarMessage != null) {
+      Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = palette.dialogSurface,
+        border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f)),
+        shadowElevation = 10.dp,
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(horizontal = 24.dp, vertical = 96.dp)
+          .testTag("coming_soon_micro_snackbar")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Info,
+            contentDescription = null,
+            tint = Color(0xFF818CF8),
+            modifier = Modifier.size(18.dp)
+          )
+          Text(
+            text = comingSoonSnackbarMessage.orEmpty(),
+            style = MaterialTheme.typography.bodySmall.copy(
+              fontSize = 12.5.sp,
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = palette.textPrimary
+          )
+        }
+      }
+    }
   }
 }
 
@@ -10657,77 +11032,161 @@ fun FlashcardStudyScreen(
 private fun ExtraToolPlaceholderCard(
   tool: ExtraToolItem,
   metrics: ResponsiveMetrics,
+  isComingSoon: Boolean = false,
   onClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val palette = currentGlassPalette()
-  LiquidGlassCard(
-    onClick = onClick,
-    shape = RoundedCornerShape(26.dp),
-    elevation = 10.dp,
-    fillAlpha = 0.72f,
-    modifier = modifier
-      .height(metrics.scaledDp(168))
-      .testTag("extra_tool_card_${tool.id}")
-  ) {
-    Column(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(metrics.scaledDp(18)),
-      verticalArrangement = Arrangement.SpaceBetween
+  if (isComingSoon) {
+    Surface(
+      onClick = onClick,
+      shape = RoundedCornerShape(24.dp),
+      color = palette.nestedCardFill,
+      border = palette.nestedBorder,
+      modifier = modifier
+        .height(metrics.scaledDp(156))
+        .testTag("extra_tool_card_${tool.id}")
     ) {
-      // Luminous Gradient Icon Badge with Specular Rim
-      Box(
-        modifier = Modifier
-          .size(50.dp)
-          .shadow(
-            elevation = 8.dp,
-            shape = RoundedCornerShape(16.dp),
-            ambientColor = LiquidDeepIndigo.copy(alpha = 0.30f),
-            spotColor = LiquidElectricViolet.copy(alpha = 0.30f)
-          )
-          .clip(RoundedCornerShape(16.dp))
-          .background(brush = LiquidOrbBrush)
-          .border(
-            BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
-            RoundedCornerShape(16.dp)
-          ),
-        contentAlignment = Alignment.Center
-      ) {
-        Icon(
-          imageVector = tool.icon,
-          contentDescription = tool.title,
-          tint = Color.White,
-          modifier = Modifier.size(26.dp)
-        )
-      }
-
       Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(metrics.scaledDp(16)),
+        verticalArrangement = Arrangement.SpaceBetween
       ) {
-        Text(
-          text = tool.title,
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(16),
-            fontWeight = FontWeight.Bold
-          ),
-          color = palette.textPrimary,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth()
-        )
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.Top
+        ) {
+          Box(
+            modifier = Modifier
+              .size(44.dp)
+              .clip(RoundedCornerShape(14.dp))
+              .background(palette.trackColor)
+              .border(palette.nestedBorder, RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = tool.icon,
+              contentDescription = tool.title,
+              tint = palette.textSecondary,
+              modifier = Modifier.size(22.dp)
+            )
+          }
 
-        Text(
-          text = tool.subtitle,
-          style = MaterialTheme.typography.bodyMedium.copy(
-            fontSize = metrics.scaledSp(13),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = palette.textSecondary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth()
+          Surface(
+            shape = CircleShape,
+            color = Color(0xFF6366F1).copy(alpha = 0.15f),
+            border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.35f))
+          ) {
+            Text(
+              text = "Coming Soon",
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold,
+              color = Color(0xFF818CF8),
+              maxLines = 1,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+          }
+        }
+
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+          Text(
+            text = tool.title,
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(15),
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          Text(
+            text = tool.subtitle,
+            style = MaterialTheme.typography.bodySmall.copy(
+              fontSize = metrics.scaledSp(12),
+              fontWeight = FontWeight.Medium
+            ),
+            color = palette.textSecondary.copy(alpha = 0.8f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+    }
+  } else {
+    LiquidGlassCard(
+      onClick = onClick,
+      shape = RoundedCornerShape(26.dp),
+      elevation = 8.dp,
+      modifier = modifier.testTag("extra_tool_card_${tool.id}")
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(metrics.scaledDp(18)),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .size(50.dp)
+            .shadow(
+              elevation = 8.dp,
+              shape = RoundedCornerShape(16.dp),
+              ambientColor = LiquidDeepIndigo.copy(alpha = 0.30f),
+              spotColor = LiquidElectricViolet.copy(alpha = 0.30f)
+            )
+            .clip(RoundedCornerShape(16.dp))
+            .background(brush = LiquidOrbBrush)
+            .border(
+              BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
+              RoundedCornerShape(16.dp)
+            ),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = tool.icon,
+            contentDescription = tool.title,
+            tint = Color.White,
+            modifier = Modifier.size(26.dp)
+          )
+        }
+
+        Column(
+          modifier = Modifier.weight(1f),
+          verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+          Text(
+            text = tool.title,
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(16),
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          Text(
+            text = tool.subtitle,
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = metrics.scaledSp(13),
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = palette.textSecondary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+
+        Icon(
+          imageVector = Icons.Filled.ArrowForward,
+          contentDescription = null,
+          tint = palette.accentIndigo,
+          modifier = Modifier.size(20.dp)
         )
       }
     }
@@ -16466,12 +16925,6 @@ private fun StopwatchSubScreen(
       }
     }
   }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun CivilEngineeringProductivityAppPreview() {
-  CivilEngineeringProductivityApp()
 }
 
 // Registered in AndroidManifest.xml: <receiver android:name=".TimerReceiver" />
