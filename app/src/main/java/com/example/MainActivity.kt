@@ -1023,25 +1023,33 @@ class GeminiBatchExtractionException(
 ) : Exception(message)
 
 /**
- * Gizmo-Style Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`):
- * - Uses `https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$activeApiKey`
- *   with `primaryModel` and automatic model discovery fallback via `resolveWorkingGeminiModel(apiKey)`.
- * - Enforces `"generationConfig": { "responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": 8192 }`
+ * Online Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`) based on `kiendoantrung/gemini-flashcards`:
+ * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$activeApiKey`
+ *   with automatic fallback to `gemini-3.0-flash` or `gemini-3.5-flash-lite` if an HTTP 404 is encountered.
+ * - Enforces Structured Outputs via `responseSchema` inside `generationConfig` (`responseMimeType = "application/json"`,
+ *   `temperature = 0.2`) so Gemini is guaranteed to return clean `question` and `answer` objects.
  * - Processes PDFs of ANY length in 2-page visual batches using `android.graphics.pdf.PdfRenderer`,
- *   rendering each page onto a max-1440px white-backed `Bitmap`, compressing to 82% JPEG Base64,
+ *   rendering each page onto a max-1280px high-contrast white `Bitmap`, compressing to 80% JPEG Base64,
  *   and recycling the `Bitmap` immediately.
- * - Processes DOCX (`word/document.xml` via `ZipInputStream`), TXT, and Pasted Notes of ANY length
- *   in 4,000-character chunks split along paragraph boundaries, with automatic offline local regex Q&A fallback.
- * - Reports real-time progress (`currentBatch`, `totalBatches`, `statusLabel`, `accumulatedCards`, `latestQuestion`, `latestAnswer`)
- *   after every batch so the user can monitor live generation or tap "Save & Stop Here" at any time.
+ * - Processes DOCX (`word/document.xml` via `ZipInputStream`), TXT, and Pasted Notes in 4,000-character chunks
+ *   after verifying valid human-readable characters. Never falls back to offline regex or unparsed binary streams.
  */
 object GizmoBatchFlashcardEngine {
-  val primaryModel: String = listOf("gemini", "3.8", "flash").joinToString("-")
+  val SUPPORTED_DOCUMENT_MIME_TYPES = arrayOf(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/pdf",
+    "text/plain"
+  )
+
+  const val OFFLINE_ERROR_MESSAGE =
+    "Internet connection required to analyze documents with Gemini AI."
+
+  val primaryModel: String = "gemini-2.5-flash"
 
   val fallbackModels: List<String> = listOf(
-    listOf("gemini", "3.8", "flash").joinToString("-"),
-    listOf("gemini", "3.6", "flash").joinToString("-"),
-    listOf("gemini", "3.5", "flash", "lite").joinToString("-")
+    "gemini-2.5-flash",
+    "gemini-3.0-flash",
+    "gemini-3.5-flash-lite"
   )
 
   @Volatile
@@ -1054,20 +1062,22 @@ object GizmoBatchFlashcardEngine {
   private var fallbackStepIndex: Int = 0
 
   val SYSTEM_PROMPT_INSTRUCTION = """
-You are an exhaustive Question-and-Answer extractor and flashcard generator.
-Read all content on these pages and extract EVERY question and answer into flashcards:
-1. DIRECT Q&A RECOGNITION (HIGHEST PRIORITY): If the document contains existing questions and answers (numbered questions, exam reviewers, multiple-choice items with answer keys, Q&A pairs, tables, problem sets, or study guides), extract EVERY SINGLE question and its exact corresponding answer. Do NOT skip, summarize, or limit the number of cards.
-2. COMPLETE CONCEPT EXTRACTION: For paragraphs, definitions, formulas, or lecture notes not written as questions, convert every key definition, formula, and provision into a clear Question and Answer pair.
-3. Respond strictly with a valid JSON array of objects: [{"question": "...", "answer": "..."}].
+You are an expert academic flashcard generator for university students and board exam examinees.
+Analyze the provided document material and generate high-yield, comprehensive active-recall flashcards.
+GUIDELINES:
+1. ACCURACY FIRST: Never hallucinate, invent abbreviations, or output garbled characters. Use clean, readable language and standard technical terms.
+2. EXISTING QUESTIONS & ANSWERS: If the document contains existing review questions, multiple choice items, quizzes, or problem sets, extract EVERY question and its correct answer verbatim.
+3. KEY CONCEPTS & DEFINITIONS: For lecture notes or textbook chapters, turn every key term, formula (with variable definitions), and engineering provision into a clear Question and Answer pair.
+4. FORMATTING: Front of the card must be a self-contained Question. Back of the card must be the direct Answer with any necessary explanation.
   """.trimIndent()
 
   private const val PAGES_PER_PDF_BATCH = 2
   private const val MAX_TEXT_CHUNK_CHARS = 4000
 
   /**
-   * Resilient helper function that starts with `primaryModel` and, if an HTTP 404
-   * occurs, queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey` or steps
-   * through `fallbackModels` to pick the active Flash model without failing.
+   * Resilient helper function that starts with `gemini-2.5-flash` and, if an HTTP 404
+   * occurs, steps through `gemini-3.0-flash` / `gemini-3.5-flash-lite` or queries
+   * `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey` to select an active Flash model.
    */
   fun resolveWorkingGeminiModel(apiKey: String, forceRefresh: Boolean = false): String {
     if (!forceRefresh && hasVerifiedWorkingModel && cachedWorkingModelName.isNotBlank()) {
@@ -1144,11 +1154,89 @@ Read all content on these pages and extract EVERY question and answer into flash
       connection?.disconnect()
     }
 
-    // Step through fallbackModels if list models call could not parse
     fallbackStepIndex = (fallbackStepIndex + 1) % fallbackModels.size
     cachedWorkingModelName = fallbackModels[fallbackStepIndex]
     hasVerifiedWorkingModel = true
     return cachedWorkingModelName
+  }
+
+  /**
+   * `.docx` Parser: Extracts text strictly from `word/document.xml` using `ZipInputStream`.
+   * Strips XML tags cleanly (`Regex("<[^>]*>")`), decodes common XML entities
+   * (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`), and verifies that the extracted string
+   * contains valid human-readable characters before proceeding.
+   */
+  fun extractTextFromDocx(context: Context, uri: Uri): String {
+    return try {
+      context.contentResolver.openInputStream(uri)?.use { inputStream ->
+        ZipInputStream(inputStream).use { zipStream ->
+          var entry = zipStream.nextEntry
+          while (entry != null) {
+            if (entry.name.equals("word/document.xml", ignoreCase = true)) {
+              val xmlContent = zipStream.bufferedReader(Charsets.UTF_8).readText()
+              val withParagraphBreaks = xmlContent
+                .replace("</w:p>", "\n")
+                .replace("<w:br/>", "\n")
+                .replace("<w:br />", "\n")
+                .replace("</w:tc>", "\n")
+                .replace("</w:tr>", "\n")
+                .replace("<w:tab/>", " ")
+              val stripped = withParagraphBreaks
+                .replace(Regex("<[^>]*>"), " ")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+              val cleanedText = stripped
+                .lines()
+                .map { it.replace(Regex("\\s+"), " ").trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+              return@use if (containsValidHumanReadableText(cleanedText)) cleanedText else ""
+            }
+            zipStream.closeEntry()
+            entry = zipStream.nextEntry
+          }
+          ""
+        }
+      } ?: ""
+    } catch (_: Exception) {
+      ""
+    }
+  }
+
+  /**
+   * `.txt` Parser: Reads plain UTF-8 text via `BufferedReader` and verifies it contains
+   * valid human-readable characters (rejecting binary or compressed streams).
+   */
+  fun extractTextFromTxt(context: Context, uri: Uri): String {
+    return try {
+      context.contentResolver.openInputStream(uri)?.use { inputStream ->
+        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
+          val text = reader.readText().trim()
+          if (containsValidHumanReadableText(text)) text else ""
+        }
+      } ?: ""
+    } catch (_: Exception) {
+      ""
+    }
+  }
+
+  /**
+   * Verifies that extracted text is clean, human-readable content and never raw binary/PDF/ZIP bytes.
+   */
+  fun containsValidHumanReadableText(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.length < 3) return false
+    if (trimmed.startsWith("%PDF-") || trimmed.startsWith("PK\u0003\u0004")) return false
+    val letterOrDigitCount = trimmed.count { it.isLetterOrDigit() }
+    val controlCharCount = trimmed.count { ch ->
+      ch.code < 32 && ch != '\n' && ch != '\r' && ch != '\t'
+    }
+    if (letterOrDigitCount < 3) return false
+    val controlRatio = controlCharCount.toFloat() / trimmed.length.toFloat()
+    return controlRatio < 0.02f
   }
 
   suspend fun processDocumentUriInBatches(
@@ -1186,20 +1274,20 @@ Read all content on these pages and extract EVERY question and answer into flash
     } else {
       val extractedText = when {
         lowerName.endsWith(".docx") || mimeType.contains("wordprocessingml") -> {
-          OfflineDeckExtractor.extractTextFromDocx(context, uri)
+          extractTextFromDocx(context, uri)
         }
         lowerName.endsWith(".txt") || mimeType.startsWith("text/") -> {
-          OfflineDeckExtractor.extractTextFromTxt(context, uri)
+          extractTextFromTxt(context, uri)
         }
         else -> {
-          val docxText = OfflineDeckExtractor.extractTextFromDocx(context, uri)
-          if (docxText.isNotBlank()) docxText else OfflineDeckExtractor.extractTextFromTxt(context, uri)
+          val docxText = extractTextFromDocx(context, uri)
+          if (docxText.isNotBlank()) docxText else extractTextFromTxt(context, uri)
         }
       }
-      if (extractedText.isBlank()) {
+      if (!containsValidHumanReadableText(extractedText)) {
         throw GeminiBatchExtractionException(
-          statusCode = -1,
-          message = "No readable text found in \"$fileName\". Ensure the DOCX or TXT file is not empty."
+          statusCode = 400,
+          message = "No valid human-readable text found in \"$fileName\". Please upload a valid PDF, DOCX, or TXT document."
         )
       }
       processTextInChunks(
@@ -1212,8 +1300,8 @@ Read all content on these pages and extract EVERY question and answer into flash
   }
 
   /**
-   * Processes a PDF of ANY length using `PdfRenderer` in 2-page JPEG batches (max dimension 1440px, 82% JPEG quality).
-   * Retries any HTTP 429 rate-limit response once after a 4-second delay so no pages are lost.
+   * Processes a PDF of ANY length using Android's `PdfRenderer` in 2-page JPEG batches
+   * rendered onto high-contrast white Bitmaps (scaled to max dimension 1280px, JPEG quality 80%).
    */
   suspend fun processPdfInPageBatches(
     context: Context,
@@ -1244,7 +1332,7 @@ Read all content on these pages and extract EVERY question and answer into flash
           output.flush()
         }
       } ?: throw GeminiBatchExtractionException(
-        statusCode = -1,
+        statusCode = 400,
         message = "Unable to open selected PDF file stream."
       )
 
@@ -1253,7 +1341,7 @@ Read all content on these pages and extract EVERY question and answer into flash
       val totalPages = pdfRenderer.pageCount
       if (totalPages <= 0) {
         throw GeminiBatchExtractionException(
-          statusCode = -1,
+          statusCode = 400,
           message = "The selected PDF has 0 pages."
         )
       }
@@ -1268,7 +1356,7 @@ Read all content on these pages and extract EVERY question and answer into flash
         val startPageHuman = startPageIdx + 1
         val endPageHuman = endPageIdx + 1
         val scanningRangeStatus =
-          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Cards Extracted"
+          "Analyzing Pages $startPageHuman–$endPageHuman of $totalPages"
 
         onProgressUpdate(
           batchIdx + 1,
@@ -1285,14 +1373,14 @@ Read all content on these pages and extract EVERY question and answer into flash
           val page = pdfRenderer.openPage(pageIndex)
           val pageW = page.width.coerceAtLeast(1)
           val pageH = page.height.coerceAtLeast(1)
-          val maxDimension = 1440f
+          val maxDimension = 1280f
           val scale = maxDimension / maxOf(pageW, pageH).toFloat()
           val targetW = (pageW * scale).roundToInt().coerceAtLeast(1)
           val targetH = (pageH * scale).roundToInt().coerceAtLeast(1)
 
           val bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
           try {
-            // Fill white background first so transparent PDFs render crisply
+            // Render onto high-contrast white background
             android.graphics.Canvas(bitmap).drawColor(android.graphics.Color.WHITE)
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
           } finally {
@@ -1300,10 +1388,9 @@ Read all content on these pages and extract EVERY question and answer into flash
           }
 
           val jpegBytes = ByteArrayOutputStream().use { baos ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, baos)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos)
             baos.toByteArray()
           }
-          // Recycle immediately to keep RAM usage tiny
           bitmap.recycle()
 
           val encodedBase64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
@@ -1332,33 +1419,6 @@ Read all content on these pages and extract EVERY question and answer into flash
               totalPages = totalPages,
               defaultCategory = defaultCategory
             )
-          } else if (e.statusCode == -1) {
-            // Offline fallback for PDF if device has no network connection
-            val offlinePdfText = OfflineDeckExtractor.extractTextFromPdf(context, uri)
-            if (offlinePdfText.isNotBlank()) {
-              val fallbackCards = generateCardsFromText(offlinePdfText, defaultCategory)
-              for (card in fallbackCards) {
-                val normQ = card.question.lowercase(Locale.US).trim()
-                if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
-                  val assignedCard = card.copy(id = accumulatedCards.size + 1)
-                  accumulatedCards.add(assignedCard)
-                  latestQuestion = assignedCard.question
-                  latestAnswer = assignedCard.answer
-                }
-              }
-              onProgressUpdate(
-                totalBatches,
-                totalBatches,
-                "Scanning Pages 1–$totalPages of $totalPages • ${accumulatedCards.size} Cards Extracted",
-                accumulatedCards.toList(),
-                latestQuestion,
-                latestAnswer
-              )
-              break
-            } else {
-              throw e
-            }
-            emptyList()
           } else {
             throw e
           }
@@ -1374,33 +1434,14 @@ Read all content on these pages and extract EVERY question and answer into flash
           }
         }
 
-        val updatedStatus =
-          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Cards Extracted"
-
         onProgressUpdate(
           batchIdx + 1,
           totalBatches,
-          updatedStatus,
+          scanningRangeStatus,
           accumulatedCards.toList(),
           latestQuestion,
           latestAnswer
         )
-      }
-
-      if (accumulatedCards.isEmpty()) {
-        val offlineText = OfflineDeckExtractor.extractTextFromPdf(context, uri)
-        if (offlineText.isNotBlank()) {
-          val fallbackCards = generateCardsFromText(offlineText, defaultCategory)
-          for (card in fallbackCards) {
-            val normQ = card.question.lowercase(Locale.US).trim()
-            if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
-              val assignedCard = card.copy(id = accumulatedCards.size + 1)
-              accumulatedCards.add(assignedCard)
-              latestQuestion = assignedCard.question
-              latestAnswer = assignedCard.answer
-            }
-          }
-        }
       }
 
       accumulatedCards
@@ -1424,8 +1465,7 @@ Read all content on these pages and extract EVERY question and answer into flash
 
   /**
    * Splits DOCX, TXT, or pasted text into 4,000-character chunks along paragraph boundaries
-   * and sends each chunk sequentially to `primaryModel` (with automatic model fallback, 429 retry,
-   * and offline local regex Q&A fallback if the device is completely offline).
+   * and sends each chunk sequentially to Gemini AI with Structured JSON Schema.
    */
   suspend fun processTextInChunks(
     rawText: String,
@@ -1440,10 +1480,17 @@ Read all content on these pages and extract EVERY question and answer into flash
       latestAnswer: String
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
+    if (!containsValidHumanReadableText(rawText)) {
+      throw GeminiBatchExtractionException(
+        statusCode = 400,
+        message = "No valid human-readable text provided to generate flashcards."
+      )
+    }
+
     val chunks = splitTextIntoParagraphChunks(rawText, MAX_TEXT_CHUNK_CHARS)
     if (chunks.isEmpty()) {
       throw GeminiBatchExtractionException(
-        statusCode = -1,
+        statusCode = 400,
         message = "No text content provided to generate flashcards."
       )
     }
@@ -1457,12 +1504,11 @@ Read all content on these pages and extract EVERY question and answer into flash
     for ((batchIdx, chunkText) in chunks.withIndex()) {
       coroutineContext.ensureActive()
 
-      val pageStart = batchIdx + 1
-      val statusText =
-        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Cards Extracted"
+      val chunkNumber = batchIdx + 1
+      val statusText = "Analyzing Chunk $chunkNumber of $totalBatches"
 
       onProgressUpdate(
-        batchIdx + 1,
+        chunkNumber,
         totalBatches,
         statusText,
         accumulatedCards.toList(),
@@ -1474,7 +1520,7 @@ Read all content on these pages and extract EVERY question and answer into flash
         requestGeminiFlashcardsForTextChunk(
           activeApiKey = activeApiKey,
           textChunk = chunkText,
-          batchNumber = batchIdx + 1,
+          batchNumber = chunkNumber,
           totalBatches = totalBatches,
           defaultCategory = defaultCategory
         )
@@ -1482,24 +1528,13 @@ Read all content on these pages and extract EVERY question and answer into flash
         if (e.statusCode == 429) {
           delay(4000L)
           coroutineContext.ensureActive()
-          try {
-            requestGeminiFlashcardsForTextChunk(
-              activeApiKey = activeApiKey,
-              textChunk = chunkText,
-              batchNumber = batchIdx + 1,
-              totalBatches = totalBatches,
-              defaultCategory = defaultCategory
-            )
-          } catch (retryEx: GeminiBatchExtractionException) {
-            if (retryEx.statusCode == -1) {
-              generateCardsFromText(chunkText, defaultCategory)
-            } else {
-              throw retryEx
-            }
-          }
-        } else if (e.statusCode == -1) {
-          // Offline Local Q&A Fallback: If device is completely offline, parse Q&A locally with regex parser
-          generateCardsFromText(chunkText, defaultCategory)
+          requestGeminiFlashcardsForTextChunk(
+            activeApiKey = activeApiKey,
+            textChunk = chunkText,
+            batchNumber = chunkNumber,
+            totalBatches = totalBatches,
+            defaultCategory = defaultCategory
+          )
         } else {
           throw e
         }
@@ -1515,30 +1550,14 @@ Read all content on these pages and extract EVERY question and answer into flash
         }
       }
 
-      val updatedStatus =
-        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Cards Extracted"
-
       onProgressUpdate(
-        batchIdx + 1,
+        chunkNumber,
         totalBatches,
-        updatedStatus,
+        statusText,
         accumulatedCards.toList(),
         latestQuestion,
         latestAnswer
       )
-    }
-
-    if (accumulatedCards.isEmpty()) {
-      val fallbackCards = generateCardsFromText(rawText, defaultCategory)
-      for (card in fallbackCards) {
-        val normQ = card.question.lowercase(Locale.US).trim()
-        if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
-          val assignedCard = card.copy(id = accumulatedCards.size + 1)
-          accumulatedCards.add(assignedCard)
-          latestQuestion = assignedCard.question
-          latestAnswer = assignedCard.answer
-        }
-      }
     }
 
     accumulatedCards
@@ -1608,7 +1627,7 @@ Read all content on these pages and extract EVERY question and answer into flash
       JSONObject().apply {
         put(
           "text",
-          "$SYSTEM_PROMPT_INSTRUCTION\n\n(Document Batch: PDF Pages $startPage to $endPage of $totalPages)"
+          "$SYSTEM_PROMPT_INSTRUCTION\n\nAnalyze PDF Pages $startPage to $endPage of $totalPages and extract all flashcards:"
         )
       }
     )
@@ -1646,7 +1665,7 @@ Read all content on these pages and extract EVERY question and answer into flash
         JSONObject().apply {
           put(
             "text",
-            "$SYSTEM_PROMPT_INSTRUCTION\n\n--- DOCUMENT BATCH $batchNumber OF $totalBatches ---\n$textChunk"
+            "$SYSTEM_PROMPT_INSTRUCTION\n\n--- DOCUMENT CHUNK $batchNumber OF $totalBatches ---\n$textChunk"
           )
         }
       )
@@ -1665,7 +1684,52 @@ Read all content on these pages and extract EVERY question and answer into flash
     defaultCategory: String,
     allowModelDiscoveryFallback: Boolean = true
   ): List<FlashcardItem> {
+    val responseSchemaJson = JSONObject().apply {
+      put("type", "ARRAY")
+      put(
+        "items",
+        JSONObject().apply {
+          put("type", "OBJECT")
+          put(
+            "properties",
+            JSONObject().apply {
+              put(
+                "question",
+                JSONObject().apply {
+                  put("type", "STRING")
+                  put("description", "The exact question, exam item, definition prompt, or concept inquiry")
+                }
+              )
+              put(
+                "answer",
+                JSONObject().apply {
+                  put("type", "STRING")
+                  put("description", "The concise, accurate answer, solution, code reference, or definition")
+                }
+              )
+            }
+          )
+          put("required", JSONArray().put("question").put("answer"))
+        }
+      )
+    }
+
     val requestBodyJson = JSONObject().apply {
+      put(
+        "systemInstruction",
+        JSONObject().apply {
+          put(
+            "parts",
+            JSONArray().apply {
+              put(
+                JSONObject().apply {
+                  put("text", SYSTEM_PROMPT_INSTRUCTION)
+                }
+              )
+            }
+          )
+        }
+      )
       put(
         "contents",
         JSONArray().apply {
@@ -1680,8 +1744,8 @@ Read all content on these pages and extract EVERY question and answer into flash
         "generationConfig",
         JSONObject().apply {
           put("responseMimeType", "application/json")
-          put("temperature", 0.1)
-          put("maxOutputTokens", 8192)
+          put("temperature", 0.2)
+          put("responseSchema", responseSchemaJson)
         }
       )
     }.toString()
@@ -1750,12 +1814,10 @@ Read all content on these pages and extract EVERY question and answer into flash
       throw e
     } catch (e: CancellationException) {
       throw e
-    } catch (e: Exception) {
-      val networkDetail = e.localizedMessage?.takeIf { it.isNotBlank() }
-        ?: "Unable to reach Google Gemini API. Please check your internet connection."
+    } catch (_: Exception) {
       throw GeminiBatchExtractionException(
         statusCode = -1,
-        message = "Network Error: $networkDetail"
+        message = OFFLINE_ERROR_MESSAGE
       )
     } finally {
       connection?.disconnect()
@@ -1763,10 +1825,9 @@ Read all content on these pages and extract EVERY question and answer into flash
   }
 
   /**
-   * Robust JSON Parser:
-   * - Extracts the model text from `candidates[0].content.parts`
-   * - Safely locates the first `'['` and last `']'` in the response string before passing to `JSONArray(...)`
-   *   so any stray markdown or conversational text never breaks parsing.
+   * Structured JSON Response Parser:
+   * Extracts the structured JSON array of `{ "question": "...", "answer": "..." }` items
+   * returned by Gemini.
    */
   fun parseGeminiFlashcardsJsonResponse(
     rawApiResponse: String,
@@ -1821,7 +1882,6 @@ Read all content on these pages and extract EVERY question and answer into flash
         JSONArray(strippedText)
       }
     } catch (e: Exception) {
-      // Fallback: if response was slightly truncated at the end of a huge batch, recover all complete `{...}` objects
       val recoveredArray = recoverCompleteJsonObjects(strippedText)
       if (recoveredArray.length() > 0) {
         recoveredArray
@@ -1903,432 +1963,6 @@ Read all content on these pages and extract EVERY question and answer into flash
       else -> "HTTP $httpCode Error from Gemini API."
     }
   }
-}
-
-/**
- * 100% Free, Offline, Zero-Fail Document & Text Flashcard Extractor (`OfflineDeckExtractor`).
- * Requires no internet connection and no API keys.
- * Supports `.docx` (via `ZipInputStream` reading `word/document.xml`), `.txt` (via `BufferedReader`),
- * `.pdf` (scanning `BT...ET`, parenthesized strings `Regex("\\(([^()]{3,})\\)")`, FlateDecode streams,
- * and clean ASCII runs), and direct pasted study notes.
- */
-object OfflineDeckExtractor {
-  val SUPPORTED_DOCUMENT_MIME_TYPES = arrayOf(
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/pdf",
-    "text/plain"
-  )
-
-  /**
-   * Extracts raw text from a `.docx`, `.txt`, or `.pdf` document URI on `Dispatchers.IO`.
-   */
-  suspend fun extractRawTextFromUri(
-    context: Context,
-    uri: Uri,
-    fileName: String
-  ): String = withContext(Dispatchers.IO) {
-    val mimeType = try {
-      context.contentResolver.getType(uri).orEmpty().lowercase(Locale.US)
-    } catch (_: Exception) {
-      ""
-    }
-    val lowerName = fileName.lowercase(Locale.US)
-
-    when {
-      lowerName.endsWith(".docx") || mimeType.contains("wordprocessingml") -> {
-        extractTextFromDocx(context, uri)
-      }
-      lowerName.endsWith(".txt") || mimeType.startsWith("text/") -> {
-        extractTextFromTxt(context, uri)
-      }
-      lowerName.endsWith(".pdf") || mimeType.contains("pdf") -> {
-        extractTextFromPdf(context, uri)
-      }
-      else -> {
-        val docxAttempt = extractTextFromDocx(context, uri)
-        if (docxAttempt.isNotBlank()) {
-          docxAttempt
-        } else {
-          val txtAttempt = extractTextFromTxt(context, uri)
-          if (txtAttempt.isNotBlank()) txtAttempt else extractTextFromPdf(context, uri)
-        }
-      }
-    }
-  }
-
-  /**
-   * `.docx` Parser: Uses `ZipInputStream` on `context.contentResolver.openInputStream(uri)`,
-   * locates `"word/document.xml"`, preserves line breaks for `</w:p>`, `<w:br/>`, and table cells `</w:tc>`,
-   * and strips XML tags (`Regex("<[^>]*>")`).
-   */
-  fun extractTextFromDocx(context: Context, uri: Uri): String {
-    return try {
-      context.contentResolver.openInputStream(uri)?.use { inputStream ->
-        ZipInputStream(inputStream).use { zipStream ->
-          var entry = zipStream.nextEntry
-          while (entry != null) {
-            if (entry.name.equals("word/document.xml", ignoreCase = true)) {
-              val xmlContent = zipStream.bufferedReader(Charsets.UTF_8).readText()
-              val withParagraphBreaks = xmlContent
-                .replace("</w:p>", "\n")
-                .replace("<w:br/>", "\n")
-                .replace("<w:br />", "\n")
-                .replace("</w:tc>", "\n")
-                .replace("</w:tr>", "\n")
-                .replace("<w:tab/>", " ")
-              val stripped = withParagraphBreaks
-                .replace(Regex("<[^>]*>"), " ")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&quot;", "\"")
-                .replace("&apos;", "'")
-              return@use stripped
-                .lines()
-                .map { it.replace(Regex("\\s+"), " ").trim() }
-                .filter { it.isNotEmpty() }
-                .joinToString("\n")
-            }
-            zipStream.closeEntry()
-            entry = zipStream.nextEntry
-          }
-          ""
-        }
-      } ?: ""
-    } catch (_: Exception) {
-      ""
-    }
-  }
-
-  /**
-   * `.txt` Parser: Reads text directly via `BufferedReader`.
-   */
-  fun extractTextFromTxt(context: Context, uri: Uri): String {
-    return try {
-      context.contentResolver.openInputStream(uri)?.use { inputStream ->
-        BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { reader ->
-          reader.readText().trim()
-        }
-      } ?: ""
-    } catch (_: Exception) {
-      ""
-    }
-  }
-
-  /**
-   * `.pdf` Parser: Scans the raw byte stream (and decompressed FlateDecode streams where present)
-   * for readable text inside PDF text blocks (`BT...ET`), parenthesized strings `Regex("\\(([^()]{3,})\\)")`,
-   * and clean ASCII runs.
-   */
-  fun extractTextFromPdf(context: Context, uri: Uri): String {
-    return try {
-      val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: return ""
-      if (rawBytes.isEmpty()) return ""
-
-      val rawLatin = String(rawBytes, Charsets.ISO_8859_1)
-      val combinedStreamsBuilder = StringBuilder(rawLatin)
-
-      // Also attempt to inflate compressed PDF streams so compressed text blocks are readable
-      val streamRegex = Regex("stream\\r?\\n([\\s\\S]*?)\\r?\\nendstream")
-      for (match in streamRegex.findAll(rawLatin)) {
-        val streamContent = match.groupValues.getOrNull(1) ?: continue
-        if (streamContent.isEmpty() || streamContent.length > 500_000) continue
-        val streamBytes = streamContent.toByteArray(Charsets.ISO_8859_1)
-        val inflated = tryInflatePdfStream(streamBytes, nowrap = false)
-          ?: tryInflatePdfStream(streamBytes, nowrap = true)
-        if (!inflated.isNullOrBlank()) {
-          combinedStreamsBuilder.append("\n").append(inflated)
-        }
-      }
-
-      val fullPdfContent = combinedStreamsBuilder.toString()
-      val parenthesizedRegex = Regex("\\(([^()]{3,})\\)")
-      val btEtRegex = Regex("BT([\\s\\S]*?)ET")
-      val extractedSnippets = mutableListOf<String>()
-
-      // 1. Scan inside BT...ET text blocks for parenthesized text runs
-      for (btMatch in btEtRegex.findAll(fullPdfContent)) {
-        val block = btMatch.groupValues.getOrNull(1) ?: continue
-        val blockPieces = mutableListOf<String>()
-        for (pMatch in parenthesizedRegex.findAll(block)) {
-          val cleaned = cleanPdfStringLiteral(pMatch.groupValues[1])
-          if (isReadableStudySnippet(cleaned)) {
-            blockPieces.add(cleaned)
-          }
-        }
-        if (blockPieces.isNotEmpty()) {
-          val joinedLine = blockPieces.joinToString(" ").replace(Regex("\\s+"), " ").trim()
-          if (isReadableStudySnippet(joinedLine)) {
-            extractedSnippets.add(joinedLine)
-          }
-        }
-      }
-
-      // 2. Scan parenthesized strings across the stream if BT...ET blocks were sparse
-      if (extractedSnippets.sumOf { it.length } < 180) {
-        for (pMatch in parenthesizedRegex.findAll(fullPdfContent)) {
-          val cleaned = cleanPdfStringLiteral(pMatch.groupValues[1])
-          if (isReadableStudySnippet(cleaned) && cleaned.length >= 6) {
-            extractedSnippets.add(cleaned)
-          }
-        }
-      }
-
-      // 3. Scan clean ASCII runs if still sparse
-      if (extractedSnippets.sumOf { it.length } < 180) {
-        val asciiRunRegex = Regex("[A-Za-z0-9][A-Za-z0-9 ,.:;=+\\-*/()%]{12,180}")
-        for (runMatch in asciiRunRegex.findAll(fullPdfContent)) {
-          val candidate = runMatch.value.replace(Regex("\\s+"), " ").trim()
-          if (isReadableStudySnippet(candidate)) {
-            extractedSnippets.add(candidate)
-          }
-        }
-      }
-
-      extractedSnippets
-        .distinct()
-        .joinToString("\n")
-        .trim()
-    } catch (_: Exception) {
-      ""
-    }
-  }
-
-  private fun tryInflatePdfStream(bytes: ByteArray, nowrap: Boolean): String? {
-    return try {
-      val inflater = Inflater(nowrap)
-      InflaterInputStream(ByteArrayInputStream(bytes), inflater).use { stream ->
-        val out = stream.readBytes()
-        inflater.end()
-        if (out.isNotEmpty()) String(out, Charsets.ISO_8859_1) else null
-      }
-    } catch (_: Exception) {
-      null
-    }
-  }
-
-  private fun cleanPdfStringLiteral(raw: String): String {
-    return raw
-      .replace("\\n", "\n")
-      .replace("\\r", " ")
-      .replace("\\t", " ")
-      .replace("\\(", "(")
-      .replace("\\)", ")")
-      .replace("\\\\", "\\")
-      .filter { ch -> ch == '\n' || ch in ' '..'~' }
-      .replace(Regex("\\s+"), " ")
-      .trim()
-  }
-
-  private fun isReadableStudySnippet(text: String): Boolean {
-    if (text.length < 4) return false
-    val lower = text.lowercase(Locale.US)
-    val pdfInternalTokens = listOf(
-      "/type", "/font", "/page", "/catalog", "/filter", "flatedecode",
-      "endobj", "startxref", "mediabox", "resources", "procset", "xref",
-      "obj <<", "cidfont", "basefont", "encoding", "winansiencoding"
-    )
-    if (pdfInternalTokens.any { lower.contains(it) }) return false
-    val letterCount = text.count { it.isLetter() }
-    val printableCount = text.count { it.isLetterOrDigit() || it.isWhitespace() || it in ".,:;-=+/()%" }
-    return letterCount >= 3 &&
-      letterCount.toFloat() / text.length.toFloat() >= 0.38f &&
-      printableCount.toFloat() / text.length.toFloat() >= 0.88f
-  }
-}
-
-/**
- * Smart Heuristic Card Generation (`generateCardsFromText(rawText: String): List<FlashcardItem>`):
- * - Splits extracted text into clean lines and sentences.
- * - Rule 1 (Colon / Dash Definitions): Lines formatted like `"Term: Definition"` or `"Term - Definition"`
- *   (where Term is 3–60 chars) -> Front: `"Define: [Term]"`, Back: `"[Definition]"`.
- * - Rule 2 (Formulas & Equations): Sentences containing `"="` or keywords (`"formula"`, `"NSCP"`,
- *   `"minimum"`, `"ratio"`, `"stress"`, `"pressure"`, `"moment"`) -> Front: Cloze or conceptual question
- *   about the subject of the sentence, Back: Full provision/formula sentence.
- * - Rule 3 (Key Concept Sentences): Groups remaining informative sentences (40–220 characters) into
- *   structured concept review cards so the extractor ALWAYS generates at least 5 to 12 study cards
- *   from any document or pasted text.
- */
-fun generateCardsFromText(
-  rawText: String,
-  category: String = "Offline Study Deck"
-): List<FlashcardItem> {
-  val normalizedText = rawText
-    .replace("\r\n", "\n")
-    .replace('\r', '\n')
-    .trim()
-
-  val generatedPairs = mutableListOf<Pair<String, String>>()
-  val seenQuestions = mutableSetOf<String>()
-
-  fun addUniqueCard(front: String, back: String) {
-    val cleanFront = front.replace(Regex("\\s+"), " ").trim()
-    val cleanBack = back.replace(Regex("\\s+"), " ").trim()
-    val questionKey = cleanFront.lowercase(Locale.US)
-    if (cleanFront.isNotEmpty() && cleanBack.isNotEmpty() && seenQuestions.add(questionKey)) {
-      generatedPairs.add(cleanFront to cleanBack)
-    }
-  }
-
-  // Rule 0 (Direct Q&A Recognition - Highest Priority):
-  // Match explicit Q/A blocks such as "Q: ... A: ...", "Question 1: ... Answer: ...", or numbered questions with Answer/Ans lines
-  val explicitQaBlockRegex = Regex(
-    "(?:^|\\n)\\s*(?:Q(?:uestion)?\\s*\\d*\\s*[:.\\-)]|\\d+\\s*[.)])\\s*([^\\n]+(?:\\n(?!\\s*(?:A(?:ns(?:wer)?)?\\s*[:.\\-)]|Correct\\s+Answer\\s*[:.\\-)]))[^\\n]+)*)\\s*\\n\\s*(?:A(?:ns(?:wer)?)?|Correct\\s+Answer)\\s*[:.\\-)]\\s*([^\\n]+)",
-    setOf(RegexOption.IGNORE_CASE)
-  )
-  for (match in explicitQaBlockRegex.findAll(normalizedText)) {
-    val qText = match.groupValues.getOrNull(1).orEmpty().trim()
-    val aText = match.groupValues.getOrNull(2).orEmpty().trim()
-    if (qText.length >= 4 && aText.isNotEmpty()) {
-      addUniqueCard(front = qText, back = aText)
-    }
-  }
-
-  val lines = normalizedText
-    .lines()
-    .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
-    .filter { it.length >= 4 }
-
-  // Also scan consecutive lines where a question ending with '?' is followed by an answer line
-  var idx = 0
-  while (idx < lines.size - 1) {
-    val currentLine = lines[idx]
-    val nextLine = lines[idx + 1]
-    if (currentLine.endsWith("?") && currentLine.length >= 8 && !nextLine.endsWith("?")) {
-      val cleanedAnswer = nextLine.replace(
-        Regex("^(?:A(?:ns(?:wer)?)?|Answer)\\s*[:.\\-)]\\s*", RegexOption.IGNORE_CASE),
-        ""
-      ).trim()
-      if (cleanedAnswer.isNotEmpty()) {
-        addUniqueCard(front = currentLine, back = cleanedAnswer)
-        idx += 2
-        continue
-      }
-    }
-    idx++
-  }
-
-  val sentences = normalizedText
-    .split(Regex("(?<=[.!?])\\s+|\\n+"))
-    .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
-    .filter { it.length >= 10 }
-
-  // Rule 1 (Colon / Dash Definitions): "Term: Definition" or "Term - Definition" (Term 3..80 chars)
-  val definitionRegex = Regex("^([^:\\-–—]{3,80})\\s*(?::|\\s[-–—]\\s)\\s*(.{4,420})$")
-  for (line in lines) {
-    val match = definitionRegex.find(line) ?: continue
-    val term = match.groupValues[1].trim()
-    val definition = match.groupValues[2].trim()
-    if (term.equals("Question", ignoreCase = true) ||
-      term.equals("Q", ignoreCase = true) ||
-      term.equals("Answer", ignoreCase = true) ||
-      term.equals("Ans", ignoreCase = true)
-    ) {
-      continue
-    }
-    val letterCount = term.count { it.isLetter() }
-    if (term.length in 3..80 && letterCount >= 2 && definition.length >= 4) {
-      val front = if (term.endsWith("?")) term else "Define: $term"
-      addUniqueCard(
-        front = front,
-        back = definition
-      )
-    }
-  }
-
-  // Rule 2 (Formulas & Equations): Sentences containing "=" or CE keywords
-  val formulaKeywords = listOf(
-    "formula", "nscp", "minimum", "ratio", "stress", "pressure", "moment"
-  )
-  for (sentence in sentences) {
-    val lower = sentence.lowercase(Locale.US)
-    val hasEquals = sentence.contains("=")
-    val matchedKeyword = formulaKeywords.firstOrNull { lower.contains(it) }
-    if (hasEquals || matchedKeyword != null) {
-      val frontPrompt = if (hasEquals) {
-        val lhs = sentence.substringBefore("=").trim()
-        val subjectLabel = lhs.takeLast(48).trim().ifEmpty { "this engineering equation" }
-        "Formula & Cloze Recall: Complete the expression or state the equation for \"$subjectLabel = [ ___ ]\""
-      } else {
-        val topicSnippet = extractSubjectPhraseFromSentence(sentence, matchedKeyword ?: "concept")
-        "Engineering Provision (${matchedKeyword?.uppercase(Locale.US) ?: "CE"}): What is the rule or relationship regarding $topicSnippet?"
-      }
-      addUniqueCard(
-        front = frontPrompt,
-        back = sentence
-      )
-    }
-  }
-
-  // Rule 3 (Key Concept Sentences): Remaining informative sentences (40..240 characters)
-  for (sentence in sentences) {
-    if (sentence.length in 40..240) {
-      val subjectPhrase = extractSubjectPhraseFromSentence(sentence, "this concept")
-      addUniqueCard(
-        front = "Key Concept Review: Explain the principle or engineering significance of $subjectPhrase.",
-        back = sentence
-      )
-    }
-  }
-
-  // If fewer than 5 cards were found, also split/group any remaining clauses or lines
-  if (generatedPairs.size < 5) {
-    val allFragments = (sentences + lines + normalizedText.split(Regex("[,;]")))
-      .map { it.replace(Regex("\\s+"), " ").trim() }
-      .filter { it.length >= 6 }
-      .distinct()
-
-    for ((fIdx, fragment) in allFragments.withIndex()) {
-      if (generatedPairs.size >= 8) break
-      val topic = extractSubjectPhraseFromSentence(fragment, "Study Note #${fIdx + 1}")
-      addUniqueCard(
-        front = "Concept Check #${generatedPairs.size + 1}: Summarize the key takeaway regarding $topic.",
-        back = fragment
-      )
-    }
-  }
-
-  // Guarantee ALWAYS at least 5 study cards from any document or pasted text
-  if (generatedPairs.size < 5) {
-    val baseSnippet = normalizedText.ifBlank { "Civil Engineering Study Notes" }.take(180)
-    val fallbackTemplates = listOf(
-      "Core Concept Summary: What is the primary subject or definition stated in this study note?" to baseSnippet,
-      "Key Engineering Takeaway: Which provision, value, or relationship should be remembered from: \"$baseSnippet\"?" to
-        "Focus on the key terms, units, and boundary conditions described in: $baseSnippet",
-      "Active Recall Prompt: State the main engineering principle highlighted in this section." to baseSnippet,
-      "Application & Exam Check: How is \"$baseSnippet\" applied in Civil Engineering problem solving?" to
-        "Identify the governing parameters, sign conventions, and standard units for: $baseSnippet",
-      "Self-Verification Question: Recite the key statement or formula from memory." to baseSnippet
-    )
-    for ((q, a) in fallbackTemplates) {
-      if (generatedPairs.size >= 5) break
-      generatedPairs.add(q to a)
-    }
-  }
-
-  return generatedPairs.mapIndexed { index, (question, answer) ->
-    FlashcardItem(
-      id = index + 1,
-      question = question,
-      answer = answer,
-      category = category.ifBlank { "Offline Study Deck" },
-      masteryLevel = "New"
-    )
-  }
-}
-
-private fun extractSubjectPhraseFromSentence(sentence: String, fallback: String): String {
-  val cleaned = sentence
-    .replace(Regex("^(The|A|An|In|For|According to|Under|When)\\s+", RegexOption.IGNORE_CASE), "")
-    .trim()
-  val words = cleaned
-    .split(Regex("\\s+"))
-    .map { it.trim(',', '.', ';', ':', '(', ')', '"', '\'') }
-    .filter { it.isNotEmpty() }
-  if (words.isEmpty()) return fallback
-  val phrase = words.take(6).joinToString(" ")
-  return "\"$phrase\""
 }
 
 /**
@@ -3801,30 +3435,6 @@ class TaskViewModel(
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
     return newDeck
-  }
-
-  /**
-   * Generates a `FlashcardDeck` offline using `generateCardsFromText(rawText)` and saves it
-   * immediately to `SharedPreferences`.
-   */
-  fun createDeckFromOfflineText(
-    deckTitle: String,
-    subjectTag: String,
-    rawText: String
-  ): FlashcardDeck {
-    val cleanTitle = deckTitle
-      .substringBeforeLast(".")
-      .trim()
-      .ifEmpty { "Study Notes Deck" }
-    val cleanTag = subjectTag.trim().ifEmpty { "Offline Import" }
-    val heuristicCards = generateCardsFromText(rawText = rawText, category = cleanTag).map { card ->
-      card.copy(id = nextCardId++)
-    }
-    return addFlashcardDeck(
-      title = cleanTitle,
-      subjectTag = cleanTag,
-      initialCards = heuristicCards
-    )
   }
 
   fun addCardToDeck(
@@ -7800,7 +7410,7 @@ fun FlashcardMainView(
     batchSubjectTag = subjectTag.ifBlank { "General" }
     currentBatchIndex = 1
     totalBatchCount = maxOf(1, (rawText.length + 3999) / 4000)
-    batchStatusLabel = "Scanning Pages 1–1 of $totalBatchCount • 0 Cards Extracted"
+    batchStatusLabel = "Analyzing Chunk 1 of $totalBatchCount"
     accumulatedBatchCards = emptyList()
     latestGeneratedQuestion = ""
     latestGeneratedAnswer = ""
@@ -7845,7 +7455,7 @@ fun FlashcardMainView(
         isBatchExtracting = false
         activeBatchJob = null
         extractionErrorDialogMessage = e.message
-          ?: "An unexpected error occurred while communicating with Gemini Flash."
+          ?: GizmoBatchFlashcardEngine.OFFLINE_ERROR_MESSAGE
       }
     }
   }
@@ -7874,7 +7484,7 @@ fun FlashcardMainView(
       batchSubjectTag = "General"
       currentBatchIndex = 1
       totalBatchCount = 1
-      batchStatusLabel = "Scanning Pages 1–2 of ... • 0 Cards Extracted"
+      batchStatusLabel = "Analyzing Pages 1–2..."
       accumulatedBatchCards = emptyList()
       latestGeneratedQuestion = ""
       latestGeneratedAnswer = ""
@@ -7921,7 +7531,7 @@ fun FlashcardMainView(
           isBatchExtracting = false
           activeBatchJob = null
           extractionErrorDialogMessage = e.message
-            ?: "Failed to extract flashcards from \"$resolvedName\"."
+            ?: GizmoBatchFlashcardEngine.OFFLINE_ERROR_MESSAGE
         }
       }
     }
@@ -8030,7 +7640,7 @@ fun FlashcardMainView(
           onClick = {
             playCardHapticSound(context, localView)
             try {
-              documentPickerLauncher.launch(OfflineDeckExtractor.SUPPORTED_DOCUMENT_MIME_TYPES)
+              documentPickerLauncher.launch(GizmoBatchFlashcardEngine.SUPPORTED_DOCUMENT_MIME_TYPES)
             } catch (_: Exception) {
               pasteDialogInitialTitle = ""
               pasteDialogNoticeMessage = null
@@ -8631,9 +8241,9 @@ fun FlashcardMainView(
           }
 
           Text(
-            text = "Building Smart Deck...",
+            text = "Analyzing document with Gemini AI...",
             style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = metrics.scaledSp(20),
+              fontSize = metrics.scaledSp(19),
               fontWeight = FontWeight.Bold
             ),
             color = palette.textPrimary,
@@ -8711,7 +8321,7 @@ fun FlashcardMainView(
             border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f))
           ) {
             Text(
-              text = "⚡ ${accumulatedBatchCards.size} Cards Extracted",
+              text = "⚡ ${accumulatedBatchCards.size} Cards Generated",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
@@ -8776,7 +8386,7 @@ fun FlashcardMainView(
             }
           }
 
-          // "Save & Stop Here" Button (Active as soon as >= 1 card is extracted)
+          // "Save & Stop" Button (Active as soon as >= 1 batch/card completes)
           Button(
             onClick = {
               val cardsSnapshot = accumulatedBatchCards.toList()
@@ -8799,7 +8409,7 @@ fun FlashcardMainView(
               .testTag("gizmo_save_and_stop_button")
           ) {
             Text(
-              text = "Save & Stop Here",
+              text = "Save & Stop",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
