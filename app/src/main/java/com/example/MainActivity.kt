@@ -451,33 +451,32 @@ val DarkGlassPalette = GlassPalette(
     Color(0xFF1E1B4B),
     Color(0xFF070B19)
   ),
-  cardFill = Color(0xFF0F172A).copy(alpha = 0.72f),
-  cardTopSheen = Color(0xFF1E293B).copy(alpha = 0.78f),
-  cardBottomSheen = Color(0xFF0F172A).copy(alpha = 0.82f),
-  nestedCardFill = Color(0xFF1E293B).copy(alpha = 0.65f),
+  cardFill = Color(0xFF1E293B),
+  cardTopSheen = Color(0xFF1E293B),
+  cardBottomSheen = Color(0xFF0F172A),
+  nestedCardFill = Color(0xFF26334D),
   nestedBorderColor = Color.White.copy(alpha = 0.16f),
-  glassBorderBrush = Brush.linearGradient(
+  glassBorderBrush = Brush.verticalGradient(
     colors = listOf(
-      Color.White.copy(alpha = 0.28f),
-      Color(0xFF818CF8).copy(alpha = 0.15f),
-      Color.White.copy(alpha = 0.06f)
+      Color.White.copy(alpha = 0.22f),
+      Color(0xFF818CF8).copy(alpha = 0.10f)
     )
   ),
   glassBorderWidth = 1.2.dp,
-  dockFill = Color(0xFF0F172A).copy(alpha = 0.82f),
+  dockFill = Color(0xFF0F172A),
   dockBorderColor = Color.White.copy(alpha = 0.22f),
   textPrimary = Color(0xFFF8FAFC),
   textSecondary = Color(0xFF94A3B8),
-  trackColor = Color(0xFF334155).copy(alpha = 0.7f),
+  trackColor = Color(0xFF334155),
   accentIndigo = Color(0xFF818CF8),
-  accentRed = Color(0xFFF87171).copy(alpha = 0.85f),
-  dialogSurface = Color(0xFF0F172A),
-  shadowAmbient = Color(0x40000000),
-  shadowSpot = Color(0x38312E81),
-  stackTopFill = Color(0xFF111827).copy(alpha = 0.84f),
-  stackMidFill = Color(0xFF1E293B).copy(alpha = 0.65f),
+  accentRed = Color(0xFFF87171),
+  dialogSurface = Color(0xFF0B1120),
+  shadowAmbient = Color.Black,
+  shadowSpot = Color(0x334F46E5),
+  stackTopFill = Color(0xFF1E293B),
+  stackMidFill = Color(0xFF162032),
   stackMidBorder = Color.White.copy(alpha = 0.14f),
-  stackBottomFill = Color(0xFF334155).copy(alpha = 0.45f),
+  stackBottomFill = Color(0xFF0F172A),
   checkboxUncheckedFill = Color(0xFF1E293B),
   checkboxUncheckedBorder = Color(0xFF818CF8)
 )
@@ -490,34 +489,33 @@ val LightGlassPalette = GlassPalette(
     Color(0xFFEAE6F8),
     Color(0xFFDCE4F2)
   ),
-  cardFill = Color.White.copy(alpha = 0.66f),
-  cardTopSheen = Color.White.copy(alpha = 0.86f),
-  cardBottomSheen = Color(0xFFF8FAFC).copy(alpha = 0.62f),
-  nestedCardFill = Color(0xFFEEF2FF).copy(alpha = 0.75f),
-  nestedBorderColor = Color(0xFFCBD5E1),
-  glassBorderBrush = Brush.linearGradient(
+  cardFill = Color(0xFFFFFFFF),
+  cardTopSheen = Color(0xFFFFFFFF),
+  cardBottomSheen = Color(0xFFF4F7FB),
+  nestedCardFill = Color(0xFFEEF2FF),
+  nestedBorderColor = Color(0xFFD8E0EE),
+  glassBorderBrush = Brush.verticalGradient(
     colors = listOf(
-      Color.White,
-      Color(0xFFCBD5E1),
-      Color(0xFF94A3B8).copy(alpha = 0.65f)
+      Color(0xFFFFFFFF),
+      Color(0xFFD8E0EE)
     )
   ),
-  glassBorderWidth = 1.3.dp,
-  dockFill = Color.White.copy(alpha = 0.78f),
+  glassBorderWidth = 1.2.dp,
+  dockFill = Color(0xFFF8FAFC),
   dockBorderColor = Color(0xFFCBD5E1),
   textPrimary = Color(0xFF0F172A),
   textSecondary = Color(0xFF475569),
-  trackColor = Color(0xFFCBD5E1).copy(alpha = 0.75f),
+  trackColor = Color(0xFFCBD5E1),
   accentIndigo = Color(0xFF4F46E5),
   accentRed = Color(0xFFEF4444),
-  dialogSurface = Color(0xFFF8FAFC),
-  shadowAmbient = Color(0x1F0F172A),
-  shadowSpot = Color(0x283730A3),
-  stackTopFill = Color.White.copy(alpha = 0.82f),
-  stackMidFill = Color(0xFFE2E8F0).copy(alpha = 0.85f),
+  dialogSurface = Color(0xFFF4F7FB),
+  shadowAmbient = Color(0x140F172A),
+  shadowSpot = Color(0x183730A3),
+  stackTopFill = Color(0xFFFFFFFF),
+  stackMidFill = Color(0xFFE2E8F0),
   stackMidBorder = Color(0xFFCBD5E1),
-  stackBottomFill = Color(0xFFCBD5E1).copy(alpha = 0.70f),
-  checkboxUncheckedFill = Color.White.copy(alpha = 0.85f),
+  stackBottomFill = Color(0xFFCBD5E1),
+  checkboxUncheckedFill = Color(0xFFFFFFFF),
   checkboxUncheckedBorder = Color(0xFF6366F1)
 )
 
@@ -599,31 +597,21 @@ fun isLiquidLightMode(): Boolean {
 }
 
 @Composable
-fun liquidGlassFillColor(alpha: Float = 0.66f): Color {
-  val palette = currentGlassPalette()
-  return if (!palette.isDark) {
-    Color.White.copy(alpha = alpha)
-  } else {
-    palette.cardFill
-  }
+fun liquidGlassFillColor(alpha: Float = 1.0f): Color {
+  return currentGlassPalette().cardFill
 }
 
 @Composable
-fun liquidGlassInnerPodColor(alpha: Float = 0.75f): Color {
-  val palette = currentGlassPalette()
-  return if (!palette.isDark) {
-    palette.nestedCardFill.copy(alpha = alpha.coerceIn(0.65f, 0.90f))
-  } else {
-    palette.nestedCardFill
-  }
+fun liquidGlassInnerPodColor(alpha: Float = 1.0f): Color {
+  return currentGlassPalette().nestedCardFill
 }
 
 @Composable
 fun liquidGlassSpecularBorder(
-  width: Dp = 1.3.dp,
+  width: Dp = 1.2.dp,
   topAlpha: Float = 0.95f,
   midAlpha: Float = 0.45f,
-  bottomTint: Color = Color(0xFF94A3B8).copy(alpha = 0.65f)
+  bottomTint: Color = Color(0xFFD8E0EE)
 ): BorderStroke {
   val palette = currentGlassPalette()
   return BorderStroke(
@@ -758,26 +746,27 @@ fun LiquidGlassBackgroundMesh(
 
 /**
  * Reusable `LiquidGlassCard` composable used for primary cards, dialogs, and panels across Sibil.
- * Automatically adapts to `LocalGlassPalette` in both Light Mode and Dark Mode.
+ * Uses 100% opaque multi-stop vertical frost gradients so Android's RenderNode shadow never bleeds
+ * through the interior.
  */
 @Composable
 fun LiquidGlassCard(
   modifier: Modifier = Modifier,
   cornerRadius: Dp = 24.dp,
   shape: Shape = RoundedCornerShape(cornerRadius),
-  elevation: Dp = 10.dp,
-  fillAlpha: Float = 0.66f,
+  elevation: Dp = 6.dp,
+  fillAlpha: Float = 1.0f,
   borderStroke: BorderStroke? = null,
   onClick: (() -> Unit)? = null,
   content: @Composable BoxScope.() -> Unit
 ) {
   val palette = currentGlassPalette()
   val resolvedBorder = borderStroke ?: palette.glassBorder
-  val sheenBrush = remember(palette.isDark, palette.cardFill, fillAlpha) {
+  val resolvedElevation = if (palette.isDark && elevation == 6.dp) 8.dp else elevation
+  val sheenBrush = remember(palette.isDark, palette.cardTopSheen, palette.cardBottomSheen) {
     Brush.verticalGradient(
       colors = listOf(
         palette.cardTopSheen,
-        palette.cardFill,
         palette.cardBottomSheen
       )
     )
@@ -785,7 +774,7 @@ fun LiquidGlassCard(
 
   val cardModifier = modifier
     .shadow(
-      elevation = elevation,
+      elevation = resolvedElevation,
       shape = shape,
       ambientColor = palette.shadowAmbient,
       spotColor = palette.shadowSpot
@@ -809,7 +798,7 @@ fun LiquidGlassCard(
 
 /**
  * Reusable `LiquidGlassContainer` for inner pods, search bars, chips, and status tiles.
- * Uses `palette.nestedCardFill` and crisp `palette.nestedBorder` so inner cards never disappear.
+ * Uses 100% opaque `palette.nestedCardFill` (`#EEF2FF` Light / `#26334D` Dark) and crisp `palette.nestedBorder`.
  */
 @Composable
 fun LiquidGlassContainer(
@@ -817,7 +806,7 @@ fun LiquidGlassContainer(
   cornerRadius: Dp = 18.dp,
   shape: Shape = RoundedCornerShape(cornerRadius),
   elevation: Dp = 0.dp,
-  fillAlpha: Float = 0.75f,
+  fillAlpha: Float = 1.0f,
   borderStroke: BorderStroke? = null,
   onClick: (() -> Unit)? = null,
   content: @Composable BoxScope.() -> Unit
@@ -827,18 +816,6 @@ fun LiquidGlassContainer(
   val fill = palette.nestedCardFill
 
   val podModifier = modifier
-    .let { mod ->
-      if (elevation > 0.dp) {
-        mod.shadow(
-          elevation = elevation,
-          shape = shape,
-          ambientColor = palette.shadowAmbient,
-          spotColor = palette.shadowSpot
-        )
-      } else {
-        mod
-      }
-    }
     .clip(shape)
     .background(color = fill, shape = shape)
     .border(border = resolvedBorder, shape = shape)
@@ -1047,25 +1024,131 @@ class GeminiBatchExtractionException(
 
 /**
  * Gizmo-Style Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`):
- * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$activeApiKey`
- * - Enforces `"generationConfig": { "responseMimeType": "application/json", "temperature": 0.2 }`
- * - Processes PDFs of ANY length in 3-page visual batches using `android.graphics.pdf.PdfRenderer`,
- *   rendering each page onto a max-1080px-wide white-backed `Bitmap`, compressing to 75% JPEG Base64,
+ * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=$activeApiKey`
+ *   with automatic model discovery fallback via `resolveWorkingGeminiModel(apiKey)`.
+ * - Enforces `"generationConfig": { "responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": 8192 }`
+ * - Processes PDFs of ANY length in 2-page visual batches using `android.graphics.pdf.PdfRenderer`,
+ *   rendering each page onto a max-1440px white-backed `Bitmap`, compressing to 82% JPEG Base64,
  *   and recycling the `Bitmap` immediately.
  * - Processes DOCX (`word/document.xml` via `ZipInputStream`), TXT, and Pasted Notes of ANY length
- *   in 5,000-character chunks split along paragraph boundaries.
- * - Reports real-time progress (`currentBatch`, `totalBatches`, `accumulatedCards`, `latestQuestion`)
- *   after every batch so the user can monitor live generation or tap "Save & Stop Here" at any time.
+ *   in 4,000-character chunks split along paragraph boundaries.
+ * - Reports real-time progress (`currentBatch`, `totalBatches`, `statusLabel`, `accumulatedCards`, `latestQuestion`, `latestAnswer`)
+ *   after every batch so the user can monitor live generation or tap "Save X Cards & Stop" at any time.
  */
 object GizmoBatchFlashcardEngine {
-  private const val GEMINI_FLASH_ENDPOINT_TEMPLATE =
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s"
+  private const val PRIMARY_GEMINI_MODEL = "gemini-3.0-flash"
 
-  const val SYSTEM_PROMPT_INSTRUCTION =
-    "You are an expert Civil Engineering & Academic Flashcard Generator like Gizmo. Analyze this document batch thoroughly. Detect every explicit question & answer, key term & definition, engineering formula & variable meaning, and code provision (e.g., NSCP/DPWH). Generate comprehensive active-recall flashcards covering ALL important material in this section. Respond ONLY with a valid JSON array of objects: [{\"question\": \"...\", \"answer\": \"...\"}]."
+  @Volatile
+  private var cachedWorkingModelName: String = PRIMARY_GEMINI_MODEL
 
-  private const val PAGES_PER_PDF_BATCH = 3
-  private const val MAX_TEXT_CHUNK_CHARS = 5000
+  @Volatile
+  private var hasVerifiedWorkingModel: Boolean = false
+
+  val SYSTEM_PROMPT_INSTRUCTION = """
+You are an exhaustive Question-and-Answer extractor and flashcard generator.
+Carefully read all content on these pages and extract EVERY question and answer into flashcards:
+1. DIRECT Q&A RECOGNITION (HIGHEST PRIORITY): If the document contains existing questions and answers (numbered questions, exam reviewers, multiple-choice items, Q&A pairs, tables, problem sets, or study guides), extract EVERY SINGLE question and its exact corresponding answer. Do NOT skip, summarize, or limit the number of cards. If a question has multiple-choice options where the choices are needed for context, include them cleanly; place the correct answer and any solution/explanation in the 'answer' field.
+2. COMPLETE CONCEPT EXTRACTION: For paragraphs, definitions, formulas, or lecture notes that are not already written as questions, convert EVERY key definition, formula, enumeration, and provision into a clear Question and Answer pair.
+3. Respond strictly with a valid JSON array of objects: [{"question": "...", "answer": "..."}]. Return [] only if the page is completely blank.
+  """.trimIndent()
+
+  private const val PAGES_PER_PDF_BATCH = 2
+  private const val MAX_TEXT_CHUNK_CHARS = 4000
+
+  /**
+   * Resilient helper function that starts with `"gemini-3.0-flash"` and, if an HTTP 404 (Model Not Found)
+   * occurs, queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey`, parses the
+   * returned JSON `models` array, and selects the first available model name containing `"flash"` that
+   * supports `"generateContent"` (checking `"gemini-3.0-flash"`, `"gemini-3.0-flash-preview"`,
+   * `"gemini-2.5-flash"`, `"gemini-2.0-flash"`). Caches the working model name for all remaining batches.
+   */
+  fun resolveWorkingGeminiModel(apiKey: String, forceRefresh: Boolean = false): String {
+    if (!forceRefresh && hasVerifiedWorkingModel && cachedWorkingModelName.isNotBlank()) {
+      return cachedWorkingModelName
+    }
+    if (!forceRefresh) {
+      return cachedWorkingModelName.ifBlank { PRIMARY_GEMINI_MODEL }
+    }
+
+    val cleanKey = apiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
+    val modelsUrl = "https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey"
+    var connection: HttpURLConnection? = null
+
+    try {
+      connection = (URL(modelsUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 30_000
+        readTimeout = 30_000
+        doInput = true
+      }
+
+      val code = connection.responseCode
+      if (code in 200..299) {
+        val body = BufferedReader(
+          InputStreamReader(connection.inputStream, Charsets.UTF_8)
+        ).use { it.readText() }
+
+        val root = JSONObject(body)
+        val modelsArray = root.optJSONArray("models")
+        if (modelsArray != null && modelsArray.length() > 0) {
+          val availableFlashModels = mutableListOf<String>()
+          for (i in 0 until modelsArray.length()) {
+            val modelObj = modelsArray.optJSONObject(i) ?: continue
+            val rawName = modelObj.optString("name", "").removePrefix("models/").trim()
+            if (!rawName.contains("flash", ignoreCase = true)) continue
+
+            val methods = modelObj.optJSONArray("supportedGenerationMethods")
+            var supportsGenerateContent = false
+            if (methods != null) {
+              for (m in 0 until methods.length()) {
+                if (methods.optString(m).equals("generateContent", ignoreCase = true)) {
+                  supportsGenerateContent = true
+                  break
+                }
+              }
+            } else {
+              supportsGenerateContent = true
+            }
+
+            if (supportsGenerateContent && rawName.isNotBlank()) {
+              availableFlashModels.add(rawName)
+            }
+          }
+
+          val preferredCandidates = listOf(
+            "gemini-3.0-flash",
+            "gemini-3.0-flash-preview",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash"
+          )
+
+          val matchedPreferred = preferredCandidates.firstOrNull { pref ->
+            availableFlashModels.any { it.equals(pref, ignoreCase = true) }
+          } ?: preferredCandidates.firstOrNull { pref ->
+            availableFlashModels.any { it.startsWith(pref, ignoreCase = true) }
+          } ?: availableFlashModels.firstOrNull {
+            !it.contains("tts", ignoreCase = true) &&
+              !it.contains("image", ignoreCase = true) &&
+              !it.contains("audio", ignoreCase = true)
+          } ?: availableFlashModels.firstOrNull()
+
+          if (!matchedPreferred.isNullOrBlank()) {
+            cachedWorkingModelName = matchedPreferred
+            hasVerifiedWorkingModel = true
+            return cachedWorkingModelName
+          }
+        }
+      }
+    } catch (_: Exception) {
+    } finally {
+      connection?.disconnect()
+    }
+
+    // Fallback priority if list models call could not parse
+    cachedWorkingModelName = "gemini-2.5-flash"
+    hasVerifiedWorkingModel = true
+    return cachedWorkingModelName
+  }
 
   suspend fun processDocumentUriInBatches(
     context: Context,
@@ -1078,7 +1161,8 @@ object GizmoBatchFlashcardEngine {
       totalBatches: Int,
       statusLabel: String,
       accumulatedCards: List<FlashcardItem>,
-      latestQuestion: String
+      latestQuestion: String,
+      latestAnswer: String
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
     val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
@@ -1127,7 +1211,8 @@ object GizmoBatchFlashcardEngine {
   }
 
   /**
-   * Processes a PDF of ANY length using `PdfRenderer` in 3-page JPEG batches.
+   * Processes a PDF of ANY length using `PdfRenderer` in 2-page JPEG batches (max dimension 1440px, 82% JPEG quality).
+   * Retries any HTTP 429 rate-limit response once after a 4-second delay so no pages are lost.
    */
   suspend fun processPdfInPageBatches(
     context: Context,
@@ -1139,7 +1224,8 @@ object GizmoBatchFlashcardEngine {
       totalBatches: Int,
       statusLabel: String,
       accumulatedCards: List<FlashcardItem>,
-      latestQuestion: String
+      latestQuestion: String,
+      latestAnswer: String
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
     val tempFile = File(context.cacheDir, "temp_import.pdf")
@@ -1148,6 +1234,7 @@ object GizmoBatchFlashcardEngine {
     val accumulatedCards = mutableListOf<FlashcardItem>()
     val seenQuestions = mutableSetOf<String>()
     var latestQuestion = ""
+    var latestAnswer = ""
 
     try {
       context.contentResolver.openInputStream(uri)?.use { input ->
@@ -1179,18 +1266,16 @@ object GizmoBatchFlashcardEngine {
         val endPageIdx = minOf(startPageIdx + PAGES_PER_PDF_BATCH - 1, totalPages - 1)
         val startPageHuman = startPageIdx + 1
         val endPageHuman = endPageIdx + 1
-        val statusText = if (startPageHuman == endPageHuman) {
-          "Analyzing Page $startPageHuman of $totalPages..."
-        } else {
-          "Analyzing Pages $startPageHuman–$endPageHuman of $totalPages..."
-        }
+        val scanningRangeStatus =
+          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Q&A Cards Extracted"
 
         onProgressUpdate(
           batchIdx + 1,
           totalBatches,
-          statusText,
+          scanningRangeStatus,
           accumulatedCards.toList(),
-          latestQuestion
+          latestQuestion,
+          latestAnswer
         )
 
         val base64PageImages = mutableListOf<String>()
@@ -1199,10 +1284,10 @@ object GizmoBatchFlashcardEngine {
           val page = pdfRenderer.openPage(pageIndex)
           val pageW = page.width.coerceAtLeast(1)
           val pageH = page.height.coerceAtLeast(1)
-          val targetW = 1080
-          val targetH = ((pageH.toFloat() / pageW.toFloat()) * targetW.toFloat())
-            .roundToInt()
-            .coerceAtLeast(1)
+          val maxDimension = 1440f
+          val scale = maxDimension / maxOf(pageW, pageH).toFloat()
+          val targetW = (pageW * scale).roundToInt().coerceAtLeast(1)
+          val targetH = (pageH * scale).roundToInt().coerceAtLeast(1)
 
           val bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
           try {
@@ -1214,10 +1299,10 @@ object GizmoBatchFlashcardEngine {
           }
 
           val jpegBytes = ByteArrayOutputStream().use { baos ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 75, baos)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, baos)
             baos.toByteArray()
           }
-          // Recycle immediately to keep RAM usage tiny on low-end phones
+          // Recycle immediately to keep RAM usage tiny
           bitmap.recycle()
 
           val encodedBase64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
@@ -1225,14 +1310,31 @@ object GizmoBatchFlashcardEngine {
         }
 
         coroutineContext.ensureActive()
-        val batchCards = requestGeminiFlashcardsForPdfBatch(
-          activeApiKey = activeApiKey,
-          base64JpegPages = base64PageImages,
-          startPage = startPageHuman,
-          endPage = endPageHuman,
-          totalPages = totalPages,
-          defaultCategory = defaultCategory
-        )
+        val batchCards = try {
+          requestGeminiFlashcardsForPdfBatch(
+            activeApiKey = activeApiKey,
+            base64JpegPages = base64PageImages,
+            startPage = startPageHuman,
+            endPage = endPageHuman,
+            totalPages = totalPages,
+            defaultCategory = defaultCategory
+          )
+        } catch (e: GeminiBatchExtractionException) {
+          if (e.statusCode == 429) {
+            delay(4000L)
+            coroutineContext.ensureActive()
+            requestGeminiFlashcardsForPdfBatch(
+              activeApiKey = activeApiKey,
+              base64JpegPages = base64PageImages,
+              startPage = startPageHuman,
+              endPage = endPageHuman,
+              totalPages = totalPages,
+              defaultCategory = defaultCategory
+            )
+          } else {
+            throw e
+          }
+        }
 
         for (card in batchCards) {
           val normQ = card.question.lowercase(Locale.US).trim()
@@ -1240,16 +1342,37 @@ object GizmoBatchFlashcardEngine {
             val assignedCard = card.copy(id = accumulatedCards.size + 1)
             accumulatedCards.add(assignedCard)
             latestQuestion = assignedCard.question
+            latestAnswer = assignedCard.answer
           }
         }
+
+        val updatedStatus =
+          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Q&A Cards Extracted"
 
         onProgressUpdate(
           batchIdx + 1,
           totalBatches,
-          statusText,
+          updatedStatus,
           accumulatedCards.toList(),
-          latestQuestion
+          latestQuestion,
+          latestAnswer
         )
+      }
+
+      if (accumulatedCards.isEmpty()) {
+        val offlineText = OfflineDeckExtractor.extractTextFromPdf(context, uri)
+        if (offlineText.isNotBlank()) {
+          val fallbackCards = generateCardsFromText(offlineText, defaultCategory)
+          for (card in fallbackCards) {
+            val normQ = card.question.lowercase(Locale.US).trim()
+            if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
+              val assignedCard = card.copy(id = accumulatedCards.size + 1)
+              accumulatedCards.add(assignedCard)
+              latestQuestion = assignedCard.question
+              latestAnswer = assignedCard.answer
+            }
+          }
+        }
       }
 
       accumulatedCards
@@ -1272,8 +1395,8 @@ object GizmoBatchFlashcardEngine {
   }
 
   /**
-   * Splits DOCX, TXT, or pasted text into 5,000-character chunks along paragraph boundaries
-   * and sends each chunk sequentially to `gemini-2.5-flash`.
+   * Splits DOCX, TXT, or pasted text into 4,000-character chunks along paragraph boundaries
+   * and sends each chunk sequentially to `gemini-3.0-flash` (with automatic model fallback and 429 retry).
    */
   suspend fun processTextInChunks(
     rawText: String,
@@ -1284,7 +1407,8 @@ object GizmoBatchFlashcardEngine {
       totalBatches: Int,
       statusLabel: String,
       accumulatedCards: List<FlashcardItem>,
-      latestQuestion: String
+      latestQuestion: String,
+      latestAnswer: String
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
     val chunks = splitTextIntoParagraphChunks(rawText, MAX_TEXT_CHUNK_CHARS)
@@ -1299,31 +1423,47 @@ object GizmoBatchFlashcardEngine {
     val accumulatedCards = mutableListOf<FlashcardItem>()
     val seenQuestions = mutableSetOf<String>()
     var latestQuestion = ""
+    var latestAnswer = ""
 
     for ((batchIdx, chunkText) in chunks.withIndex()) {
       coroutineContext.ensureActive()
 
-      val statusText = if (totalBatches == 1) {
-        "Analyzing Notes & Generating Active-Recall Cards..."
-      } else {
-        "Analyzing Text Section ${batchIdx + 1} of $totalBatches (${chunkText.length} chars)..."
-      }
+      val pageStart = batchIdx + 1
+      val statusText =
+        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Q&A Cards Extracted"
 
       onProgressUpdate(
         batchIdx + 1,
         totalBatches,
         statusText,
         accumulatedCards.toList(),
-        latestQuestion
+        latestQuestion,
+        latestAnswer
       )
 
-      val batchCards = requestGeminiFlashcardsForTextChunk(
-        activeApiKey = activeApiKey,
-        textChunk = chunkText,
-        batchNumber = batchIdx + 1,
-        totalBatches = totalBatches,
-        defaultCategory = defaultCategory
-      )
+      val batchCards = try {
+        requestGeminiFlashcardsForTextChunk(
+          activeApiKey = activeApiKey,
+          textChunk = chunkText,
+          batchNumber = batchIdx + 1,
+          totalBatches = totalBatches,
+          defaultCategory = defaultCategory
+        )
+      } catch (e: GeminiBatchExtractionException) {
+        if (e.statusCode == 429) {
+          delay(4000L)
+          coroutineContext.ensureActive()
+          requestGeminiFlashcardsForTextChunk(
+            activeApiKey = activeApiKey,
+            textChunk = chunkText,
+            batchNumber = batchIdx + 1,
+            totalBatches = totalBatches,
+            defaultCategory = defaultCategory
+          )
+        } else {
+          throw e
+        }
+      }
 
       for (card in batchCards) {
         val normQ = card.question.lowercase(Locale.US).trim()
@@ -1331,23 +1471,41 @@ object GizmoBatchFlashcardEngine {
           val assignedCard = card.copy(id = accumulatedCards.size + 1)
           accumulatedCards.add(assignedCard)
           latestQuestion = assignedCard.question
+          latestAnswer = assignedCard.answer
         }
       }
+
+      val updatedStatus =
+        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Q&A Cards Extracted"
 
       onProgressUpdate(
         batchIdx + 1,
         totalBatches,
-        statusText,
+        updatedStatus,
         accumulatedCards.toList(),
-        latestQuestion
+        latestQuestion,
+        latestAnswer
       )
+    }
+
+    if (accumulatedCards.isEmpty()) {
+      val fallbackCards = generateCardsFromText(rawText, defaultCategory)
+      for (card in fallbackCards) {
+        val normQ = card.question.lowercase(Locale.US).trim()
+        if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
+          val assignedCard = card.copy(id = accumulatedCards.size + 1)
+          accumulatedCards.add(assignedCard)
+          latestQuestion = assignedCard.question
+          latestAnswer = assignedCard.answer
+        }
+      }
     }
 
     accumulatedCards
   }
 
   /**
-   * Splits arbitrarily long text into chunks of at most `maxChunkChars` (5,000 chars)
+   * Splits arbitrarily long text into chunks of at most `maxChunkChars` (4,000 chars)
    * along paragraph (`\n`) boundaries.
    */
   fun splitTextIntoParagraphChunks(rawText: String, maxChunkChars: Int = MAX_TEXT_CHUNK_CHARS): List<String> {
@@ -1464,7 +1622,8 @@ object GizmoBatchFlashcardEngine {
   private fun executeGeminiGenerateContentCall(
     activeApiKey: String,
     partsArray: JSONArray,
-    defaultCategory: String
+    defaultCategory: String,
+    allowModelDiscoveryFallback: Boolean = true
   ): List<FlashcardItem> {
     val requestBodyJson = JSONObject().apply {
       put(
@@ -1481,12 +1640,16 @@ object GizmoBatchFlashcardEngine {
         "generationConfig",
         JSONObject().apply {
           put("responseMimeType", "application/json")
-          put("temperature", 0.2)
+          put("temperature", 0.1)
+          put("maxOutputTokens", 8192)
         }
       )
     }.toString()
 
-    val endpointUrl = String.format(Locale.US, GEMINI_FLASH_ENDPOINT_TEMPLATE, activeApiKey.trim())
+    val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
+    val activeModel = resolveWorkingGeminiModel(cleanKey, forceRefresh = false)
+    val endpointUrl =
+      "https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$cleanKey"
     var connection: HttpURLConnection? = null
 
     try {
@@ -1506,6 +1669,7 @@ object GizmoBatchFlashcardEngine {
 
       val responseCode = connection.responseCode
       if (responseCode in 200..299) {
+        hasVerifiedWorkingModel = true
         val responseBody = BufferedReader(
           InputStreamReader(connection.inputStream, Charsets.UTF_8)
         ).use { it.readText() }
@@ -1518,6 +1682,24 @@ object GizmoBatchFlashcardEngine {
         } catch (_: Exception) {
           ""
         }
+
+        val isModelNotFound = responseCode == 404 ||
+          (responseCode == 400 && rawErrorBody.contains("not found", ignoreCase = true))
+
+        if (isModelNotFound && allowModelDiscoveryFallback) {
+          connection.disconnect()
+          connection = null
+          val fallbackModel = resolveWorkingGeminiModel(cleanKey, forceRefresh = true)
+          if (fallbackModel.isNotBlank()) {
+            return executeGeminiGenerateContentCall(
+              activeApiKey = cleanKey,
+              partsArray = partsArray,
+              defaultCategory = defaultCategory,
+              allowModelDiscoveryFallback = false
+            )
+          }
+        }
+
         val parsedApiErrorMessage = extractDetailedErrorFromPayload(responseCode, rawErrorBody)
         throw GeminiBatchExtractionException(
           statusCode = responseCode,
@@ -1541,10 +1723,10 @@ object GizmoBatchFlashcardEngine {
   }
 
   /**
-   * Bulletproof JSON Parser:
-   * - Extracts the model text from `candidates[0].content.parts[0].text`
-   * - Strips any accidental markdown code fences (`text.replace("```json", "").replace("```", "").trim()`)
-   * - Parses the `JSONArray` (or nested array if wrapped in an object) into `FlashcardItem` objects.
+   * Robust JSON Parser:
+   * - Extracts the model text from `candidates[0].content.parts`
+   * - Safely locates the first `'['` and last `']'` in the response string before passing to `JSONArray(...)`
+   *   so any stray markdown or conversational text never breaks parsing.
    */
   fun parseGeminiFlashcardsJsonResponse(
     rawApiResponse: String,
@@ -1582,28 +1764,33 @@ object GizmoBatchFlashcardEngine {
       return emptyList()
     }
 
+    val firstBracket = strippedText.indexOf('[')
+    val lastBracket = strippedText.lastIndexOf(']')
+
     val cardsJsonArray: JSONArray = try {
-      when {
-        strippedText.startsWith("[") -> JSONArray(strippedText)
-        strippedText.contains("[") && strippedText.contains("]") -> {
-          val startBracket = strippedText.indexOf('[')
-          val endBracket = strippedText.lastIndexOf(']')
-          JSONArray(strippedText.substring(startBracket, endBracket + 1))
-        }
-        strippedText.startsWith("{") -> {
-          val obj = JSONObject(strippedText)
-          obj.optJSONArray("flashcards")
-            ?: obj.optJSONArray("cards")
-            ?: obj.optJSONArray("items")
-            ?: JSONArray().put(obj)
-        }
-        else -> JSONArray(strippedText)
+      if (firstBracket != -1 && lastBracket != -1 && lastBracket >= firstBracket) {
+        val arraySubstring = strippedText.substring(firstBracket, lastBracket + 1)
+        JSONArray(arraySubstring)
+      } else if (strippedText.startsWith("{")) {
+        val obj = JSONObject(strippedText)
+        obj.optJSONArray("flashcards")
+          ?: obj.optJSONArray("cards")
+          ?: obj.optJSONArray("items")
+          ?: JSONArray().put(obj)
+      } else {
+        JSONArray(strippedText)
       }
     } catch (e: Exception) {
-      throw GeminiBatchExtractionException(
-        statusCode = 200,
-        message = "Failed to parse JSON flashcards from Gemini response: ${e.localizedMessage ?: "Invalid JSON format"}"
-      )
+      // Fallback: if response was slightly truncated at the end of a huge batch, recover all complete `{...}` objects
+      val recoveredArray = recoverCompleteJsonObjects(strippedText)
+      if (recoveredArray.length() > 0) {
+        recoveredArray
+      } else {
+        throw GeminiBatchExtractionException(
+          statusCode = 200,
+          message = "Failed to parse JSON flashcards from Gemini response: ${e.localizedMessage ?: "Invalid JSON format"}"
+        )
+      }
     }
 
     val parsedCards = mutableListOf<FlashcardItem>()
@@ -1631,6 +1818,21 @@ object GizmoBatchFlashcardEngine {
       }
     }
     return parsedCards
+  }
+
+  private fun recoverCompleteJsonObjects(rawText: String): JSONArray {
+    val result = JSONArray()
+    val objRegex = Regex("\\{[^{}]*\"question\"[\\s\\S]*?\"answer\"[\\s\\S]*?\\}", RegexOption.IGNORE_CASE)
+    for (match in objRegex.findAll(rawText)) {
+      try {
+        val obj = JSONObject(match.value)
+        if (obj.optString("question").isNotBlank() && obj.optString("answer").isNotBlank()) {
+          result.put(obj)
+        }
+      } catch (_: Exception) {
+      }
+    }
+    return result
   }
 
   private fun extractDetailedErrorFromPayload(httpCode: Int, rawErrorBody: String): String {
@@ -1716,7 +1918,8 @@ object OfflineDeckExtractor {
 
   /**
    * `.docx` Parser: Uses `ZipInputStream` on `context.contentResolver.openInputStream(uri)`,
-   * locates `"word/document.xml"`, replaces `</w:p>` with newlines, and strips XML tags (`Regex("<[^>]*>")`).
+   * locates `"word/document.xml"`, preserves line breaks for `</w:p>`, `<w:br/>`, and table cells `</w:tc>`,
+   * and strips XML tags (`Regex("<[^>]*>")`).
    */
   fun extractTextFromDocx(context: Context, uri: Uri): String {
     return try {
@@ -1729,6 +1932,9 @@ object OfflineDeckExtractor {
               val withParagraphBreaks = xmlContent
                 .replace("</w:p>", "\n")
                 .replace("<w:br/>", "\n")
+                .replace("<w:br />", "\n")
+                .replace("</w:tc>", "\n")
+                .replace("</w:tr>", "\n")
                 .replace("<w:tab/>", " ")
               val stripped = withParagraphBreaks
                 .replace(Regex("<[^>]*>"), " ")
@@ -1914,38 +2120,78 @@ fun generateCardsFromText(
     .trim()
 
   val generatedPairs = mutableListOf<Pair<String, String>>()
-  val seenAnswers = mutableSetOf<String>()
+  val seenQuestions = mutableSetOf<String>()
 
   fun addUniqueCard(front: String, back: String) {
     val cleanFront = front.replace(Regex("\\s+"), " ").trim()
     val cleanBack = back.replace(Regex("\\s+"), " ").trim()
-    val answerKey = cleanBack.lowercase(Locale.US)
-    if (cleanFront.isNotEmpty() && cleanBack.isNotEmpty() && seenAnswers.add(answerKey)) {
+    val questionKey = cleanFront.lowercase(Locale.US)
+    if (cleanFront.isNotEmpty() && cleanBack.isNotEmpty() && seenQuestions.add(questionKey)) {
       generatedPairs.add(cleanFront to cleanBack)
+    }
+  }
+
+  // Rule 0 (Direct Q&A Recognition - Highest Priority):
+  // Match explicit Q/A blocks such as "Q: ... A: ...", "Question 1: ... Answer: ...", or numbered questions with Answer/Ans lines
+  val explicitQaBlockRegex = Regex(
+    "(?:^|\\n)\\s*(?:Q(?:uestion)?\\s*\\d*\\s*[:.\\-)]|\\d+\\s*[.)])\\s*([^\\n]+(?:\\n(?!\\s*(?:A(?:ns(?:wer)?)?\\s*[:.\\-)]|Correct\\s+Answer\\s*[:.\\-)]))[^\\n]+)*)\\s*\\n\\s*(?:A(?:ns(?:wer)?)?|Correct\\s+Answer)\\s*[:.\\-)]\\s*([^\\n]+)",
+    setOf(RegexOption.IGNORE_CASE)
+  )
+  for (match in explicitQaBlockRegex.findAll(normalizedText)) {
+    val qText = match.groupValues.getOrNull(1).orEmpty().trim()
+    val aText = match.groupValues.getOrNull(2).orEmpty().trim()
+    if (qText.length >= 4 && aText.isNotEmpty()) {
+      addUniqueCard(front = qText, back = aText)
     }
   }
 
   val lines = normalizedText
     .lines()
     .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
-    .filter { it.length >= 6 }
+    .filter { it.length >= 4 }
+
+  // Also scan consecutive lines where a question ending with '?' is followed by an answer line
+  var idx = 0
+  while (idx < lines.size - 1) {
+    val currentLine = lines[idx]
+    val nextLine = lines[idx + 1]
+    if (currentLine.endsWith("?") && currentLine.length >= 8 && !nextLine.endsWith("?")) {
+      val cleanedAnswer = nextLine.replace(
+        Regex("^(?:A(?:ns(?:wer)?)?|Answer)\\s*[:.\\-)]\\s*", RegexOption.IGNORE_CASE),
+        ""
+      ).trim()
+      if (cleanedAnswer.isNotEmpty()) {
+        addUniqueCard(front = currentLine, back = cleanedAnswer)
+        idx += 2
+        continue
+      }
+    }
+    idx++
+  }
 
   val sentences = normalizedText
     .split(Regex("(?<=[.!?])\\s+|\\n+"))
     .map { it.replace(Regex("\\s+"), " ").trim().trimStart('•', '*', '-', '·').trim() }
     .filter { it.length >= 10 }
 
-  // Rule 1 (Colon / Dash Definitions): "Term: Definition" or "Term - Definition" (Term 3..60 chars)
-  val definitionRegex = Regex("^([^:\\-–—]{3,60})\\s*(?::|\\s[-–—]\\s)\\s*(.{8,320})$")
+  // Rule 1 (Colon / Dash Definitions): "Term: Definition" or "Term - Definition" (Term 3..80 chars)
+  val definitionRegex = Regex("^([^:\\-–—]{3,80})\\s*(?::|\\s[-–—]\\s)\\s*(.{4,420})$")
   for (line in lines) {
-    if (generatedPairs.size >= 12) break
     val match = definitionRegex.find(line) ?: continue
     val term = match.groupValues[1].trim()
     val definition = match.groupValues[2].trim()
+    if (term.equals("Question", ignoreCase = true) ||
+      term.equals("Q", ignoreCase = true) ||
+      term.equals("Answer", ignoreCase = true) ||
+      term.equals("Ans", ignoreCase = true)
+    ) {
+      continue
+    }
     val letterCount = term.count { it.isLetter() }
-    if (term.length in 3..60 && letterCount >= 2 && definition.length >= 8) {
+    if (term.length in 3..80 && letterCount >= 2 && definition.length >= 4) {
+      val front = if (term.endsWith("?")) term else "Define: $term"
       addUniqueCard(
-        front = "Define: $term",
+        front = front,
         back = definition
       )
     }
@@ -1956,7 +2202,6 @@ fun generateCardsFromText(
     "formula", "nscp", "minimum", "ratio", "stress", "pressure", "moment"
   )
   for (sentence in sentences) {
-    if (generatedPairs.size >= 12) break
     val lower = sentence.lowercase(Locale.US)
     val hasEquals = sentence.contains("=")
     val matchedKeyword = formulaKeywords.firstOrNull { lower.contains(it) }
@@ -1976,10 +2221,9 @@ fun generateCardsFromText(
     }
   }
 
-  // Rule 3 (Key Concept Sentences): Remaining informative sentences (40..220 characters)
+  // Rule 3 (Key Concept Sentences): Remaining informative sentences (40..240 characters)
   for (sentence in sentences) {
-    if (generatedPairs.size >= 12) break
-    if (sentence.length in 40..220) {
+    if (sentence.length in 40..240) {
       val subjectPhrase = extractSubjectPhraseFromSentence(sentence, "this concept")
       addUniqueCard(
         front = "Key Concept Review: Explain the principle or engineering significance of $subjectPhrase.",
@@ -1988,16 +2232,16 @@ fun generateCardsFromText(
     }
   }
 
-  // If fewer than 5 cards were found from 40..220 char sentences, also split/group any remaining clauses or lines
+  // If fewer than 5 cards were found, also split/group any remaining clauses or lines
   if (generatedPairs.size < 5) {
     val allFragments = (sentences + lines + normalizedText.split(Regex("[,;]")))
       .map { it.replace(Regex("\\s+"), " ").trim() }
       .filter { it.length >= 6 }
       .distinct()
 
-    for ((idx, fragment) in allFragments.withIndex()) {
+    for ((fIdx, fragment) in allFragments.withIndex()) {
       if (generatedPairs.size >= 8) break
-      val topic = extractSubjectPhraseFromSentence(fragment, "Study Note #${idx + 1}")
+      val topic = extractSubjectPhraseFromSentence(fragment, "Study Note #${fIdx + 1}")
       addUniqueCard(
         front = "Concept Check #${generatedPairs.size + 1}: Summarize the key takeaway regarding $topic.",
         back = fragment
@@ -2005,7 +2249,7 @@ fun generateCardsFromText(
     }
   }
 
-  // Guarantee ALWAYS at least 5 to 12 study cards from any document or pasted text
+  // Guarantee ALWAYS at least 5 study cards from any document or pasted text
   if (generatedPairs.size < 5) {
     val baseSnippet = normalizedText.ifBlank { "Civil Engineering Study Notes" }.take(180)
     val fallbackTemplates = listOf(
@@ -2023,7 +2267,7 @@ fun generateCardsFromText(
     }
   }
 
-  return generatedPairs.take(12).mapIndexed { index, (question, answer) ->
+  return generatedPairs.mapIndexed { index, (question, answer) ->
     FlashcardItem(
       id = index + 1,
       question = question,
@@ -7442,6 +7686,7 @@ fun FlashcardMainView(
   var batchStatusLabel by rememberSaveable { mutableStateOf("Preparing document batches...") }
   var accumulatedBatchCards by remember { mutableStateOf<List<FlashcardItem>>(emptyList()) }
   var latestGeneratedQuestion by rememberSaveable { mutableStateOf("") }
+  var latestGeneratedAnswer by rememberSaveable { mutableStateOf("") }
 
   // Detailed HTTP / Gemini Error Reporting Dialog State
   var extractionErrorDialogMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -7514,10 +7759,11 @@ fun FlashcardMainView(
     batchDeckTitle = deckTitle.ifBlank { "Lecture Notes Study Deck" }
     batchSubjectTag = subjectTag.ifBlank { "General" }
     currentBatchIndex = 1
-    totalBatchCount = maxOf(1, (rawText.length + 4999) / 5000)
-    batchStatusLabel = "Preparing text chunks for Gemini 2.5 Flash..."
+    totalBatchCount = maxOf(1, (rawText.length + 3999) / 4000)
+    batchStatusLabel = "Scanning Pages 1–1 of $totalBatchCount • 0 Q&A Cards Extracted"
     accumulatedBatchCards = emptyList()
     latestGeneratedQuestion = ""
+    latestGeneratedAnswer = ""
     extractionErrorDialogMessage = null
     isBatchExtracting = true
 
@@ -7528,7 +7774,7 @@ fun FlashcardMainView(
           rawText = rawText,
           activeApiKey = activeKey,
           defaultCategory = batchSubjectTag,
-          onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ ->
+          onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ, latestA ->
             coroutineScope.launch(Dispatchers.Main.immediate) {
               currentBatchIndex = currentBatch
               totalBatchCount = maxOf(1, totalBatches)
@@ -7536,6 +7782,9 @@ fun FlashcardMainView(
               accumulatedBatchCards = cardsSoFar
               if (latestQ.isNotBlank()) {
                 latestGeneratedQuestion = latestQ
+              }
+              if (latestA.isNotBlank()) {
+                latestGeneratedAnswer = latestA
               }
             }
           }
@@ -7556,7 +7805,7 @@ fun FlashcardMainView(
         isBatchExtracting = false
         activeBatchJob = null
         extractionErrorDialogMessage = e.message
-          ?: "An unexpected error occurred while communicating with Gemini 2.5 Flash."
+          ?: "An unexpected error occurred while communicating with Gemini 3.0 Flash."
       }
     }
   }
@@ -7585,9 +7834,10 @@ fun FlashcardMainView(
       batchSubjectTag = "General"
       currentBatchIndex = 1
       totalBatchCount = 1
-      batchStatusLabel = "Opening $resolvedName..."
+      batchStatusLabel = "Scanning Pages 1–2 of ... • 0 Q&A Cards Extracted"
       accumulatedBatchCards = emptyList()
       latestGeneratedQuestion = ""
+      latestGeneratedAnswer = ""
       extractionErrorDialogMessage = null
       isBatchExtracting = true
 
@@ -7600,7 +7850,7 @@ fun FlashcardMainView(
             fileName = resolvedName,
             activeApiKey = activeKey,
             defaultCategory = "General",
-            onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ ->
+            onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ, latestA ->
               coroutineScope.launch(Dispatchers.Main.immediate) {
                 currentBatchIndex = currentBatch
                 totalBatchCount = maxOf(1, totalBatches)
@@ -7608,6 +7858,9 @@ fun FlashcardMainView(
                 accumulatedBatchCards = cardsSoFar
                 if (latestQ.isNotBlank()) {
                   latestGeneratedQuestion = latestQ
+                }
+                if (latestA.isNotBlank()) {
+                  latestGeneratedAnswer = latestA
                 }
               }
             }
@@ -8418,7 +8671,7 @@ fun FlashcardMainView(
             border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f))
           ) {
             Text(
-              text = "⚡ ${accumulatedBatchCards.size} Flashcards Generated So Far",
+              text = "⚡ ${accumulatedBatchCards.size} Q&A Cards Extracted",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
@@ -8430,7 +8683,7 @@ fun FlashcardMainView(
             )
           }
 
-          // Live Preview of Most Recently Generated Question
+          // Live Preview of Most Recently Extracted Question & Answer
           Surface(
             color = palette.nestedCardFill,
             shape = RoundedCornerShape(16.dp),
@@ -8441,10 +8694,10 @@ fun FlashcardMainView(
               modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 12.dp),
-              verticalArrangement = Arrangement.spacedBy(4.dp)
+              verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
               Text(
-                text = "LATEST GENERATED QUESTION PREVIEW",
+                text = "LATEST EXTRACTED Q&A PREVIEW",
                 style = MaterialTheme.typography.labelSmall.copy(
                   fontFamily = JetBrainsMonoFamily,
                   fontSize = metrics.scaledSp(10),
@@ -8454,23 +8707,36 @@ fun FlashcardMainView(
               )
               Text(
                 text = if (latestGeneratedQuestion.isNotBlank()) {
-                  latestGeneratedQuestion
+                  "Q: $latestGeneratedQuestion"
                 } else {
-                  "Waiting for first batch response from Gemini 2.5 Flash..."
+                  "Waiting for first batch response from Gemini 3.0 Flash..."
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(
                   fontSize = metrics.scaledSp(13),
                   fontWeight = FontWeight.SemiBold
                 ),
                 color = palette.textPrimary,
-                maxLines = 3,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("gizmo_latest_question_preview")
               )
+              if (latestGeneratedAnswer.isNotBlank()) {
+                Text(
+                  text = "A: $latestGeneratedAnswer",
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = metrics.scaledSp(12),
+                    fontWeight = FontWeight.Medium
+                  ),
+                  color = palette.textSecondary,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.testTag("gizmo_latest_answer_preview")
+                )
+              }
             }
           }
 
-          // "Save & Stop Here" Button
+          // "Save ${accumulatedBatchCards.size} Cards & Stop" Button (Active as soon as >= 1 card is extracted)
           Button(
             onClick = {
               val cardsSnapshot = accumulatedBatchCards.toList()
@@ -8479,10 +8745,13 @@ fun FlashcardMainView(
               isBatchExtracting = false
               saveAccumulatedCardsAsDeck(cardsSnapshot, stoppedEarly = true)
             },
+            enabled = accumulatedBatchCards.isNotEmpty(),
             shape = RoundedCornerShape(18.dp),
             colors = ButtonDefaults.buttonColors(
               containerColor = Color(0xFF4F46E5),
-              contentColor = Color.White
+              contentColor = Color.White,
+              disabledContainerColor = palette.trackColor,
+              disabledContentColor = palette.textSecondary.copy(alpha = 0.6f)
             ),
             modifier = Modifier
               .fillMaxWidth()
@@ -8490,16 +8759,28 @@ fun FlashcardMainView(
               .testTag("gizmo_save_and_stop_button")
           ) {
             Text(
-              text = if (accumulatedBatchCards.isNotEmpty()) {
-                "Save & Stop Here (${accumulatedBatchCards.size} Cards)"
-              } else {
-                "Save & Stop Here"
-              },
+              text = "Save ${accumulatedBatchCards.size} Cards & Stop",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
               )
             )
+          }
+
+          if (accumulatedBatchCards.isEmpty()) {
+            TextButton(
+              onClick = {
+                activeBatchJob?.cancel()
+                activeBatchJob = null
+                isBatchExtracting = false
+              }
+            ) {
+              Text(
+                text = "Cancel Extraction",
+                fontSize = 12.sp,
+                color = palette.textSecondary
+              )
+            }
           }
         }
       }
@@ -8802,7 +9083,7 @@ private fun GeminiApiKeyConfigDialog(
           modifier = Modifier.size(24.dp)
         )
         Text(
-          text = "Gemini 2.5 Flash API Key",
+          text = "Gemini 3.0 Flash API Key",
           style = MaterialTheme.typography.headlineSmall.copy(
             fontSize = metrics.scaledSp(19),
             fontWeight = FontWeight.Bold
@@ -8988,7 +9269,7 @@ private fun PasteTextToDeckDialog(
           }
         } else {
           Text(
-            text = "Paste lecture notes, definitions, formulas, or reviewers of ANY length. Sibil splits long notes into 5,000-character batches and extracts comprehensive active-recall flashcards via Gemini 2.5 Flash.",
+            text = "Paste lecture notes, definitions, formulas, or reviewers of ANY length. Sibil splits long notes into 4,000-character batches and extracts every question & answer via Gemini 3.0 Flash.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12)
             ),
@@ -10479,28 +10760,29 @@ fun ClassTimetableScheduleScreen(
               .testTag("schedule_screen_title")
           )
 
-          Surface(
-            onClick = {
-              isGridView = !isGridView
-              if (!isGridView) focusedClass = null
-            },
-            shape = RoundedCornerShape(16.dp),
-            color = if (isGridView) {
-              MaterialTheme.colorScheme.primaryContainer
-            } else {
-              palette.cardFill
-            },
-            border = BorderStroke(
-              width = 1.5.dp,
-              color = palette.accentIndigo
-            ),
-            shadowElevation = 4.dp,
+          val toggleFillColor = if (palette.isDark) Color(0xFF1E293B) else Color(0xFFEEF2FF)
+          val toggleContentColor = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+          Box(
             modifier = Modifier
               .height(42.dp)
-              .testTag("schedule_view_toggle_button")
+              .clip(RoundedCornerShape(50))
+              .background(color = toggleFillColor, shape = RoundedCornerShape(50))
+              .border(
+                BorderStroke(
+                  width = 1.2.dp,
+                  color = Color(0xFF6366F1).copy(alpha = 0.5f)
+                ),
+                shape = RoundedCornerShape(50)
+              )
+              .clickable {
+                isGridView = !isGridView
+                if (!isGridView) focusedClass = null
+              }
+              .padding(horizontal = 14.dp, vertical = 6.dp)
+              .testTag("schedule_view_toggle_button"),
+            contentAlignment = Alignment.Center
           ) {
             Row(
-              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
               verticalAlignment = Alignment.CenterVertically,
               horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -10515,7 +10797,7 @@ fun ClassTimetableScheduleScreen(
                 } else {
                   stringResource(R.string.grid_view_label)
                 },
-                tint = palette.accentIndigo,
+                tint = toggleContentColor,
                 modifier = Modifier.size(18.dp)
               )
               Text(
@@ -10528,7 +10810,7 @@ fun ClassTimetableScheduleScreen(
                   fontSize = metrics.scaledSp(12),
                   fontWeight = FontWeight.Bold
                 ),
-                color = palette.accentIndigo,
+                color = toggleContentColor,
                 maxLines = 1
               )
             }
@@ -10551,7 +10833,6 @@ fun ClassTimetableScheduleScreen(
         }
       } else {
         // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
-        //    with distinct BorderStroke(2.dp, MaterialTheme.colorScheme.primary) on the selected day
         item {
           Row(
             modifier = Modifier
@@ -10563,41 +10844,53 @@ fun ClassTimetableScheduleScreen(
             ScheduleWeekDay.entries.forEach { day ->
               val isSelected = selectedWeekDay == day
               val countForDay = dayCountsMap[day] ?: 0
+              val dayPillShape = RoundedCornerShape(20.dp)
+              val dayPillBrush = if (isSelected) {
+                Brush.verticalGradient(
+                  listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                )
+              } else if (palette.isDark) {
+                Brush.verticalGradient(
+                  listOf(Color(0xFF1E293B), Color(0xFF0F172A))
+                )
+              } else {
+                Brush.verticalGradient(
+                  listOf(Color(0xFFFFFFFF), Color(0xFFF1F5F9))
+                )
+              }
+              val dayPillBorder = if (isSelected) {
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.45f))
+              } else if (palette.isDark) {
+                BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+              } else {
+                BorderStroke(1.dp, Color(0xFFCBD5E1))
+              }
 
-              Surface(
-                onClick = { onSelectWeekDay(day) },
-                shape = RoundedCornerShape(18.dp),
-                color = if (isSelected) {
-                  MaterialTheme.colorScheme.primaryContainer
-                } else {
-                  palette.cardFill
-                },
-                border = if (isSelected) {
-                  BorderStroke(2.dp, palette.accentIndigo)
-                } else {
-                  BorderStroke(1.dp, palette.cardBorder)
-                },
-                shadowElevation = if (isSelected) 8.dp else 4.dp,
+              Box(
                 modifier = Modifier
                   .weight(1f)
-                  .height(metrics.scaledDp(66))
+                  .height(76.dp)
+                  .clip(dayPillShape)
+                  .background(brush = dayPillBrush, shape = dayPillShape)
+                  .border(border = dayPillBorder, shape = dayPillShape)
+                  .clickable { onSelectWeekDay(day) }
                   .testTag("week_day_tab_${day.shortLabel.lowercase()}")
               ) {
                 Column(
                   modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                    .padding(vertical = 10.dp, horizontal = 4.dp),
                   horizontalAlignment = Alignment.CenterHorizontally,
                   verticalArrangement = Arrangement.SpaceBetween
                 ) {
                   Text(
                     text = day.shortLabel,
                     style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = metrics.scaledSp(12),
-                      fontWeight = FontWeight.Bold
+                      fontSize = 13.sp,
+                      fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                     ),
                     color = if (isSelected) {
-                      palette.accentIndigo
+                      Color.White
                     } else {
                       palette.textPrimary
                     },
@@ -10605,27 +10898,34 @@ fun ClassTimetableScheduleScreen(
                     overflow = TextOverflow.Ellipsis
                   )
 
-                  Surface(
-                    color = if (isSelected) {
-                      MaterialTheme.colorScheme.primary
-                    } else {
-                      palette.accentIndigo.copy(alpha = 0.16f)
-                    },
-                    shape = CircleShape
+                  Box(
+                    modifier = Modifier
+                      .size(24.dp)
+                      .clip(CircleShape)
+                      .background(
+                        color = if (isSelected) {
+                          Color.White.copy(alpha = 0.22f)
+                        } else if (palette.isDark) {
+                          Color(0xFF334155)
+                        } else {
+                          Color(0xFFEEF2FF)
+                        },
+                        shape = CircleShape
+                      ),
+                    contentAlignment = Alignment.Center
                   ) {
                     Text(
                       text = "$countForDay",
                       style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = metrics.scaledSp(10),
-                        fontWeight = FontWeight.Bold
+                        fontSize = 11.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                       ),
                       color = if (isSelected) {
                         Color.White
                       } else {
-                        palette.accentIndigo
+                        palette.textSecondary
                       },
-                      maxLines = 1,
-                      modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                      maxLines = 1
                     )
                   }
                 }
@@ -11172,9 +11472,9 @@ private fun ScheduleTimetableGridView(
 
                     Surface(
                       shape = RoundedCornerShape(10.dp),
-                      color = positioned.blockColor.copy(alpha = 0.88f),
+                      color = positioned.blockColor,
                       border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.78f)),
-                      shadowElevation = 6.dp,
+                      shadowElevation = 4.dp,
                       modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 2.dp, vertical = 1.dp)
@@ -12068,6 +12368,8 @@ private fun ProfileAndSettingsDialog(
   val palette = currentGlassPalette()
   val isGuest = viewModel.isGuestMode
 
+  val modalBackgroundColor = if (palette.isDark) Color(0xFF0B1120) else Color(0xFFF4F7FB)
+
   Dialog(
     onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -12079,16 +12381,21 @@ private fun ProfileAndSettingsDialog(
         .heightIn(max = 720.dp)
         .testTag("profile_settings_dialog"),
       shape = RoundedCornerShape(28.dp),
-      color = palette.dialogSurface,
-      border = BorderStroke(1.2.dp, palette.cardBorder),
-      tonalElevation = 6.dp,
+      color = modalBackgroundColor,
+      border = palette.glassBorder,
+      tonalElevation = 0.dp,
       shadowElevation = 16.dp
     ) {
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          .padding(metrics.scaledDp(20)),
+          .padding(
+            start = metrics.scaledDp(20),
+            end = metrics.scaledDp(20),
+            top = metrics.scaledDp(20),
+            bottom = metrics.scaledDp(28)
+          ),
         verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
       ) {
         // Dialog Header with Close Button
@@ -12128,16 +12435,12 @@ private fun ProfileAndSettingsDialog(
         }
 
         // 1. Account Section Card
-        Card(
+        LiquidGlassCard(
           modifier = Modifier
             .fillMaxWidth()
             .testTag("extras_account_card"),
           shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = palette.nestedCardFill
-          ),
-          border = BorderStroke(1.dp, palette.nestedCardBorder),
-          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+          elevation = if (palette.isDark) 8.dp else 6.dp
         ) {
           Column(
             modifier = Modifier
@@ -12162,7 +12465,7 @@ private fun ProfileAndSettingsDialog(
               horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
             ) {
               Surface(
-                color = palette.accentIndigo.copy(alpha = 0.16f),
+                color = palette.nestedCardFill,
                 shape = CircleShape,
                 modifier = Modifier.size(54.dp)
               ) {
@@ -12227,7 +12530,12 @@ private fun ProfileAndSettingsDialog(
             OutlinedButton(
               onClick = onSwitchAccount,
               shape = CircleShape,
-              border = BorderStroke(1.2.dp, palette.accentIndigo),
+              border = BorderStroke(1.2.dp, Color(0xFF6366F1)),
+              colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = palette.nestedCardFill,
+                contentColor = palette.accentIndigo
+              ),
+              elevation = null,
               modifier = Modifier
                 .fillMaxWidth()
                 .height(metrics.scaledDp(46))
@@ -12248,22 +12556,18 @@ private fun ProfileAndSettingsDialog(
         }
 
         // 2. Display Section Card (with functional Dark Mode Switch)
-        Card(
+        LiquidGlassCard(
           modifier = Modifier
             .fillMaxWidth()
             .testTag("extras_display_card"),
           shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = palette.nestedCardFill
-          ),
-          border = BorderStroke(1.dp, palette.nestedCardBorder),
-          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+          elevation = if (palette.isDark) 8.dp else 6.dp
         ) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
               .padding(metrics.scaledDp(18)),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
           ) {
             Text(
               text = stringResource(R.string.display_section_title),
@@ -12291,7 +12595,7 @@ private fun ProfileAndSettingsDialog(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
               ) {
                 Surface(
-                  color = palette.accentIndigo.copy(alpha = 0.16f),
+                  color = palette.nestedCardFill,
                   shape = RoundedCornerShape(12.dp),
                   modifier = Modifier.size(40.dp)
                 ) {
@@ -12339,16 +12643,12 @@ private fun ProfileAndSettingsDialog(
         var restoreJsonInput by rememberSaveable { mutableStateOf("") }
         var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
 
-        Card(
+        LiquidGlassCard(
           modifier = Modifier
             .fillMaxWidth()
             .testTag("extras_data_management_card"),
           shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = palette.nestedCardFill
-          ),
-          border = BorderStroke(1.dp, palette.nestedCardBorder),
-          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+          elevation = if (palette.isDark) 8.dp else 6.dp
         ) {
           Column(
             modifier = Modifier
@@ -12415,7 +12715,12 @@ private fun ProfileAndSettingsDialog(
                   isRestoreDialogOpen = true
                 },
                 shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.5.dp, palette.accentIndigo),
+                border = BorderStroke(1.2.dp, Color(0xFF6366F1)),
+                colors = ButtonDefaults.outlinedButtonColors(
+                  containerColor = palette.nestedCardFill,
+                  contentColor = palette.accentIndigo
+                ),
+                elevation = null,
                 modifier = Modifier
                   .weight(1f)
                   .heightIn(min = 48.dp)
@@ -12440,7 +12745,7 @@ private fun ProfileAndSettingsDialog(
           AlertDialog(
             onDismissRequest = { isRestoreDialogOpen = false },
             shape = RoundedCornerShape(24.dp),
-            containerColor = palette.dialogSurface,
+            containerColor = modalBackgroundColor,
             title = {
               Text(
                 text = "Restore Sibil Data",
@@ -12530,16 +12835,12 @@ private fun ProfileAndSettingsDialog(
         }
 
         // 4. About Section Card
-        Card(
+        LiquidGlassCard(
           modifier = Modifier
             .fillMaxWidth()
             .testTag("extras_about_card"),
           shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(
-            containerColor = palette.nestedCardFill
-          ),
-          border = BorderStroke(1.dp, palette.nestedCardBorder),
-          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+          elevation = if (palette.isDark) 8.dp else 6.dp
         ) {
           Column(
             modifier = Modifier
@@ -12591,7 +12892,7 @@ private fun ProfileAndSettingsDialog(
               )
 
               Surface(
-                color = palette.accentIndigo.copy(alpha = 0.16f),
+                color = palette.nestedCardFill,
                 shape = CircleShape
               ) {
                 Text(
@@ -14204,15 +14505,14 @@ fun ClockScreen(
         .shadow(
           elevation = 8.dp,
           shape = trackShape,
-          spotColor = Color(0x223730A3)
+          ambientColor = palette.shadowAmbient,
+          spotColor = palette.shadowSpot
         )
         .clip(trackShape)
         .background(
-          color = if (palette.isDark) {
-            Color(0xFF0F172A).copy(alpha = 0.75f)
-          } else {
-            Color.White.copy(alpha = 0.65f)
-          },
+          brush = Brush.verticalGradient(
+            colors = listOf(palette.cardTopSheen, palette.cardBottomSheen)
+          ),
           shape = trackShape
         )
         .border(border = palette.glassBorder, shape = trackShape)
@@ -14301,18 +14601,17 @@ fun ClockScreen(
       }
     }
 
-    // Dismissible POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM Permission Rationale Card
-    if ((!hasNotificationPermission || !canScheduleExactAlarms) && !isPermissionRationaleDismissed) {
-      Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = creamCardColor),
-        border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.4f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    // Dismissible POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM Permission Rationale Card (only on Alarm tab)
+    if (selectedSubTab == ClockSubTab.ALARM && (!hasNotificationPermission || !canScheduleExactAlarms) && !isPermissionRationaleDismissed) {
+      LiquidGlassCard(
+        shape = RoundedCornerShape(18.dp),
+        elevation = if (palette.isDark) 6.dp else 4.dp,
+        borderStroke = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.45f)),
         modifier = Modifier
           .fillMaxWidth()
           .padding(
             horizontal = metrics.scaledDp(16),
-            vertical = metrics.scaledDp(10)
+            vertical = metrics.scaledDp(8)
           )
           .testTag("clock_permission_rationale_card")
       ) {
@@ -14325,7 +14624,7 @@ fun ClockScreen(
         ) {
           Surface(
             shape = CircleShape,
-            color = palette.accentIndigo.copy(alpha = 0.14f),
+            color = palette.nestedCardFill,
             modifier = Modifier.size(40.dp)
           ) {
             Box(contentAlignment = Alignment.Center) {
@@ -14611,10 +14910,9 @@ fun ClockScreen(
           },
           onLapOrReset = {
             if (isStopwatchRunning) {
-              val previousTotal = stopwatchLaps.firstOrNull()?.totalElapsedMillis ?: 0L
+              val previousTotal = stopwatchLaps.lastOrNull()?.totalElapsedMillis ?: 0L
               val split = (stopwatchElapsedMillis - previousTotal).coerceAtLeast(0L)
               stopwatchLaps.add(
-                0,
                 StopwatchLapItem(
                   lapNumber = stopwatchLaps.size + 1,
                   lapSplitMillis = split,
@@ -15722,13 +16020,26 @@ private fun StopwatchSubScreen(
   val minuteFraction = remember(elapsedMillis) {
     ((elapsedMillis % 60_000L).toFloat() / 60_000f).coerceIn(0f, 1f)
   }
+  val highlightIndigo = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+  val reversedLaps = laps.asReversed()
+  val fastestLapNumber = remember(laps.toList()) {
+    if (laps.size >= 2) {
+      laps.minByOrNull { it.lapSplitMillis }?.lapNumber
+    } else {
+      null
+    }
+  }
+  val latestLapNumber = laps.lastOrNull()?.lapNumber
 
   Column(
     modifier = Modifier
       .fillMaxSize()
+      .verticalScroll(rememberScrollState())
       .padding(
-        horizontal = metrics.scaledDp(16),
-        vertical = metrics.scaledDp(14)
+        start = metrics.scaledDp(16),
+        end = metrics.scaledDp(16),
+        top = metrics.scaledDp(12),
+        bottom = 120.dp
       )
       .testTag("stopwatch_sub_screen"),
     horizontalAlignment = Alignment.CenterHorizontally
@@ -15736,27 +16047,24 @@ private fun StopwatchSubScreen(
     // Luminous Circular Progress Ring + Frosted Glass Stopwatch Header
     LiquidGlassCard(
       shape = RoundedCornerShape(30.dp),
-      elevation = 10.dp,
-      fillAlpha = if (palette.isDark) 0.78f else 0.90f,
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(vertical = metrics.scaledDp(6))
+      elevation = if (palette.isDark) 8.dp else 6.dp,
+      modifier = Modifier.fillMaxWidth()
     ) {
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .padding(
             horizontal = metrics.scaledDp(20),
-            vertical = metrics.scaledDp(20)
+            vertical = 18.dp
           ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
       ) {
         Box(
           modifier = Modifier
-            .size(metrics.scaledDp(200))
+            .size(190.dp)
             .padding(4.dp),
-            contentAlignment = Alignment.Center
+          contentAlignment = Alignment.Center
         ) {
           Canvas(modifier = Modifier.fillMaxSize()) {
             val strokePx = 10.dp.toPx()
@@ -15813,7 +16121,7 @@ private fun StopwatchSubScreen(
       }
     }
 
-    Spacer(modifier = Modifier.height(metrics.scaledDp(14)))
+    Spacer(modifier = Modifier.height(12.dp))
 
     // Two liquid floating control buttons: Lap/Reset and Start/Stop
     Row(
@@ -15824,9 +16132,9 @@ private fun StopwatchSubScreen(
       val canLapOrReset = isRunning || elapsedMillis > 0L
       Surface(
         shape = CircleShape,
-        color = if (canLapOrReset) palette.cardFill else palette.cardFill.copy(alpha = 0.45f),
+        color = if (canLapOrReset) palette.cardFill else palette.nestedCardFill,
         border = BorderStroke(1.2.dp, palette.cardBorder),
-        shadowElevation = if (canLapOrReset) 6.dp else 0.dp,
+        shadowElevation = if (canLapOrReset) 4.dp else 0.dp,
         modifier = Modifier
           .size(metrics.scaledDp(62))
           .clip(CircleShape)
@@ -15882,20 +16190,20 @@ private fun StopwatchSubScreen(
       }
     }
 
-    Spacer(modifier = Modifier.height(metrics.scaledDp(14)))
+    Spacer(modifier = Modifier.height(12.dp))
 
-    // Scrollable list of Lap Times below the buttons
+    // Naturally expanding Lap Splits Card ordered newest-first
     LiquidGlassCard(
       shape = RoundedCornerShape(24.dp),
-      elevation = 8.dp,
+      elevation = if (palette.isDark) 8.dp else 6.dp,
       modifier = Modifier
-        .weight(1f)
         .fillMaxWidth()
+        .heightIn(min = 180.dp)
     ) {
       Column(
         modifier = Modifier
-          .fillMaxSize()
-          .padding(metrics.scaledDp(14))
+          .fillMaxWidth()
+          .padding(metrics.scaledDp(16))
       ) {
         Row(
           modifier = Modifier
@@ -15908,16 +16216,51 @@ private fun StopwatchSubScreen(
             text = "Lap Splits",
             style = MaterialTheme.typography.titleSmall.copy(
               fontWeight = FontWeight.ExtraBold,
-              fontSize = metrics.scaledSp(14)
+              fontSize = metrics.scaledSp(15)
             ),
             color = palette.textPrimary
           )
           Text(
             text = "${laps.size} recorded",
             style = MaterialTheme.typography.labelMedium.copy(
-              fontFamily = JetBrainsMonoFamily
+              fontFamily = JetBrainsMonoFamily,
+              fontWeight = FontWeight.SemiBold
             ),
             color = palette.textSecondary
+          )
+        }
+
+        // Micro-header row: LAP | SPLIT | TOTAL
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "LAP",
+            fontSize = 11.sp,
+            color = palette.textSecondary,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Start
+          )
+          Text(
+            text = "SPLIT",
+            fontSize = 11.sp,
+            color = palette.textSecondary,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Center
+          )
+          Text(
+            text = "TOTAL",
+            fontSize = 11.sp,
+            color = palette.textSecondary,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End
           )
         }
 
@@ -15926,9 +16269,11 @@ private fun StopwatchSubScreen(
           color = palette.dividerColor
         )
 
-        if (laps.isEmpty()) {
+        if (reversedLaps.isEmpty()) {
           Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 32.dp),
             contentAlignment = Alignment.Center
           ) {
             Text(
@@ -15939,60 +16284,114 @@ private fun StopwatchSubScreen(
             )
           }
         } else {
-          LazyColumn(
+          Column(
             modifier = Modifier
-              .fillMaxSize()
-              .padding(top = metrics.scaledDp(8))
-              .testTag("stopwatch_laps_list"),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+              .fillMaxWidth()
+              .padding(top = 4.dp)
+              .testTag("stopwatch_laps_list")
           ) {
-            items(laps, key = { it.lapNumber }) { lap ->
-              Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = palette.nestedCardFill,
-                border = BorderStroke(
-                  1.dp,
-                  palette.nestedCardBorder
-                ),
+            reversedLaps.forEachIndexed { index, lap ->
+              val isHighlightedLap =
+                lap.lapNumber == latestLapNumber || lap.lapNumber == fastestLapNumber
+              val isFastest = lap.lapNumber == fastestLapNumber
+              val isLatest = lap.lapNumber == latestLapNumber
+
+              Row(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .testTag("stopwatch_lap_row_${lap.lapNumber}")
+                  .padding(vertical = 10.dp)
+                  .testTag("stopwatch_lap_row_${lap.lapNumber}"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
               ) {
+                // Left column: LAP badge + optional Latest/Fastest pill
                 Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(
-                      horizontal = metrics.scaledDp(14),
-                      vertical = metrics.scaledDp(10)
-                    ),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                  Text(
-                    text = String.format(Locale.US, "#%02d", lap.lapNumber),
-                    style = MaterialTheme.typography.labelLarge.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = palette.accentIndigo
-                  )
-                  Text(
-                    text = "+${formatStopwatchMillis(lap.lapSplitMillis)}",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontWeight = FontWeight.Medium
-                    ),
-                    color = palette.textSecondary
-                  )
-                  Text(
-                    text = formatStopwatchMillis(lap.totalElapsedMillis),
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontWeight = FontWeight.ExtraBold
-                    ),
-                    color = palette.textPrimary
-                  )
+                  Box(
+                    modifier = Modifier
+                      .clip(RoundedCornerShape(8.dp))
+                      .background(
+                        color = if (isHighlightedLap) {
+                          palette.nestedCardFill
+                        } else {
+                          Color.Transparent
+                        }
+                      )
+                      .then(
+                        if (isHighlightedLap) {
+                          Modifier.border(
+                            BorderStroke(1.dp, highlightIndigo.copy(alpha = 0.5f)),
+                            RoundedCornerShape(8.dp)
+                          )
+                        } else {
+                          Modifier
+                        }
+                      )
+                      .padding(
+                        horizontal = if (isHighlightedLap) 8.dp else 2.dp,
+                        vertical = 3.dp
+                      ),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    Text(
+                      text = String.format(Locale.US, "#%02d", lap.lapNumber),
+                      style = MaterialTheme.typography.labelLarge.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                      ),
+                      color = if (isHighlightedLap) highlightIndigo else palette.textSecondary
+                    )
+                  }
+
+                  if (isFastest || isLatest) {
+                    Text(
+                      text = if (isFastest) "FASTEST" else "LATEST",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = highlightIndigo,
+                      maxLines = 1
+                    )
+                  }
                 }
+
+                // Center column: SPLIT
+                Text(
+                  text = "+${formatStopwatchMillis(lap.lapSplitMillis)}",
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = if (isHighlightedLap) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 13.sp
+                  ),
+                  color = if (isHighlightedLap) highlightIndigo else palette.textSecondary,
+                  textAlign = TextAlign.Center,
+                  modifier = Modifier.weight(1f)
+                )
+
+                // Right column: TOTAL
+                Text(
+                  text = formatStopwatchMillis(lap.totalElapsedMillis),
+                  style = MaterialTheme.typography.bodyLarge.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 14.sp
+                  ),
+                  color = palette.textPrimary,
+                  textAlign = TextAlign.End,
+                  modifier = Modifier.weight(1f)
+                )
+              }
+
+              if (index < reversedLaps.lastIndex) {
+                HorizontalDivider(
+                  thickness = 0.8.dp,
+                  color = palette.dividerColor.copy(alpha = 0.65f)
+                )
               }
             }
           }
