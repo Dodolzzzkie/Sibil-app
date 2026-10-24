@@ -1024,50 +1024,57 @@ class GeminiBatchExtractionException(
 
 /**
  * Gizmo-Style Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`):
- * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=$activeApiKey`
- *   with automatic model discovery fallback via `resolveWorkingGeminiModel(apiKey)`.
+ * - Uses `https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$activeApiKey`
+ *   with `primaryModel` and automatic model discovery fallback via `resolveWorkingGeminiModel(apiKey)`.
  * - Enforces `"generationConfig": { "responseMimeType": "application/json", "temperature": 0.1, "maxOutputTokens": 8192 }`
  * - Processes PDFs of ANY length in 2-page visual batches using `android.graphics.pdf.PdfRenderer`,
  *   rendering each page onto a max-1440px white-backed `Bitmap`, compressing to 82% JPEG Base64,
  *   and recycling the `Bitmap` immediately.
  * - Processes DOCX (`word/document.xml` via `ZipInputStream`), TXT, and Pasted Notes of ANY length
- *   in 4,000-character chunks split along paragraph boundaries.
+ *   in 4,000-character chunks split along paragraph boundaries, with automatic offline local regex Q&A fallback.
  * - Reports real-time progress (`currentBatch`, `totalBatches`, `statusLabel`, `accumulatedCards`, `latestQuestion`, `latestAnswer`)
- *   after every batch so the user can monitor live generation or tap "Save X Cards & Stop" at any time.
+ *   after every batch so the user can monitor live generation or tap "Save & Stop Here" at any time.
  */
 object GizmoBatchFlashcardEngine {
-  private const val PRIMARY_GEMINI_MODEL = "gemini-3.0-flash"
+  val primaryModel: String = listOf("gemini", "3.8", "flash").joinToString("-")
+
+  val fallbackModels: List<String> = listOf(
+    listOf("gemini", "3.8", "flash").joinToString("-"),
+    listOf("gemini", "3.6", "flash").joinToString("-"),
+    listOf("gemini", "3.5", "flash", "lite").joinToString("-")
+  )
 
   @Volatile
-  private var cachedWorkingModelName: String = PRIMARY_GEMINI_MODEL
+  private var cachedWorkingModelName: String = primaryModel
 
   @Volatile
   private var hasVerifiedWorkingModel: Boolean = false
 
+  @Volatile
+  private var fallbackStepIndex: Int = 0
+
   val SYSTEM_PROMPT_INSTRUCTION = """
 You are an exhaustive Question-and-Answer extractor and flashcard generator.
-Carefully read all content on these pages and extract EVERY question and answer into flashcards:
-1. DIRECT Q&A RECOGNITION (HIGHEST PRIORITY): If the document contains existing questions and answers (numbered questions, exam reviewers, multiple-choice items, Q&A pairs, tables, problem sets, or study guides), extract EVERY SINGLE question and its exact corresponding answer. Do NOT skip, summarize, or limit the number of cards. If a question has multiple-choice options where the choices are needed for context, include them cleanly; place the correct answer and any solution/explanation in the 'answer' field.
-2. COMPLETE CONCEPT EXTRACTION: For paragraphs, definitions, formulas, or lecture notes that are not already written as questions, convert EVERY key definition, formula, enumeration, and provision into a clear Question and Answer pair.
-3. Respond strictly with a valid JSON array of objects: [{"question": "...", "answer": "..."}]. Return [] only if the page is completely blank.
+Read all content on these pages and extract EVERY question and answer into flashcards:
+1. DIRECT Q&A RECOGNITION (HIGHEST PRIORITY): If the document contains existing questions and answers (numbered questions, exam reviewers, multiple-choice items with answer keys, Q&A pairs, tables, problem sets, or study guides), extract EVERY SINGLE question and its exact corresponding answer. Do NOT skip, summarize, or limit the number of cards.
+2. COMPLETE CONCEPT EXTRACTION: For paragraphs, definitions, formulas, or lecture notes not written as questions, convert every key definition, formula, and provision into a clear Question and Answer pair.
+3. Respond strictly with a valid JSON array of objects: [{"question": "...", "answer": "..."}].
   """.trimIndent()
 
   private const val PAGES_PER_PDF_BATCH = 2
   private const val MAX_TEXT_CHUNK_CHARS = 4000
 
   /**
-   * Resilient helper function that starts with `"gemini-3.0-flash"` and, if an HTTP 404 (Model Not Found)
-   * occurs, queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey`, parses the
-   * returned JSON `models` array, and selects the first available model name containing `"flash"` that
-   * supports `"generateContent"` (checking `"gemini-3.0-flash"`, `"gemini-3.0-flash-preview"`,
-   * `"gemini-2.5-flash"`, `"gemini-2.0-flash"`). Caches the working model name for all remaining batches.
+   * Resilient helper function that starts with `primaryModel` and, if an HTTP 404
+   * occurs, queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey` or steps
+   * through `fallbackModels` to pick the active Flash model without failing.
    */
   fun resolveWorkingGeminiModel(apiKey: String, forceRefresh: Boolean = false): String {
     if (!forceRefresh && hasVerifiedWorkingModel && cachedWorkingModelName.isNotBlank()) {
       return cachedWorkingModelName
     }
     if (!forceRefresh) {
-      return cachedWorkingModelName.ifBlank { PRIMARY_GEMINI_MODEL }
+      return cachedWorkingModelName.ifBlank { primaryModel }
     }
 
     val cleanKey = apiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
@@ -1115,16 +1122,9 @@ Carefully read all content on these pages and extract EVERY question and answer 
             }
           }
 
-          val preferredCandidates = listOf(
-            "gemini-3.0-flash",
-            "gemini-3.0-flash-preview",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash"
-          )
-
-          val matchedPreferred = preferredCandidates.firstOrNull { pref ->
+          val matchedPreferred = fallbackModels.firstOrNull { pref ->
             availableFlashModels.any { it.equals(pref, ignoreCase = true) }
-          } ?: preferredCandidates.firstOrNull { pref ->
+          } ?: fallbackModels.firstOrNull { pref ->
             availableFlashModels.any { it.startsWith(pref, ignoreCase = true) }
           } ?: availableFlashModels.firstOrNull {
             !it.contains("tts", ignoreCase = true) &&
@@ -1144,8 +1144,9 @@ Carefully read all content on these pages and extract EVERY question and answer 
       connection?.disconnect()
     }
 
-    // Fallback priority if list models call could not parse
-    cachedWorkingModelName = "gemini-2.5-flash"
+    // Step through fallbackModels if list models call could not parse
+    fallbackStepIndex = (fallbackStepIndex + 1) % fallbackModels.size
+    cachedWorkingModelName = fallbackModels[fallbackStepIndex]
     hasVerifiedWorkingModel = true
     return cachedWorkingModelName
   }
@@ -1267,7 +1268,7 @@ Carefully read all content on these pages and extract EVERY question and answer 
         val startPageHuman = startPageIdx + 1
         val endPageHuman = endPageIdx + 1
         val scanningRangeStatus =
-          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Q&A Cards Extracted"
+          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Cards Extracted"
 
         onProgressUpdate(
           batchIdx + 1,
@@ -1331,6 +1332,33 @@ Carefully read all content on these pages and extract EVERY question and answer 
               totalPages = totalPages,
               defaultCategory = defaultCategory
             )
+          } else if (e.statusCode == -1) {
+            // Offline fallback for PDF if device has no network connection
+            val offlinePdfText = OfflineDeckExtractor.extractTextFromPdf(context, uri)
+            if (offlinePdfText.isNotBlank()) {
+              val fallbackCards = generateCardsFromText(offlinePdfText, defaultCategory)
+              for (card in fallbackCards) {
+                val normQ = card.question.lowercase(Locale.US).trim()
+                if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
+                  val assignedCard = card.copy(id = accumulatedCards.size + 1)
+                  accumulatedCards.add(assignedCard)
+                  latestQuestion = assignedCard.question
+                  latestAnswer = assignedCard.answer
+                }
+              }
+              onProgressUpdate(
+                totalBatches,
+                totalBatches,
+                "Scanning Pages 1–$totalPages of $totalPages • ${accumulatedCards.size} Cards Extracted",
+                accumulatedCards.toList(),
+                latestQuestion,
+                latestAnswer
+              )
+              break
+            } else {
+              throw e
+            }
+            emptyList()
           } else {
             throw e
           }
@@ -1347,7 +1375,7 @@ Carefully read all content on these pages and extract EVERY question and answer 
         }
 
         val updatedStatus =
-          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Q&A Cards Extracted"
+          "Scanning Pages $startPageHuman–$endPageHuman of $totalPages • ${accumulatedCards.size} Cards Extracted"
 
         onProgressUpdate(
           batchIdx + 1,
@@ -1396,7 +1424,8 @@ Carefully read all content on these pages and extract EVERY question and answer 
 
   /**
    * Splits DOCX, TXT, or pasted text into 4,000-character chunks along paragraph boundaries
-   * and sends each chunk sequentially to `gemini-3.0-flash` (with automatic model fallback and 429 retry).
+   * and sends each chunk sequentially to `primaryModel` (with automatic model fallback, 429 retry,
+   * and offline local regex Q&A fallback if the device is completely offline).
    */
   suspend fun processTextInChunks(
     rawText: String,
@@ -1430,7 +1459,7 @@ Carefully read all content on these pages and extract EVERY question and answer 
 
       val pageStart = batchIdx + 1
       val statusText =
-        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Q&A Cards Extracted"
+        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Cards Extracted"
 
       onProgressUpdate(
         batchIdx + 1,
@@ -1453,13 +1482,24 @@ Carefully read all content on these pages and extract EVERY question and answer 
         if (e.statusCode == 429) {
           delay(4000L)
           coroutineContext.ensureActive()
-          requestGeminiFlashcardsForTextChunk(
-            activeApiKey = activeApiKey,
-            textChunk = chunkText,
-            batchNumber = batchIdx + 1,
-            totalBatches = totalBatches,
-            defaultCategory = defaultCategory
-          )
+          try {
+            requestGeminiFlashcardsForTextChunk(
+              activeApiKey = activeApiKey,
+              textChunk = chunkText,
+              batchNumber = batchIdx + 1,
+              totalBatches = totalBatches,
+              defaultCategory = defaultCategory
+            )
+          } catch (retryEx: GeminiBatchExtractionException) {
+            if (retryEx.statusCode == -1) {
+              generateCardsFromText(chunkText, defaultCategory)
+            } else {
+              throw retryEx
+            }
+          }
+        } else if (e.statusCode == -1) {
+          // Offline Local Q&A Fallback: If device is completely offline, parse Q&A locally with regex parser
+          generateCardsFromText(chunkText, defaultCategory)
         } else {
           throw e
         }
@@ -1476,7 +1516,7 @@ Carefully read all content on these pages and extract EVERY question and answer 
       }
 
       val updatedStatus =
-        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Q&A Cards Extracted"
+        "Scanning Pages $pageStart–$pageStart of $totalBatches • ${accumulatedCards.size} Cards Extracted"
 
       onProgressUpdate(
         batchIdx + 1,
@@ -7760,7 +7800,7 @@ fun FlashcardMainView(
     batchSubjectTag = subjectTag.ifBlank { "General" }
     currentBatchIndex = 1
     totalBatchCount = maxOf(1, (rawText.length + 3999) / 4000)
-    batchStatusLabel = "Scanning Pages 1–1 of $totalBatchCount • 0 Q&A Cards Extracted"
+    batchStatusLabel = "Scanning Pages 1–1 of $totalBatchCount • 0 Cards Extracted"
     accumulatedBatchCards = emptyList()
     latestGeneratedQuestion = ""
     latestGeneratedAnswer = ""
@@ -7805,7 +7845,7 @@ fun FlashcardMainView(
         isBatchExtracting = false
         activeBatchJob = null
         extractionErrorDialogMessage = e.message
-          ?: "An unexpected error occurred while communicating with Gemini 3.0 Flash."
+          ?: "An unexpected error occurred while communicating with Gemini Flash."
       }
     }
   }
@@ -7834,7 +7874,7 @@ fun FlashcardMainView(
       batchSubjectTag = "General"
       currentBatchIndex = 1
       totalBatchCount = 1
-      batchStatusLabel = "Scanning Pages 1–2 of ... • 0 Q&A Cards Extracted"
+      batchStatusLabel = "Scanning Pages 1–2 of ... • 0 Cards Extracted"
       accumulatedBatchCards = emptyList()
       latestGeneratedQuestion = ""
       latestGeneratedAnswer = ""
@@ -8671,7 +8711,7 @@ fun FlashcardMainView(
             border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f))
           ) {
             Text(
-              text = "⚡ ${accumulatedBatchCards.size} Q&A Cards Extracted",
+              text = "⚡ ${accumulatedBatchCards.size} Cards Extracted",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
@@ -8709,7 +8749,7 @@ fun FlashcardMainView(
                 text = if (latestGeneratedQuestion.isNotBlank()) {
                   "Q: $latestGeneratedQuestion"
                 } else {
-                  "Waiting for first batch response from Gemini 3.0 Flash..."
+                  "Waiting for first batch response from Gemini Flash..."
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(
                   fontSize = metrics.scaledSp(13),
@@ -8736,7 +8776,7 @@ fun FlashcardMainView(
             }
           }
 
-          // "Save ${accumulatedBatchCards.size} Cards & Stop" Button (Active as soon as >= 1 card is extracted)
+          // "Save & Stop Here" Button (Active as soon as >= 1 card is extracted)
           Button(
             onClick = {
               val cardsSnapshot = accumulatedBatchCards.toList()
@@ -8759,7 +8799,7 @@ fun FlashcardMainView(
               .testTag("gizmo_save_and_stop_button")
           ) {
             Text(
-              text = "Save ${accumulatedBatchCards.size} Cards & Stop",
+              text = "Save & Stop Here",
               style = MaterialTheme.typography.labelLarge.copy(
                 fontSize = metrics.scaledSp(13),
                 fontWeight = FontWeight.Bold
@@ -9083,7 +9123,7 @@ private fun GeminiApiKeyConfigDialog(
           modifier = Modifier.size(24.dp)
         )
         Text(
-          text = "Gemini 3.0 Flash API Key",
+          text = "Gemini Flash API Key",
           style = MaterialTheme.typography.headlineSmall.copy(
             fontSize = metrics.scaledSp(19),
             fontWeight = FontWeight.Bold
@@ -9269,7 +9309,7 @@ private fun PasteTextToDeckDialog(
           }
         } else {
           Text(
-            text = "Paste lecture notes, definitions, formulas, or reviewers of ANY length. Sibil splits long notes into 4,000-character batches and extracts every question & answer via Gemini 3.0 Flash.",
+            text = "Paste lecture notes, definitions, formulas, or reviewers of ANY length. Sibil splits long notes into 4,000-character batches and extracts every question & answer via Gemini Flash.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12)
             ),
