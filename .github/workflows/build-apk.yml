@@ -161,23 +161,20 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Prepare APK release assets
+      - name: Prepare APK release asset
         id: prepare_asset
         run: |
           set -e
           RELEASE_DIR=$(mktemp -d)
           RELEASE_APK_PATH="${RELEASE_DIR}/app-debug.apk"
-          PUBLIC_APK_PATH="${RELEASE_DIR}/sibil-app.apk"
           cp "app/build/outputs/apk/debug/app-debug.apk" "${RELEASE_APK_PATH}"
-          cp "app/build/outputs/apk/debug/app-debug.apk" "${PUBLIC_APK_PATH}"
-          if [ ! -s "${RELEASE_APK_PATH}" ] || [ ! -s "${PUBLIC_APK_PATH}" ]; then
-            echo "ERROR: Prepared release assets are missing or empty in ${RELEASE_DIR}" >&2
+          if [ ! -s "${RELEASE_APK_PATH}" ]; then
+            echo "ERROR: Prepared release asset is missing or empty at ${RELEASE_APK_PATH}" >&2
             exit 1
           fi
           echo "release_apk_path=${RELEASE_APK_PATH}" >> "${GITHUB_OUTPUT}"
-          echo "public_apk_path=${PUBLIC_APK_PATH}" >> "${GITHUB_OUTPUT}"
 
-      - name: Publish Sibil Public Release to GitHub Releases
+      - name: Publish APK to GitHub Releases
         id: publish_release
         continue-on-error: true
         env:
@@ -186,43 +183,38 @@ jobs:
           set -e
           gh --version
           PREPARED_APK="${{ steps.prepare_asset.outputs.release_apk_path }}"
-          PUBLIC_APK="${{ steps.prepare_asset.outputs.public_apk_path }}"
           if [ ! -f "${PREPARED_APK}" ] || [ ! -s "${PREPARED_APK}" ] || [ "$(basename "${PREPARED_APK}")" != "app-debug.apk" ]; then
             echo "ERROR: Prepared APK is invalid or not named app-debug.apk: ${PREPARED_APK}" >&2
             exit 1
           fi
 
-          RELEASE_TAG="v1.0.${{ github.run_number }}"
-          RELEASE_TITLE="Sibil v1.0.0 Public Release (Build #${{ github.run_number }})"
-          VERSION_CODE=$((100 + ${{ github.run_number }}))
-          VERSION_NAME="1.0.${{ github.run_number }}"
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER} (v1.0.${GITHUB_RUN_NUMBER})"
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
 
-          RELEASE_NOTES="### Sibil — Academic Productivity & CE Suite
-          Official public build generated via GitHub Actions.
-          Version: 1.0.${{ github.run_number }} (Build Code: ${{ 100 + github.run_number }})
-          Includes persistent signing for seamless in-place updates without data loss."
+          RELEASE_NOTES="Automatically generated debug APK built by GitHub Actions.
+          - Version Name: ${VERSION_NAME} (Version Code: ${VERSION_CODE})
+          - Signed with the repository's persistent debug keystore so it installs directly as an update over previous builds without losing app data.
+          - GitHub Actions Run Number: ${GITHUB_RUN_NUMBER} (Attempt: ${GITHUB_RUN_ATTEMPT})
+          - Source Commit SHA: ${GITHUB_SHA}"
 
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" "${PREPARED_APK}" "${PUBLIC_APK}" --clobber
-          else
-            gh release create "${RELEASE_TAG}" "${PREPARED_APK}" "${PUBLIC_APK}" \
-              --title "${RELEASE_TITLE}" \
-              --notes "${RELEASE_NOTES}" \
-              --target "${GITHUB_SHA}" \
-              --latest
-          fi
+          gh release create "${RELEASE_TAG}" "${PREPARED_APK}" \
+            --title "${RELEASE_TITLE}" \
+            --notes "${RELEASE_NOTES}" \
+            --target "${GITHUB_SHA}" \
+            --latest
 
       - name: Report APK download result
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_TAG="v1.0.${{ github.run_number }}"
-          RELEASE_TITLE="Sibil v1.0.0 Public Release (Build #${{ github.run_number }})"
-          VERSION_CODE=$((100 + ${{ github.run_number }}))
-          VERSION_NAME="1.0.${{ github.run_number }}"
+          RELEASE_TAG="debug-apk-build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_TITLE="Debug APK Build #${GITHUB_RUN_NUMBER} (v1.0.${GITHUB_RUN_NUMBER})"
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+          VERSION_NAME="1.0.${GITHUB_RUN_NUMBER}"
           DIRECT_APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/app-debug.apk"
-          PUBLIC_APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/sibil-app.apk"
 
           if [ "${{ steps.publish_release.outcome }}" = "success" ]; then
             gh release view "${RELEASE_TAG}"
@@ -230,18 +222,17 @@ jobs:
             echo "Release Tag: ${RELEASE_TAG}"
             echo "Release Title: ${RELEASE_TITLE}"
             echo "Release Page URL: ${RELEASE_PAGE_URL}"
-            echo "APK Filenames: app-debug.apk, sibil-app.apk"
+            echo "APK Filename: app-debug.apk"
             echo "DIRECT APK DOWNLOAD: ${DIRECT_APK_URL}"
-            echo "PUBLIC APK DOWNLOAD: ${PUBLIC_APK_URL}"
+            echo "Note: The normal Actions artifact 'app-debug-apk' remains available as a backup."
 
             {
-              echo "### Sibil — Academic Productivity & CE Suite"
-              echo "Official public build generated via GitHub Actions."
-              echo "- **Direct Download URL (app-debug.apk):** ${DIRECT_APK_URL}"
-              echo "- **Public Download URL (sibil-app.apk):** ${PUBLIC_APK_URL}"
-              echo "- **Version:** ${VERSION_NAME} (Build Code: ${VERSION_CODE})"
+              echo "### DIRECT APK DOWNLOAD"
+              echo "- **Direct Download URL:** ${DIRECT_APK_URL}"
+              echo "- **Version Name:** ${VERSION_NAME}"
+              echo "- **Version Code:** ${VERSION_CODE}"
               echo "- **Release Tag:** ${RELEASE_TAG}"
-              echo "- Includes persistent signing for seamless in-place updates without data loss."
+              echo "- **Backup Artifact:** The normal GitHub Actions artifact \`app-debug-apk\` remains available as a backup."
             } >> "${GITHUB_STEP_SUMMARY}"
           else
             echo "WARNING: GitHub Release publishing failed, but the APK build succeeded and the 'app-debug-apk' Actions artifact remains available."
