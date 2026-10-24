@@ -1024,10 +1024,10 @@ class GeminiBatchExtractionException(
 
 /**
  * Online Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`) based on `kiendoantrung/gemini-flashcards`:
- * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$activeApiKey`
- *   with automatic fallback to `gemini-3.0-flash` or `gemini-3.5-flash-lite` if an HTTP 404 is encountered.
+ * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$activeApiKey`
+ *   with automatic model discovery fallback if an HTTP 404 is encountered.
  * - Enforces Structured Outputs via `responseSchema` inside `generationConfig` (`responseMimeType = "application/json"`,
- *   `temperature = 0.2`) so Gemini is guaranteed to return clean `question` and `answer` objects.
+ *   `temperature = 0.1`, `maxOutputTokens = 8192`) so Gemini is guaranteed to return clean `question` and `answer` objects.
  * - Processes PDFs of ANY length in 2-page visual batches using `android.graphics.pdf.PdfRenderer`,
  *   rendering each page onto a max-1280px high-contrast white `Bitmap`, compressing to 80% JPEG Base64,
  *   and recycling the `Bitmap` immediately.
@@ -1044,12 +1044,14 @@ object GizmoBatchFlashcardEngine {
   const val OFFLINE_ERROR_MESSAGE =
     "Internet connection required to analyze documents with Gemini AI."
 
-  val primaryModel: String = "gemini-2.5-flash"
+  val primaryModel: String = "gemini-3.8-flash"
 
   val fallbackModels: List<String> = listOf(
-    "gemini-2.5-flash",
-    "gemini-3.0-flash",
-    "gemini-3.5-flash-lite"
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest"
   )
 
   @Volatile
@@ -1065,8 +1067,8 @@ object GizmoBatchFlashcardEngine {
 You are an expert academic flashcard generator for university students and board exam examinees.
 Analyze the provided document material and generate high-yield, comprehensive active-recall flashcards.
 GUIDELINES:
-1. ACCURACY FIRST: Never hallucinate, invent abbreviations, or output garbled characters. Use clean, readable language and standard technical terms.
-2. EXISTING QUESTIONS & ANSWERS: If the document contains existing review questions, multiple choice items, quizzes, or problem sets, extract EVERY question and its correct answer verbatim.
+1. ACCURACY FIRST: Never hallucinate or invent garbled characters. Use clean, readable language and standard technical terms.
+2. EXISTING QUESTIONS & ANSWERS: If the document contains review questions, multiple choice items, quizzes, or problem sets, extract EVERY question and its correct answer verbatim.
 3. KEY CONCEPTS & DEFINITIONS: For lecture notes or textbook chapters, turn every key term, formula (with variable definitions), and engineering provision into a clear Question and Answer pair.
 4. FORMATTING: Front of the card must be a self-contained Question. Back of the card must be the direct Answer with any necessary explanation.
   """.trimIndent()
@@ -1075,18 +1077,10 @@ GUIDELINES:
   private const val MAX_TEXT_CHUNK_CHARS = 4000
 
   /**
-   * Resilient helper function that starts with `gemini-2.5-flash` and, if an HTTP 404
-   * occurs, steps through `gemini-3.0-flash` / `gemini-3.5-flash-lite` or queries
-   * `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey` to select an active Flash model.
+   * Queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey` to discover
+   * available Flash models that support `generateContent`, ordered from newest/preferred to oldest.
    */
-  fun resolveWorkingGeminiModel(apiKey: String, forceRefresh: Boolean = false): String {
-    if (!forceRefresh && hasVerifiedWorkingModel && cachedWorkingModelName.isNotBlank()) {
-      return cachedWorkingModelName
-    }
-    if (!forceRefresh) {
-      return cachedWorkingModelName.ifBlank { primaryModel }
-    }
-
+  private fun discoverAvailableFlashModels(apiKey: String): List<String> {
     val cleanKey = apiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
     val modelsUrl = "https://generativelanguage.googleapis.com/v1beta/models?key=$cleanKey"
     var connection: HttpURLConnection? = null
@@ -1132,31 +1126,57 @@ GUIDELINES:
             }
           }
 
-          val matchedPreferred = fallbackModels.firstOrNull { pref ->
-            availableFlashModels.any { it.equals(pref, ignoreCase = true) }
-          } ?: fallbackModels.firstOrNull { pref ->
-            availableFlashModels.any { it.startsWith(pref, ignoreCase = true) }
-          } ?: availableFlashModels.firstOrNull {
+          val textCapableFlash = availableFlashModels.filter {
             !it.contains("tts", ignoreCase = true) &&
               !it.contains("image", ignoreCase = true) &&
               !it.contains("audio", ignoreCase = true)
-          } ?: availableFlashModels.firstOrNull()
-
-          if (!matchedPreferred.isNullOrBlank()) {
-            cachedWorkingModelName = matchedPreferred
-            hasVerifiedWorkingModel = true
-            return cachedWorkingModelName
           }
+
+          val orderedCandidates = mutableListOf<String>()
+          for (pref in fallbackModels) {
+            textCapableFlash.firstOrNull { it.equals(pref, ignoreCase = true) }?.let {
+              if (!orderedCandidates.contains(it)) orderedCandidates.add(it)
+            }
+          }
+          // Add newest models first (v1beta/models lists newer models toward the end)
+          for (candidate in textCapableFlash.asReversed()) {
+            if (!orderedCandidates.contains(candidate)) {
+              orderedCandidates.add(candidate)
+            }
+          }
+          return orderedCandidates
         }
       }
     } catch (_: Exception) {
     } finally {
       connection?.disconnect()
     }
+    return fallbackModels
+  }
+
+  /**
+   * Resilient helper function that starts with `gemini-3.8-flash` and, if an HTTP 404
+   * occurs, queries `https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey`
+   * to select an active Flash model.
+   */
+  fun resolveWorkingGeminiModel(apiKey: String, forceRefresh: Boolean = false): String {
+    if (!forceRefresh && hasVerifiedWorkingModel && cachedWorkingModelName.isNotBlank()) {
+      return cachedWorkingModelName
+    }
+    if (!forceRefresh) {
+      return cachedWorkingModelName.ifBlank { primaryModel }
+    }
+
+    val discovered = discoverAvailableFlashModels(apiKey)
+    val nextCandidate = discovered.firstOrNull { !it.equals(cachedWorkingModelName, ignoreCase = true) }
+      ?: discovered.firstOrNull()
+    if (!nextCandidate.isNullOrBlank()) {
+      cachedWorkingModelName = nextCandidate
+      return cachedWorkingModelName
+    }
 
     fallbackStepIndex = (fallbackStepIndex + 1) % fallbackModels.size
     cachedWorkingModelName = fallbackModels[fallbackStepIndex]
-    hasVerifiedWorkingModel = true
     return cachedWorkingModelName
   }
 
@@ -1744,16 +1764,22 @@ GUIDELINES:
         "generationConfig",
         JSONObject().apply {
           put("responseMimeType", "application/json")
-          put("temperature", 0.2)
+          put("temperature", 0.1)
+          put("maxOutputTokens", 8192)
           put("responseSchema", responseSchemaJson)
         }
       )
     }.toString()
 
     val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
+    val primaryEndpointUrl =
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$cleanKey"
     val activeModel = resolveWorkingGeminiModel(cleanKey, forceRefresh = false)
-    val endpointUrl =
+    val endpointUrl = if (activeModel == primaryModel) {
+      primaryEndpointUrl
+    } else {
       "https://generativelanguage.googleapis.com/v1beta/models/$activeModel:generateContent?key=$cleanKey"
+    }
     var connection: HttpURLConnection? = null
 
     try {
@@ -1793,14 +1819,24 @@ GUIDELINES:
         if (isModelNotFound && allowModelDiscoveryFallback) {
           connection.disconnect()
           connection = null
-          val fallbackModel = resolveWorkingGeminiModel(cleanKey, forceRefresh = true)
-          if (fallbackModel.isNotBlank()) {
-            return executeGeminiGenerateContentCall(
-              activeApiKey = cleanKey,
-              partsArray = partsArray,
-              defaultCategory = defaultCategory,
-              allowModelDiscoveryFallback = false
-            )
+          val candidates = discoverAvailableFlashModels(cleanKey)
+          for (candidateModel in candidates) {
+            if (candidateModel.equals(activeModel, ignoreCase = true)) continue
+            cachedWorkingModelName = candidateModel
+            try {
+              val result = executeGeminiGenerateContentCall(
+                activeApiKey = cleanKey,
+                partsArray = partsArray,
+                defaultCategory = defaultCategory,
+                allowModelDiscoveryFallback = false
+              )
+              hasVerifiedWorkingModel = true
+              return result
+            } catch (retryEx: GeminiBatchExtractionException) {
+              if (retryEx.statusCode != 404 && retryEx.statusCode != 400) {
+                throw retryEx
+              }
+            }
           }
         }
 
