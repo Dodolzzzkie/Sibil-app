@@ -44,20 +44,29 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
 import android.location.LocationManager
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
+import android.view.SoundEffectConstants
+import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -65,6 +74,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -73,6 +84,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -146,6 +161,8 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RequestQuote
 import androidx.compose.material.icons.filled.Schedule
@@ -201,8 +218,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -230,6 +249,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -260,11 +280,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
 import com.example.ui.theme.JetBrainsMonoFamily
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Shape
 import com.example.ui.theme.Typography
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
 import java.net.URL
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -276,23 +306,555 @@ import java.util.Locale
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 import java.util.zip.ZipInputStream
+import kotlin.coroutines.coroutineContext
+import kotlin.math.PI
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
+import kotlin.math.tan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+// Gizmo-style Multi-Batch AI Flashcard Generator & Sibil Release Configuration
+private const val DEFAULT_GEMINI_API_KEY = "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew"
 const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.1 (Build 2)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
 private const val DEFAULT_FALLBACK_LONGITUDE = 124.03
 
-private val CreamCardColor = Color(0xFFFFFBF0)
-private val IvoryInnerCardColor = Color(0xFFFDFBF7)
-private val WarmCreamTrackColor = Color(0xFFE6DFCF)
+// ============================================================================
+// 1. UNIFIED LIQUID GLASS THEME ENGINE (LIGHT & DARK MODE PARITY)
+// ============================================================================
+private val LiquidFrostedPearl = Color(0xFFDCE4F2)
+private val LiquidWarmIvory = Color(0xFFE6ECFA)
+private val LiquidSoftPeriwinkle = Color(0xFFEAE6F8)
+private val LiquidLavenderMist = Color(0xFFEDE9F8)
+
+private val LiquidCyanGlow = Color(0xFF06B6D4)
+private val LiquidRoyalPeriwinkle = Color(0xFF6366F1)
+private val LiquidDeepIndigo = Color(0xFF4F46E5)
+private val LiquidIndigoCore = Color(0xFF4338CA)
+private val LiquidElectricViolet = Color(0xFF7C3AED)
+private val LiquidInactiveCharcoal = Color(0xFF475569)
+
+// Legacy fallback tokens kept for static non-composable references
+private val CreamCardColor = Color.White.copy(alpha = 0.66f)
+private val IvoryInnerCardColor = Color(0xFFEEF2FF).copy(alpha = 0.75f)
+private val WarmCreamTrackColor = Color(0xFFCBD5E1).copy(alpha = 0.75f)
+
+private val LiquidOrbBrush: Brush = Brush.linearGradient(
+  colors = listOf(
+    LiquidRoyalPeriwinkle,
+    LiquidDeepIndigo,
+    LiquidIndigoCore
+  )
+)
+
+private val LiquidCyanVioletGradient: Brush = Brush.linearGradient(
+  colors = listOf(
+    LiquidCyanGlow,
+    LiquidRoyalPeriwinkle,
+    LiquidElectricViolet
+  )
+)
+
+private val LiquidVioletChipGradient: Brush = Brush.horizontalGradient(
+  colors = listOf(
+    LiquidRoyalPeriwinkle,
+    LiquidElectricViolet
+  )
+)
+
+/**
+ * Centralized theme token data class `GlassPalette` provided via `CompositionLocalProvider`
+ * so NO screen ever uses hardcoded white/black colors that break across Light and Dark modes.
+ */
+data class GlassPalette(
+  val isDark: Boolean,
+  val canvasColors: List<Color>,
+  val cardFill: Color,
+  val cardTopSheen: Color,
+  val cardBottomSheen: Color,
+  val nestedCardFill: Color,
+  val nestedBorderColor: Color,
+  val glassBorderBrush: Brush,
+  val glassBorderWidth: Dp,
+  val dockFill: Color,
+  val dockBorderColor: Color,
+  val textPrimary: Color,
+  val textSecondary: Color,
+  val trackColor: Color,
+  val accentIndigo: Color,
+  val accentRed: Color,
+  val dialogSurface: Color,
+  val shadowAmbient: Color,
+  val shadowSpot: Color,
+  val stackTopFill: Color,
+  val stackMidFill: Color,
+  val stackMidBorder: Color,
+  val stackBottomFill: Color,
+  val checkboxUncheckedFill: Color,
+  val checkboxUncheckedBorder: Color
+) {
+  val glassBorder: BorderStroke
+    get() = BorderStroke(glassBorderWidth, glassBorderBrush)
+
+  val nestedBorder: BorderStroke
+    get() = BorderStroke(1.dp, nestedBorderColor)
+
+  val cardBorder: Color
+    get() = nestedBorderColor
+
+  val nestedCardBorder: Color
+    get() = nestedBorderColor
+
+  val dividerColor: Color
+    get() = nestedBorderColor
+
+  val chipUnselectedFill: Color
+    get() = nestedCardFill
+
+  val chipUnselectedBorder: Color
+    get() = nestedBorderColor
+
+  val textMuted: Color
+    get() = textSecondary.copy(alpha = 0.8f)
+
+  val inputFill: Color
+    get() = nestedCardFill
+
+  val inputUnfocusedBorder: Color
+    get() = nestedBorderColor
+
+  val progressTrack: Color
+    get() = trackColor
+
+  val cardAmbientShadow: Color
+    get() = shadowAmbient
+
+  val cardSpotShadow: Color
+    get() = shadowSpot
+}
+
+val DarkGlassPalette = GlassPalette(
+  isDark = true,
+  canvasColors = listOf(
+    Color(0xFF070B19),
+    Color(0xFF0F172A),
+    Color(0xFF1E1B4B),
+    Color(0xFF070B19)
+  ),
+  cardFill = Color(0xFF0F172A).copy(alpha = 0.72f),
+  cardTopSheen = Color(0xFF1E293B).copy(alpha = 0.78f),
+  cardBottomSheen = Color(0xFF0F172A).copy(alpha = 0.82f),
+  nestedCardFill = Color(0xFF1E293B).copy(alpha = 0.65f),
+  nestedBorderColor = Color.White.copy(alpha = 0.16f),
+  glassBorderBrush = Brush.linearGradient(
+    colors = listOf(
+      Color.White.copy(alpha = 0.28f),
+      Color(0xFF818CF8).copy(alpha = 0.15f),
+      Color.White.copy(alpha = 0.06f)
+    )
+  ),
+  glassBorderWidth = 1.2.dp,
+  dockFill = Color(0xFF0F172A).copy(alpha = 0.82f),
+  dockBorderColor = Color.White.copy(alpha = 0.22f),
+  textPrimary = Color(0xFFF8FAFC),
+  textSecondary = Color(0xFF94A3B8),
+  trackColor = Color(0xFF334155).copy(alpha = 0.7f),
+  accentIndigo = Color(0xFF818CF8),
+  accentRed = Color(0xFFF87171).copy(alpha = 0.85f),
+  dialogSurface = Color(0xFF0F172A),
+  shadowAmbient = Color(0x40000000),
+  shadowSpot = Color(0x38312E81),
+  stackTopFill = Color(0xFF111827).copy(alpha = 0.84f),
+  stackMidFill = Color(0xFF1E293B).copy(alpha = 0.65f),
+  stackMidBorder = Color.White.copy(alpha = 0.14f),
+  stackBottomFill = Color(0xFF334155).copy(alpha = 0.45f),
+  checkboxUncheckedFill = Color(0xFF1E293B),
+  checkboxUncheckedBorder = Color(0xFF818CF8)
+)
+
+val LightGlassPalette = GlassPalette(
+  isDark = false,
+  canvasColors = listOf(
+    Color(0xFFDCE4F2),
+    Color(0xFFE6ECFA),
+    Color(0xFFEAE6F8),
+    Color(0xFFDCE4F2)
+  ),
+  cardFill = Color.White.copy(alpha = 0.66f),
+  cardTopSheen = Color.White.copy(alpha = 0.86f),
+  cardBottomSheen = Color(0xFFF8FAFC).copy(alpha = 0.62f),
+  nestedCardFill = Color(0xFFEEF2FF).copy(alpha = 0.75f),
+  nestedBorderColor = Color(0xFFCBD5E1),
+  glassBorderBrush = Brush.linearGradient(
+    colors = listOf(
+      Color.White,
+      Color(0xFFCBD5E1),
+      Color(0xFF94A3B8).copy(alpha = 0.65f)
+    )
+  ),
+  glassBorderWidth = 1.3.dp,
+  dockFill = Color.White.copy(alpha = 0.78f),
+  dockBorderColor = Color(0xFFCBD5E1),
+  textPrimary = Color(0xFF0F172A),
+  textSecondary = Color(0xFF475569),
+  trackColor = Color(0xFFCBD5E1).copy(alpha = 0.75f),
+  accentIndigo = Color(0xFF4F46E5),
+  accentRed = Color(0xFFEF4444),
+  dialogSurface = Color(0xFFF8FAFC),
+  shadowAmbient = Color(0x1F0F172A),
+  shadowSpot = Color(0x283730A3),
+  stackTopFill = Color.White.copy(alpha = 0.82f),
+  stackMidFill = Color(0xFFE2E8F0).copy(alpha = 0.85f),
+  stackMidBorder = Color(0xFFCBD5E1),
+  stackBottomFill = Color(0xFFCBD5E1).copy(alpha = 0.70f),
+  checkboxUncheckedFill = Color.White.copy(alpha = 0.85f),
+  checkboxUncheckedBorder = Color(0xFF6366F1)
+)
+
+val LocalGlassPalette = compositionLocalOf { LightGlassPalette }
+
+@Composable
+fun currentGlassPalette(): GlassPalette {
+  val local = LocalGlassPalette.current
+  val isThemeDark = MaterialTheme.colorScheme.background.red < 0.5f
+  return if (local.isDark == isThemeDark) {
+    local
+  } else if (isThemeDark) {
+    DarkGlassPalette
+  } else {
+    LightGlassPalette
+  }
+}
+
+@Composable
+fun rememberAnimatedGlassPalette(isDark: Boolean): GlassPalette {
+  val target = if (isDark) DarkGlassPalette else LightGlassPalette
+  val cardFill by animateColorAsState(target.cardFill, tween(300), label = "glass_card_fill")
+  val cardTopSheen by animateColorAsState(target.cardTopSheen, tween(300), label = "glass_top_sheen")
+  val cardBottomSheen by animateColorAsState(target.cardBottomSheen, tween(300), label = "glass_bottom_sheen")
+  val nestedCardFill by animateColorAsState(target.nestedCardFill, tween(300), label = "glass_nested_fill")
+  val nestedBorderColor by animateColorAsState(target.nestedBorderColor, tween(300), label = "glass_nested_border")
+  val dockFill by animateColorAsState(target.dockFill, tween(300), label = "glass_dock_fill")
+  val dockBorderColor by animateColorAsState(target.dockBorderColor, tween(300), label = "glass_dock_border")
+  val textPrimary by animateColorAsState(target.textPrimary, tween(300), label = "glass_text_primary")
+  val textSecondary by animateColorAsState(target.textSecondary, tween(300), label = "glass_text_secondary")
+  val trackColor by animateColorAsState(target.trackColor, tween(300), label = "glass_track_color")
+  val accentIndigo by animateColorAsState(target.accentIndigo, tween(300), label = "glass_accent_indigo")
+  val accentRed by animateColorAsState(target.accentRed, tween(300), label = "glass_accent_red")
+  val dialogSurface by animateColorAsState(target.dialogSurface, tween(300), label = "glass_dialog_surface")
+  val stackTopFill by animateColorAsState(target.stackTopFill, tween(300), label = "glass_stack_top")
+  val stackMidFill by animateColorAsState(target.stackMidFill, tween(300), label = "glass_stack_mid")
+  val stackMidBorder by animateColorAsState(target.stackMidBorder, tween(300), label = "glass_stack_mid_border")
+  val stackBottomFill by animateColorAsState(target.stackBottomFill, tween(300), label = "glass_stack_bottom")
+
+  return target.copy(
+    cardFill = cardFill,
+    cardTopSheen = cardTopSheen,
+    cardBottomSheen = cardBottomSheen,
+    nestedCardFill = nestedCardFill,
+    nestedBorderColor = nestedBorderColor,
+    dockFill = dockFill,
+    dockBorderColor = dockBorderColor,
+    textPrimary = textPrimary,
+    textSecondary = textSecondary,
+    trackColor = trackColor,
+    accentIndigo = accentIndigo,
+    accentRed = accentRed,
+    dialogSurface = dialogSurface,
+    stackTopFill = stackTopFill,
+    stackMidFill = stackMidFill,
+    stackMidBorder = stackMidBorder,
+    stackBottomFill = stackBottomFill
+  )
+}
+
+@Composable
+fun sibilOutlinedTextFieldColors() = OutlinedTextFieldDefaults.colors(
+  focusedTextColor = currentGlassPalette().textPrimary,
+  unfocusedTextColor = currentGlassPalette().textPrimary,
+  focusedLabelColor = currentGlassPalette().accentIndigo,
+  unfocusedLabelColor = currentGlassPalette().textSecondary,
+  focusedPlaceholderColor = currentGlassPalette().textSecondary.copy(alpha = 0.75f),
+  unfocusedPlaceholderColor = currentGlassPalette().textSecondary.copy(alpha = 0.75f),
+  focusedBorderColor = currentGlassPalette().accentIndigo,
+  unfocusedBorderColor = currentGlassPalette().nestedBorderColor,
+  cursorColor = currentGlassPalette().accentIndigo,
+  focusedContainerColor = currentGlassPalette().nestedCardFill,
+  unfocusedContainerColor = currentGlassPalette().nestedCardFill
+)
+
+@Composable
+fun isLiquidLightMode(): Boolean {
+  return !currentGlassPalette().isDark
+}
+
+@Composable
+fun liquidGlassFillColor(alpha: Float = 0.66f): Color {
+  val palette = currentGlassPalette()
+  return if (!palette.isDark) {
+    Color.White.copy(alpha = alpha)
+  } else {
+    palette.cardFill
+  }
+}
+
+@Composable
+fun liquidGlassInnerPodColor(alpha: Float = 0.75f): Color {
+  val palette = currentGlassPalette()
+  return if (!palette.isDark) {
+    palette.nestedCardFill.copy(alpha = alpha.coerceIn(0.65f, 0.90f))
+  } else {
+    palette.nestedCardFill
+  }
+}
+
+@Composable
+fun liquidGlassSpecularBorder(
+  width: Dp = 1.3.dp,
+  topAlpha: Float = 0.95f,
+  midAlpha: Float = 0.45f,
+  bottomTint: Color = Color(0xFF94A3B8).copy(alpha = 0.65f)
+): BorderStroke {
+  val palette = currentGlassPalette()
+  return BorderStroke(
+    width = width,
+    brush = palette.glassBorderBrush
+  )
+}
+
+/**
+ * Ambient, multi-stop Fluid Background Mesh canvas on the root Scaffold:
+ * - Light Mode: Rich architectural daylight mesh (`#DCE4F2` -> `#E6ECFA` -> `#EAE6F8`) with visible
+ *   diffused ambient color orbs (Periwinkle `#6366F1` at 16% alpha, Sky Cyan `#0EA5E9` at 14% alpha,
+ *   Soft Violet `#A855F7` at 12% alpha) so frosted white glass cards immediately pop with 3D depth.
+ * - Dark Mode: Deep midnight/obsidian mesh (`#070B19` -> `#0F172A` -> `#1E1B4B`) with soft ambient
+ *   glowing orbs of indigo (`#4F46E5` at 18% alpha) and cyan (`#06B6D4` at 12% alpha).
+ */
+@Composable
+fun LiquidGlassBackgroundMesh(
+  modifier: Modifier = Modifier,
+  content: @Composable BoxScope.() -> Unit
+) {
+  val palette = currentGlassPalette()
+  val meshBrush = Brush.linearGradient(
+    colors = palette.canvasColors,
+    start = Offset(0f, 0f),
+    end = Offset(1400f, 2400f)
+  )
+
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(brush = meshBrush)
+  ) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+      val w = size.width
+      val h = size.height
+
+      if (!palette.isDark) {
+        // Light Mode Orb 1: Periwinkle (#6366F1 at 16% alpha)
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF6366F1).copy(alpha = 0.16f),
+              Color(0xFF6366F1).copy(alpha = 0.06f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.86f, h * 0.14f),
+            radius = w * 0.72f
+          ),
+          radius = w * 0.72f,
+          center = Offset(w * 0.86f, h * 0.14f)
+        )
+
+        // Light Mode Orb 2: Soft Violet (#A855F7 at 12% alpha)
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFFA855F7).copy(alpha = 0.12f),
+              Color(0xFFA855F7).copy(alpha = 0.05f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.14f, h * 0.48f),
+            radius = w * 0.75f
+          ),
+          radius = w * 0.75f,
+          center = Offset(w * 0.14f, h * 0.48f)
+        )
+
+        // Light Mode Orb 3: Sky Cyan (#0EA5E9 at 14% alpha)
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF0EA5E9).copy(alpha = 0.14f),
+              Color(0xFF0EA5E9).copy(alpha = 0.05f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.80f, h * 0.86f),
+            radius = w * 0.68f
+          ),
+          radius = w * 0.68f,
+          center = Offset(w * 0.80f, h * 0.86f)
+        )
+      } else {
+        // Dark Mode Orb 1: Indigo (#4F46E5 at 18% alpha)
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF4F46E5).copy(alpha = 0.18f),
+              Color(0xFF4F46E5).copy(alpha = 0.05f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.86f, h * 0.15f),
+            radius = w * 0.72f
+          ),
+          radius = w * 0.72f,
+          center = Offset(w * 0.86f, h * 0.15f)
+        )
+
+        // Dark Mode Orb 2: Indigo/Violet mid bloom
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF4F46E5).copy(alpha = 0.14f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.14f, h * 0.50f),
+            radius = w * 0.70f
+          ),
+          radius = w * 0.70f,
+          center = Offset(w * 0.14f, h * 0.50f)
+        )
+
+        // Dark Mode Orb 3: Cyan (#06B6D4 at 12% alpha)
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF06B6D4).copy(alpha = 0.12f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.78f, h * 0.88f),
+            radius = w * 0.66f
+          ),
+          radius = w * 0.66f,
+          center = Offset(w * 0.78f, h * 0.88f)
+        )
+      }
+    }
+
+    content()
+  }
+}
+
+/**
+ * Reusable `LiquidGlassCard` composable used for primary cards, dialogs, and panels across Sibil.
+ * Automatically adapts to `LocalGlassPalette` in both Light Mode and Dark Mode.
+ */
+@Composable
+fun LiquidGlassCard(
+  modifier: Modifier = Modifier,
+  cornerRadius: Dp = 24.dp,
+  shape: Shape = RoundedCornerShape(cornerRadius),
+  elevation: Dp = 10.dp,
+  fillAlpha: Float = 0.66f,
+  borderStroke: BorderStroke? = null,
+  onClick: (() -> Unit)? = null,
+  content: @Composable BoxScope.() -> Unit
+) {
+  val palette = currentGlassPalette()
+  val resolvedBorder = borderStroke ?: palette.glassBorder
+  val sheenBrush = remember(palette.isDark, palette.cardFill, fillAlpha) {
+    Brush.verticalGradient(
+      colors = listOf(
+        palette.cardTopSheen,
+        palette.cardFill,
+        palette.cardBottomSheen
+      )
+    )
+  }
+
+  val cardModifier = modifier
+    .shadow(
+      elevation = elevation,
+      shape = shape,
+      ambientColor = palette.shadowAmbient,
+      spotColor = palette.shadowSpot
+    )
+    .clip(shape)
+    .background(brush = sheenBrush, shape = shape)
+    .border(border = resolvedBorder, shape = shape)
+    .let { mod ->
+      if (onClick != null) {
+        mod.clickable(onClick = onClick)
+      } else {
+        mod
+      }
+    }
+
+  Box(
+    modifier = cardModifier,
+    content = content
+  )
+}
+
+/**
+ * Reusable `LiquidGlassContainer` for inner pods, search bars, chips, and status tiles.
+ * Uses `palette.nestedCardFill` and crisp `palette.nestedBorder` so inner cards never disappear.
+ */
+@Composable
+fun LiquidGlassContainer(
+  modifier: Modifier = Modifier,
+  cornerRadius: Dp = 18.dp,
+  shape: Shape = RoundedCornerShape(cornerRadius),
+  elevation: Dp = 0.dp,
+  fillAlpha: Float = 0.75f,
+  borderStroke: BorderStroke? = null,
+  onClick: (() -> Unit)? = null,
+  content: @Composable BoxScope.() -> Unit
+) {
+  val palette = currentGlassPalette()
+  val resolvedBorder = borderStroke ?: palette.nestedBorder
+  val fill = palette.nestedCardFill
+
+  val podModifier = modifier
+    .let { mod ->
+      if (elevation > 0.dp) {
+        mod.shadow(
+          elevation = elevation,
+          shape = shape,
+          ambientColor = palette.shadowAmbient,
+          spotColor = palette.shadowSpot
+        )
+      } else {
+        mod
+      }
+    }
+    .clip(shape)
+    .background(color = fill, shape = shape)
+    .border(border = resolvedBorder, shape = shape)
+    .let { mod ->
+      if (onClick != null) {
+        mod.clickable(onClick = onClick)
+      } else {
+        mod
+      }
+    }
+
+  Box(
+    modifier = podModifier,
+    content = content
+  )
+}
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -463,15 +1025,643 @@ data class FlashcardItem(
   val question: String,
   val answer: String,
   val category: String,
-  var masteryLevel: String = "New"
+  var masteryLevel: String = "New",
+  var isMastered: Boolean = masteryLevel.equals("Good", ignoreCase = true)
 )
 
 data class FlashcardDeck(
   val id: Int,
   val title: String,
   val subjectTag: String,
-  val cards: List<FlashcardItem>
+  val cards: List<FlashcardItem>,
+  val masteredCardIds: List<Int> = cards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) }.map { it.id }
 )
+
+/**
+ * Custom exception carrying HTTP status code and detailed Gemini API or network error message.
+ */
+class GeminiBatchExtractionException(
+  val statusCode: Int,
+  override val message: String
+) : Exception(message)
+
+/**
+ * Gizmo-Style Multi-Batch AI Flashcard Generator (`GizmoBatchFlashcardEngine`):
+ * - Uses `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$activeApiKey`
+ * - Enforces `"generationConfig": { "responseMimeType": "application/json", "temperature": 0.2 }`
+ * - Processes PDFs of ANY length in 3-page visual batches using `android.graphics.pdf.PdfRenderer`,
+ *   rendering each page onto a max-1080px-wide white-backed `Bitmap`, compressing to 75% JPEG Base64,
+ *   and recycling the `Bitmap` immediately.
+ * - Processes DOCX (`word/document.xml` via `ZipInputStream`), TXT, and Pasted Notes of ANY length
+ *   in 5,000-character chunks split along paragraph boundaries.
+ * - Reports real-time progress (`currentBatch`, `totalBatches`, `accumulatedCards`, `latestQuestion`)
+ *   after every batch so the user can monitor live generation or tap "Save & Stop Here" at any time.
+ */
+object GizmoBatchFlashcardEngine {
+  private const val GEMINI_FLASH_ENDPOINT_TEMPLATE =
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=%s"
+
+  const val SYSTEM_PROMPT_INSTRUCTION =
+    "You are an expert Civil Engineering & Academic Flashcard Generator like Gizmo. Analyze this document batch thoroughly. Detect every explicit question & answer, key term & definition, engineering formula & variable meaning, and code provision (e.g., NSCP/DPWH). Generate comprehensive active-recall flashcards covering ALL important material in this section. Respond ONLY with a valid JSON array of objects: [{\"question\": \"...\", \"answer\": \"...\"}]."
+
+  private const val PAGES_PER_PDF_BATCH = 3
+  private const val MAX_TEXT_CHUNK_CHARS = 5000
+
+  suspend fun processDocumentUriInBatches(
+    context: Context,
+    uri: Uri,
+    fileName: String,
+    activeApiKey: String,
+    defaultCategory: String,
+    onProgressUpdate: (
+      currentBatch: Int,
+      totalBatches: Int,
+      statusLabel: String,
+      accumulatedCards: List<FlashcardItem>,
+      latestQuestion: String
+    ) -> Unit
+  ): List<FlashcardItem> = withContext(Dispatchers.IO) {
+    val cleanKey = activeApiKey.trim().ifEmpty { DEFAULT_GEMINI_API_KEY }
+    val mimeType = try {
+      context.contentResolver.getType(uri).orEmpty().lowercase(Locale.US)
+    } catch (_: Exception) {
+      ""
+    }
+    val lowerName = fileName.lowercase(Locale.US)
+
+    val isPdf = lowerName.endsWith(".pdf") || mimeType.contains("pdf")
+    if (isPdf) {
+      processPdfInPageBatches(
+        context = context,
+        uri = uri,
+        activeApiKey = cleanKey,
+        defaultCategory = defaultCategory,
+        onProgressUpdate = onProgressUpdate
+      )
+    } else {
+      val extractedText = when {
+        lowerName.endsWith(".docx") || mimeType.contains("wordprocessingml") -> {
+          OfflineDeckExtractor.extractTextFromDocx(context, uri)
+        }
+        lowerName.endsWith(".txt") || mimeType.startsWith("text/") -> {
+          OfflineDeckExtractor.extractTextFromTxt(context, uri)
+        }
+        else -> {
+          val docxText = OfflineDeckExtractor.extractTextFromDocx(context, uri)
+          if (docxText.isNotBlank()) docxText else OfflineDeckExtractor.extractTextFromTxt(context, uri)
+        }
+      }
+      if (extractedText.isBlank()) {
+        throw GeminiBatchExtractionException(
+          statusCode = -1,
+          message = "No readable text found in \"$fileName\". Ensure the DOCX or TXT file is not empty."
+        )
+      }
+      processTextInChunks(
+        rawText = extractedText,
+        activeApiKey = cleanKey,
+        defaultCategory = defaultCategory,
+        onProgressUpdate = onProgressUpdate
+      )
+    }
+  }
+
+  /**
+   * Processes a PDF of ANY length using `PdfRenderer` in 3-page JPEG batches.
+   */
+  suspend fun processPdfInPageBatches(
+    context: Context,
+    uri: Uri,
+    activeApiKey: String,
+    defaultCategory: String,
+    onProgressUpdate: (
+      currentBatch: Int,
+      totalBatches: Int,
+      statusLabel: String,
+      accumulatedCards: List<FlashcardItem>,
+      latestQuestion: String
+    ) -> Unit
+  ): List<FlashcardItem> = withContext(Dispatchers.IO) {
+    val tempFile = File(context.cacheDir, "temp_import.pdf")
+    var pfd: ParcelFileDescriptor? = null
+    var pdfRenderer: PdfRenderer? = null
+    val accumulatedCards = mutableListOf<FlashcardItem>()
+    val seenQuestions = mutableSetOf<String>()
+    var latestQuestion = ""
+
+    try {
+      context.contentResolver.openInputStream(uri)?.use { input ->
+        FileOutputStream(tempFile).use { output ->
+          input.copyTo(output)
+          output.flush()
+        }
+      } ?: throw GeminiBatchExtractionException(
+        statusCode = -1,
+        message = "Unable to open selected PDF file stream."
+      )
+
+      pfd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
+      pdfRenderer = PdfRenderer(pfd)
+      val totalPages = pdfRenderer.pageCount
+      if (totalPages <= 0) {
+        throw GeminiBatchExtractionException(
+          statusCode = -1,
+          message = "The selected PDF has 0 pages."
+        )
+      }
+
+      val totalBatches = (totalPages + PAGES_PER_PDF_BATCH - 1) / PAGES_PER_PDF_BATCH
+
+      for (batchIdx in 0 until totalBatches) {
+        coroutineContext.ensureActive()
+
+        val startPageIdx = batchIdx * PAGES_PER_PDF_BATCH
+        val endPageIdx = minOf(startPageIdx + PAGES_PER_PDF_BATCH - 1, totalPages - 1)
+        val startPageHuman = startPageIdx + 1
+        val endPageHuman = endPageIdx + 1
+        val statusText = if (startPageHuman == endPageHuman) {
+          "Analyzing Page $startPageHuman of $totalPages..."
+        } else {
+          "Analyzing Pages $startPageHuman–$endPageHuman of $totalPages..."
+        }
+
+        onProgressUpdate(
+          batchIdx + 1,
+          totalBatches,
+          statusText,
+          accumulatedCards.toList(),
+          latestQuestion
+        )
+
+        val base64PageImages = mutableListOf<String>()
+        for (pageIndex in startPageIdx..endPageIdx) {
+          coroutineContext.ensureActive()
+          val page = pdfRenderer.openPage(pageIndex)
+          val pageW = page.width.coerceAtLeast(1)
+          val pageH = page.height.coerceAtLeast(1)
+          val targetW = 1080
+          val targetH = ((pageH.toFloat() / pageW.toFloat()) * targetW.toFloat())
+            .roundToInt()
+            .coerceAtLeast(1)
+
+          val bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+          try {
+            // Fill white background first so transparent PDFs render crisply
+            android.graphics.Canvas(bitmap).drawColor(android.graphics.Color.WHITE)
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+          } finally {
+            page.close()
+          }
+
+          val jpegBytes = ByteArrayOutputStream().use { baos ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 75, baos)
+            baos.toByteArray()
+          }
+          // Recycle immediately to keep RAM usage tiny on low-end phones
+          bitmap.recycle()
+
+          val encodedBase64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+          base64PageImages.add(encodedBase64)
+        }
+
+        coroutineContext.ensureActive()
+        val batchCards = requestGeminiFlashcardsForPdfBatch(
+          activeApiKey = activeApiKey,
+          base64JpegPages = base64PageImages,
+          startPage = startPageHuman,
+          endPage = endPageHuman,
+          totalPages = totalPages,
+          defaultCategory = defaultCategory
+        )
+
+        for (card in batchCards) {
+          val normQ = card.question.lowercase(Locale.US).trim()
+          if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
+            val assignedCard = card.copy(id = accumulatedCards.size + 1)
+            accumulatedCards.add(assignedCard)
+            latestQuestion = assignedCard.question
+          }
+        }
+
+        onProgressUpdate(
+          batchIdx + 1,
+          totalBatches,
+          statusText,
+          accumulatedCards.toList(),
+          latestQuestion
+        )
+      }
+
+      accumulatedCards
+    } finally {
+      try {
+        pdfRenderer?.close()
+      } catch (_: Exception) {
+      }
+      try {
+        pfd?.close()
+      } catch (_: Exception) {
+      }
+      try {
+        if (tempFile.exists()) {
+          tempFile.delete()
+        }
+      } catch (_: Exception) {
+      }
+    }
+  }
+
+  /**
+   * Splits DOCX, TXT, or pasted text into 5,000-character chunks along paragraph boundaries
+   * and sends each chunk sequentially to `gemini-2.5-flash`.
+   */
+  suspend fun processTextInChunks(
+    rawText: String,
+    activeApiKey: String,
+    defaultCategory: String,
+    onProgressUpdate: (
+      currentBatch: Int,
+      totalBatches: Int,
+      statusLabel: String,
+      accumulatedCards: List<FlashcardItem>,
+      latestQuestion: String
+    ) -> Unit
+  ): List<FlashcardItem> = withContext(Dispatchers.IO) {
+    val chunks = splitTextIntoParagraphChunks(rawText, MAX_TEXT_CHUNK_CHARS)
+    if (chunks.isEmpty()) {
+      throw GeminiBatchExtractionException(
+        statusCode = -1,
+        message = "No text content provided to generate flashcards."
+      )
+    }
+
+    val totalBatches = chunks.size
+    val accumulatedCards = mutableListOf<FlashcardItem>()
+    val seenQuestions = mutableSetOf<String>()
+    var latestQuestion = ""
+
+    for ((batchIdx, chunkText) in chunks.withIndex()) {
+      coroutineContext.ensureActive()
+
+      val statusText = if (totalBatches == 1) {
+        "Analyzing Notes & Generating Active-Recall Cards..."
+      } else {
+        "Analyzing Text Section ${batchIdx + 1} of $totalBatches (${chunkText.length} chars)..."
+      }
+
+      onProgressUpdate(
+        batchIdx + 1,
+        totalBatches,
+        statusText,
+        accumulatedCards.toList(),
+        latestQuestion
+      )
+
+      val batchCards = requestGeminiFlashcardsForTextChunk(
+        activeApiKey = activeApiKey,
+        textChunk = chunkText,
+        batchNumber = batchIdx + 1,
+        totalBatches = totalBatches,
+        defaultCategory = defaultCategory
+      )
+
+      for (card in batchCards) {
+        val normQ = card.question.lowercase(Locale.US).trim()
+        if (normQ.isNotEmpty() && seenQuestions.add(normQ)) {
+          val assignedCard = card.copy(id = accumulatedCards.size + 1)
+          accumulatedCards.add(assignedCard)
+          latestQuestion = assignedCard.question
+        }
+      }
+
+      onProgressUpdate(
+        batchIdx + 1,
+        totalBatches,
+        statusText,
+        accumulatedCards.toList(),
+        latestQuestion
+      )
+    }
+
+    accumulatedCards
+  }
+
+  /**
+   * Splits arbitrarily long text into chunks of at most `maxChunkChars` (5,000 chars)
+   * along paragraph (`\n`) boundaries.
+   */
+  fun splitTextIntoParagraphChunks(rawText: String, maxChunkChars: Int = MAX_TEXT_CHUNK_CHARS): List<String> {
+    val normalized = rawText
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .trim()
+    if (normalized.isEmpty()) return emptyList()
+    if (normalized.length <= maxChunkChars) return listOf(normalized)
+
+    val paragraphs = normalized.split("\n")
+    val chunks = mutableListOf<String>()
+    val currentBuilder = StringBuilder()
+
+    for (para in paragraphs) {
+      val trimmedPara = para.trim()
+      if (trimmedPara.isEmpty()) continue
+
+      if (trimmedPara.length > maxChunkChars) {
+        if (currentBuilder.isNotEmpty()) {
+          chunks.add(currentBuilder.toString().trim())
+          currentBuilder.clear()
+        }
+        var cursor = 0
+        while (cursor < trimmedPara.length) {
+          val end = minOf(cursor + maxChunkChars, trimmedPara.length)
+          chunks.add(trimmedPara.substring(cursor, end).trim())
+          cursor = end
+        }
+      } else if (currentBuilder.length + trimmedPara.length + 1 > maxChunkChars) {
+        if (currentBuilder.isNotEmpty()) {
+          chunks.add(currentBuilder.toString().trim())
+          currentBuilder.clear()
+        }
+        currentBuilder.append(trimmedPara)
+      } else {
+        if (currentBuilder.isNotEmpty()) {
+          currentBuilder.append("\n")
+        }
+        currentBuilder.append(trimmedPara)
+      }
+    }
+
+    if (currentBuilder.isNotEmpty()) {
+      chunks.add(currentBuilder.toString().trim())
+    }
+    return chunks.filter { it.isNotBlank() }
+  }
+
+  private fun requestGeminiFlashcardsForPdfBatch(
+    activeApiKey: String,
+    base64JpegPages: List<String>,
+    startPage: Int,
+    endPage: Int,
+    totalPages: Int,
+    defaultCategory: String
+  ): List<FlashcardItem> {
+    val partsArray = JSONArray()
+    partsArray.put(
+      JSONObject().apply {
+        put(
+          "text",
+          "$SYSTEM_PROMPT_INSTRUCTION\n\n(Document Batch: PDF Pages $startPage to $endPage of $totalPages)"
+        )
+      }
+    )
+
+    for (base64Image in base64JpegPages) {
+      partsArray.put(
+        JSONObject().apply {
+          put(
+            "inline_data",
+            JSONObject().apply {
+              put("mime_type", "image/jpeg")
+              put("data", base64Image)
+            }
+          )
+        }
+      )
+    }
+
+    return executeGeminiGenerateContentCall(
+      activeApiKey = activeApiKey,
+      partsArray = partsArray,
+      defaultCategory = defaultCategory
+    )
+  }
+
+  private fun requestGeminiFlashcardsForTextChunk(
+    activeApiKey: String,
+    textChunk: String,
+    batchNumber: Int,
+    totalBatches: Int,
+    defaultCategory: String
+  ): List<FlashcardItem> {
+    val partsArray = JSONArray().apply {
+      put(
+        JSONObject().apply {
+          put(
+            "text",
+            "$SYSTEM_PROMPT_INSTRUCTION\n\n--- DOCUMENT BATCH $batchNumber OF $totalBatches ---\n$textChunk"
+          )
+        }
+      )
+    }
+
+    return executeGeminiGenerateContentCall(
+      activeApiKey = activeApiKey,
+      partsArray = partsArray,
+      defaultCategory = defaultCategory
+    )
+  }
+
+  private fun executeGeminiGenerateContentCall(
+    activeApiKey: String,
+    partsArray: JSONArray,
+    defaultCategory: String
+  ): List<FlashcardItem> {
+    val requestBodyJson = JSONObject().apply {
+      put(
+        "contents",
+        JSONArray().apply {
+          put(
+            JSONObject().apply {
+              put("parts", partsArray)
+            }
+          )
+        }
+      )
+      put(
+        "generationConfig",
+        JSONObject().apply {
+          put("responseMimeType", "application/json")
+          put("temperature", 0.2)
+        }
+      )
+    }.toString()
+
+    val endpointUrl = String.format(Locale.US, GEMINI_FLASH_ENDPOINT_TEMPLATE, activeApiKey.trim())
+    var connection: HttpURLConnection? = null
+
+    try {
+      connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 60_000
+        readTimeout = 60_000
+        doInput = true
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+      }
+
+      OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+        writer.write(requestBodyJson)
+        writer.flush()
+      }
+
+      val responseCode = connection.responseCode
+      if (responseCode in 200..299) {
+        val responseBody = BufferedReader(
+          InputStreamReader(connection.inputStream, Charsets.UTF_8)
+        ).use { it.readText() }
+        return parseGeminiFlashcardsJsonResponse(responseBody, defaultCategory)
+      } else {
+        val rawErrorBody = try {
+          connection.errorStream?.let { errStream ->
+            BufferedReader(InputStreamReader(errStream, Charsets.UTF_8)).use { it.readText() }
+          }.orEmpty()
+        } catch (_: Exception) {
+          ""
+        }
+        val parsedApiErrorMessage = extractDetailedErrorFromPayload(responseCode, rawErrorBody)
+        throw GeminiBatchExtractionException(
+          statusCode = responseCode,
+          message = parsedApiErrorMessage
+        )
+      }
+    } catch (e: GeminiBatchExtractionException) {
+      throw e
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      val networkDetail = e.localizedMessage?.takeIf { it.isNotBlank() }
+        ?: "Unable to reach Google Gemini API. Please check your internet connection."
+      throw GeminiBatchExtractionException(
+        statusCode = -1,
+        message = "Network Error: $networkDetail"
+      )
+    } finally {
+      connection?.disconnect()
+    }
+  }
+
+  /**
+   * Bulletproof JSON Parser:
+   * - Extracts the model text from `candidates[0].content.parts[0].text`
+   * - Strips any accidental markdown code fences (`text.replace("```json", "").replace("```", "").trim()`)
+   * - Parses the `JSONArray` (or nested array if wrapped in an object) into `FlashcardItem` objects.
+   */
+  fun parseGeminiFlashcardsJsonResponse(
+    rawApiResponse: String,
+    defaultCategory: String
+  ): List<FlashcardItem> {
+    val root = JSONObject(rawApiResponse)
+    val candidates = root.optJSONArray("candidates")
+      ?: throw GeminiBatchExtractionException(
+        statusCode = 200,
+        message = "Gemini returned no candidates for this batch. Check safety filters or prompt content."
+      )
+    if (candidates.length() == 0) {
+      return emptyList()
+    }
+
+    val combinedTextBuilder = StringBuilder()
+    for (cIdx in 0 until candidates.length()) {
+      val candidateObj = candidates.optJSONObject(cIdx) ?: continue
+      val contentObj = candidateObj.optJSONObject("content") ?: continue
+      val parts = contentObj.optJSONArray("parts") ?: continue
+      for (pIdx in 0 until parts.length()) {
+        val partText = parts.optJSONObject(pIdx)?.optString("text", "").orEmpty()
+        if (partText.isNotBlank()) {
+          combinedTextBuilder.append(partText).append("\n")
+        }
+      }
+    }
+
+    val strippedText = combinedTextBuilder.toString()
+      .replace("```json", "", ignoreCase = true)
+      .replace("```", "")
+      .trim()
+
+    if (strippedText.isEmpty()) {
+      return emptyList()
+    }
+
+    val cardsJsonArray: JSONArray = try {
+      when {
+        strippedText.startsWith("[") -> JSONArray(strippedText)
+        strippedText.contains("[") && strippedText.contains("]") -> {
+          val startBracket = strippedText.indexOf('[')
+          val endBracket = strippedText.lastIndexOf(']')
+          JSONArray(strippedText.substring(startBracket, endBracket + 1))
+        }
+        strippedText.startsWith("{") -> {
+          val obj = JSONObject(strippedText)
+          obj.optJSONArray("flashcards")
+            ?: obj.optJSONArray("cards")
+            ?: obj.optJSONArray("items")
+            ?: JSONArray().put(obj)
+        }
+        else -> JSONArray(strippedText)
+      }
+    } catch (e: Exception) {
+      throw GeminiBatchExtractionException(
+        statusCode = 200,
+        message = "Failed to parse JSON flashcards from Gemini response: ${e.localizedMessage ?: "Invalid JSON format"}"
+      )
+    }
+
+    val parsedCards = mutableListOf<FlashcardItem>()
+    for (i in 0 until cardsJsonArray.length()) {
+      val itemObj = cardsJsonArray.optJSONObject(i) ?: continue
+      val question = itemObj.optString("question", "")
+        .ifBlank { itemObj.optString("front", "") }
+        .ifBlank { itemObj.optString("term", "") }
+        .trim()
+      val answer = itemObj.optString("answer", "")
+        .ifBlank { itemObj.optString("back", "") }
+        .ifBlank { itemObj.optString("definition", "") }
+        .trim()
+
+      if (question.isNotEmpty() && answer.isNotEmpty()) {
+        parsedCards.add(
+          FlashcardItem(
+            id = i + 1,
+            question = question,
+            answer = answer,
+            category = defaultCategory.ifBlank { "General" },
+            masteryLevel = "New"
+          )
+        )
+      }
+    }
+    return parsedCards
+  }
+
+  private fun extractDetailedErrorFromPayload(httpCode: Int, rawErrorBody: String): String {
+    val trimmed = rawErrorBody.trim()
+    if (trimmed.isNotEmpty()) {
+      try {
+        val errRoot = JSONObject(trimmed)
+        val errObj = errRoot.optJSONObject("error")
+        if (errObj != null) {
+          val status = errObj.optString("status", "")
+          val msg = errObj.optString("message", "")
+          if (msg.isNotBlank()) {
+            return if (status.isNotBlank()) {
+              "HTTP $httpCode ($status): $msg"
+            } else {
+              "HTTP $httpCode: $msg"
+            }
+          }
+        }
+      } catch (_: Exception) {
+      }
+      return "HTTP $httpCode: ${trimmed.take(280)}"
+    }
+    return when (httpCode) {
+      400 -> "HTTP 400 Bad Request: Please verify your Gemini API key or document format."
+      403 -> "HTTP 403 Forbidden: API key is invalid, restricted, or expired. Tap the Key icon to paste a valid Google AI Studio key."
+      429 -> "HTTP 429 Rate Limit Exceeded: Too many requests. Please wait a moment and try again."
+      else -> "HTTP $httpCode Error from Gemini API."
+    }
+  }
+}
 
 /**
  * 100% Free, Offline, Zero-Fail Document & Text Flashcard Extractor (`OfflineDeckExtractor`).
@@ -1456,11 +2646,13 @@ class LocalStorageManager(context: Context) {
       val cardsArray = JSONArray()
       for (card in deck.cards) {
         val cardObj = JSONObject().apply {
+          val cardMastered = card.isMastered || card.masteryLevel.equals("Good", ignoreCase = true)
           put("id", card.id)
           put("question", card.question)
           put("answer", card.answer)
           put("category", card.category)
-          put("masteryLevel", card.masteryLevel.ifBlank { "New" })
+          put("masteryLevel", card.masteryLevel.ifBlank { if (cardMastered) "Good" else "New" })
+          put("isMastered", cardMastered)
         }
         cardsArray.put(cardObj)
       }
@@ -1501,13 +2693,19 @@ class LocalStorageManager(context: Context) {
                 val question = cardObj.optString("question", "").trim()
                 val answer = cardObj.optString("answer", "").trim()
                 if (question.isEmpty() || answer.isEmpty()) continue
+                val rawMasteryLevel = cardObj.optString("masteryLevel", "New").trim().ifEmpty { "New" }
+                val rawIsMastered = cardObj.optBoolean(
+                  "isMastered",
+                  rawMasteryLevel.equals("Good", ignoreCase = true)
+                )
                 loadedCards.add(
                   FlashcardItem(
                     id = cardObj.optInt("id", (i + 1) * 100 + j + 1),
                     question = question,
                     answer = answer,
                     category = cardObj.optString("category", subjectTag).trim().ifEmpty { subjectTag },
-                    masteryLevel = cardObj.optString("masteryLevel", "New").trim().ifEmpty { "New" }
+                    masteryLevel = if (rawIsMastered && rawMasteryLevel.equals("New", ignoreCase = true)) "Good" else rawMasteryLevel,
+                    isMastered = rawIsMastered
                   )
                 )
               } catch (_: Exception) {
@@ -1579,6 +2777,24 @@ class LocalStorageManager(context: Context) {
 
   fun loadDarkMode(defaultValue: Boolean = false): Boolean {
     return prefs.getBoolean(KEY_DARK_MODE, defaultValue)
+  }
+
+  fun saveGeminiApiKey(apiKey: String) {
+    prefs.edit().putString(KEY_GEMINI_API_KEY, apiKey.trim()).apply()
+    syncToDeviceStorage(loadUserName().orEmpty())
+  }
+
+  fun loadSavedGeminiApiKey(): String {
+    return prefs.getString(KEY_GEMINI_API_KEY, "")?.trim().orEmpty()
+  }
+
+  fun hasSavedGeminiApiKey(): Boolean {
+    return loadSavedGeminiApiKey().isNotEmpty()
+  }
+
+  fun getActiveGeminiApiKey(): String {
+    val saved = loadSavedGeminiApiKey()
+    return saved.ifEmpty { DEFAULT_GEMINI_API_KEY }
   }
 
   /**
@@ -1724,6 +2940,7 @@ class LocalStorageManager(context: Context) {
     private const val KEY_FLASHCARDS_PREFIX = "flashcards_"
     private const val KEY_USER_NAME = "saved_user_name"
     private const val KEY_DARK_MODE = "saved_dark_mode"
+    private const val KEY_GEMINI_API_KEY = "saved_gemini_api_key"
     private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
     private const val CURRENT_TASK_SCHEMA_VERSION = 2
     private const val KEY_FLASHCARD_SCHEMA_VERSION = "flashcard_schema_version"
@@ -1747,6 +2964,30 @@ class TaskViewModel(
 ) : ViewModel() {
   var isDarkMode by mutableStateOf(false)
     private set
+
+  var savedGeminiApiKey by mutableStateOf("")
+    private set
+
+  fun getActiveGeminiApiKey(): String {
+    val inMemory = savedGeminiApiKey.trim()
+    if (inMemory.isNotEmpty()) return inMemory
+    val persisted = storageManager?.loadSavedGeminiApiKey().orEmpty().trim()
+    if (persisted.isNotEmpty()) {
+      savedGeminiApiKey = persisted
+      return persisted
+    }
+    return DEFAULT_GEMINI_API_KEY
+  }
+
+  fun hasSavedGeminiApiKey(): Boolean {
+    return savedGeminiApiKey.trim().isNotEmpty() || (storageManager?.hasSavedGeminiApiKey() == true)
+  }
+
+  fun saveGeminiApiKey(newKey: String) {
+    val clean = newKey.trim()
+    savedGeminiApiKey = clean
+    storageManager?.saveGeminiApiKey(clean)
+  }
 
   var username by mutableStateOf(LocalStorageManager.GUEST_DISPLAY_NAME)
     private set
@@ -1847,6 +3088,7 @@ class TaskViewModel(
     hasLoadedFromStorage = true
 
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
+    savedGeminiApiKey = manager.loadSavedGeminiApiKey()
 
     val savedUserName = manager.loadUserName()
     if (!savedUserName.isNullOrBlank()) {
@@ -2318,9 +3560,14 @@ class TaskViewModel(
         question = cleanQuestion,
         answer = cleanAnswer,
         category = cleanCategory,
-        masteryLevel = "New"
+        masteryLevel = "New",
+        isMastered = false
       )
-      _flashcardDecks[index] = deck.copy(cards = deck.cards + newCard)
+      val updatedCards = deck.cards + newCard
+      _flashcardDecks[index] = deck.copy(
+        cards = updatedCards,
+        masteredCardIds = updatedCards.filter { it.isMastered }.map { it.id }
+      )
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
     }
   }
@@ -2333,15 +3580,41 @@ class TaskViewModel(
     val deckIndex = _flashcardDecks.indexOfFirst { it.id == deckId }
     if (deckIndex != -1) {
       val currentDeck = _flashcardDecks[deckIndex]
+      val isRatedGood = newMasteryLevel.equals("Good", ignoreCase = true)
       val updatedCards = currentDeck.cards.map { card ->
         if (card.id == cardId) {
+          val updatedIsMastered = if (isRatedGood) true else card.isMastered
           card.masteryLevel = newMasteryLevel
-          card.copy(masteryLevel = newMasteryLevel)
+          card.isMastered = updatedIsMastered
+          card.copy(
+            masteryLevel = newMasteryLevel,
+            isMastered = updatedIsMastered
+          )
         } else {
           card
         }
       }
-      _flashcardDecks[deckIndex] = currentDeck.copy(cards = updatedCards)
+      _flashcardDecks[deckIndex] = currentDeck.copy(
+        cards = updatedCards,
+        masteredCardIds = updatedCards.filter { it.isMastered }.map { it.id }
+      )
+      storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    }
+  }
+
+  fun resetDeckMastery(deckId: Int) {
+    val deckIndex = _flashcardDecks.indexOfFirst { it.id == deckId }
+    if (deckIndex != -1) {
+      val currentDeck = _flashcardDecks[deckIndex]
+      val resetCards = currentDeck.cards.map { card ->
+        card.masteryLevel = "New"
+        card.isMastered = false
+        card.copy(masteryLevel = "New", isMastered = false)
+      }
+      _flashcardDecks[deckIndex] = currentDeck.copy(
+        cards = resetCards,
+        masteredCardIds = emptyList()
+      )
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
     }
   }
@@ -2700,30 +3973,27 @@ private fun parseTimeRangeToStructuredInputs(timeRange: String): StructuredTimeR
 }
 
 /**
- * Returns the warm cream card background (`#FFFBF0`) in Light Mode and the dark card surface in Dark Mode.
+ * Returns the translucent Liquid Glass card fill (`Color.White.copy(alpha = 0.68f)`) in Light Mode and dark glass in Dark Mode.
  */
 @Composable
 private fun dashboardCreamCardColor(): Color {
-  val isLight = MaterialTheme.colorScheme.background.red > 0.5f
-  return if (isLight) CreamCardColor else MaterialTheme.colorScheme.surface
+  return currentGlassPalette().cardFill
 }
 
 /**
- * Returns the warm ivory inner card background (`#FDFBF7`) in Light Mode and dark background in Dark Mode.
+ * Returns the translucent Liquid Glass inner pod fill in Light Mode and dark glass in Dark Mode.
  */
 @Composable
 private fun dashboardIvoryInnerColor(): Color {
-  val isLight = MaterialTheme.colorScheme.background.red > 0.5f
-  return if (isLight) IvoryInnerCardColor else MaterialTheme.colorScheme.background
+  return currentGlassPalette().nestedCardFill
 }
 
 /**
- * Returns a high-contrast warm track color for progress indicators on cream cards in Light Mode.
+ * Returns a frosted translucent track color for progress indicators on Liquid Glass cards.
  */
 @Composable
 private fun dashboardProgressTrackColor(): Color {
-  val isLight = MaterialTheme.colorScheme.background.red > 0.5f
-  return if (isLight) WarmCreamTrackColor else MaterialTheme.colorScheme.surfaceVariant
+  return currentGlassPalette().trackColor
 }
 
 /**
@@ -2800,48 +4070,52 @@ fun CivilEngineeringProductivityApp(
     CanvaLightColorScheme
   }
 
-  MaterialTheme(
-    colorScheme = dynamicColorScheme,
-    typography = Typography
-  ) {
-    // Top-level navigation state: if a userName is already saved in SharedPreferences,
-    // bypass the Login screen entirely and go straight to the Dashboard.
-    var isLoggedIn by rememberSaveable { mutableStateOf(resolvedViewModel.hasSavedSession) }
+  val animatedGlassPalette = rememberAnimatedGlassPalette(isDark = resolvedViewModel.isDarkMode)
 
-    Crossfade(
-      targetState = isLoggedIn,
-      animationSpec = tween(durationMillis = 300),
-      label = "auth_to_main_transition"
-    ) { loggedIn ->
-      if (!loggedIn) {
-        StartupLoginScreen(
-          onAttemptLogin = { typedUsername, typedPassword ->
-            val result = resolvedViewModel.attemptLogin(typedUsername, typedPassword)
-            if (result == LoginValidationResult.SUCCESS) {
+  CompositionLocalProvider(LocalGlassPalette provides animatedGlassPalette) {
+    MaterialTheme(
+      colorScheme = dynamicColorScheme,
+      typography = Typography
+    ) {
+      // Top-level navigation state: if a userName is already saved in SharedPreferences,
+      // bypass the Login screen entirely and go straight to the Dashboard.
+      var isLoggedIn by rememberSaveable { mutableStateOf(resolvedViewModel.hasSavedSession) }
+
+      Crossfade(
+        targetState = isLoggedIn,
+        animationSpec = tween(durationMillis = 300),
+        label = "auth_to_main_transition"
+      ) { loggedIn ->
+        if (!loggedIn) {
+          StartupLoginScreen(
+            onAttemptLogin = { typedUsername, typedPassword ->
+              val result = resolvedViewModel.attemptLogin(typedUsername, typedPassword)
+              if (result == LoginValidationResult.SUCCESS) {
+                isLoggedIn = true
+              }
+              result
+            },
+            onCheckUsernameRegistered = { usernameToCheck ->
+              resolvedViewModel.isUsernameRegistered(usernameToCheck)
+            },
+            onCompleteSignUp = { registeredUsername, createdPassword ->
+              resolvedViewModel.completeSignUp(registeredUsername, createdPassword)
+              isLoggedIn = true
+            },
+            onContinueAsGuest = {
+              resolvedViewModel.loginAsGuest()
               isLoggedIn = true
             }
-            result
-          },
-          onCheckUsernameRegistered = { usernameToCheck ->
-            resolvedViewModel.isUsernameRegistered(usernameToCheck)
-          },
-          onCompleteSignUp = { registeredUsername, createdPassword ->
-            resolvedViewModel.completeSignUp(registeredUsername, createdPassword)
-            isLoggedIn = true
-          },
-          onContinueAsGuest = {
-            resolvedViewModel.loginAsGuest()
-            isLoggedIn = true
-          }
-        )
-      } else {
-        MainProductivityScaffold(
-          taskViewModel = resolvedViewModel,
-          onLogout = {
-            resolvedViewModel.logout()
-            isLoggedIn = false
-          }
-        )
+          )
+        } else {
+          MainProductivityScaffold(
+            taskViewModel = resolvedViewModel,
+            onLogout = {
+              resolvedViewModel.logout()
+              isLoggedIn = false
+            }
+          )
+        }
       }
     }
   }
@@ -3883,239 +5157,265 @@ private fun MainProductivityScaffold(
     }
   }
 
-  Scaffold(
-    modifier = Modifier
-      .fillMaxSize()
-      .testTag("main_scaffold"),
-    contentWindowInsets = WindowInsets.safeDrawing,
-    floatingActionButton = {
-      when (selectedTab) {
-        CeNavTab.TASKS -> {
-          FloatingActionButton(
-            onClick = { isAddTaskDialogOpen = true },
-            shape = CircleShape,
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
-            modifier = Modifier
-              .size(60.dp)
-              .testTag("add_task_fab")
-          ) {
-            Icon(
-              imageVector = Icons.Filled.Add,
-              contentDescription = stringResource(R.string.add_task_fab_label),
-              modifier = Modifier.size(28.dp)
-            )
-          }
-        }
-        CeNavTab.SCHEDULE -> {
-          FloatingActionButton(
-            onClick = {
-              editingSchedule = null
-              isAddScheduleDialogOpen = true
-            },
-            shape = CircleShape,
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
-            modifier = Modifier
-              .size(60.dp)
-              .testTag("add_schedule_fab")
-          ) {
-            Icon(
-              imageVector = Icons.Filled.Add,
-              contentDescription = stringResource(R.string.add_schedule_fab_label),
-              modifier = Modifier.size(28.dp)
-            )
-          }
-        }
-        else -> {}
-      }
-    },
-    bottomBar = {
-      CustomDockedBottomTaskBar(
-        selectedTab = selectedTab,
-        onSelectTab = { selectedTab = it },
-        metrics = metrics
-      )
-    }
-  ) { innerPadding ->
-    Box(
+  LiquidGlassBackgroundMesh(modifier = Modifier.fillMaxSize()) {
+    Scaffold(
       modifier = Modifier
         .fillMaxSize()
-        .background(MaterialTheme.colorScheme.background)
-        .padding(innerPadding),
-      contentAlignment = Alignment.TopCenter
-    ) {
-      when (selectedTab) {
-        CeNavTab.CLOCK -> ClockScreen(
-          viewModel = taskViewModel,
-          modifier = Modifier
-            .fillMaxSize()
-            .widthIn(max = metrics.maxContentWidth)
+        .testTag("main_scaffold"),
+      containerColor = Color.Transparent,
+      contentWindowInsets = WindowInsets.safeDrawing,
+      floatingActionButton = {
+        when (selectedTab) {
+          CeNavTab.TASKS -> {
+            Box(
+              modifier = Modifier
+                .size(62.dp)
+                .shadow(
+                  elevation = 14.dp,
+                  shape = CircleShape,
+                  ambientColor = Color(0x284338CA),
+                  spotColor = Color(0x404F46E5)
+                )
+                .clip(CircleShape)
+                .background(brush = LiquidOrbBrush, shape = CircleShape)
+                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
+                .clickable { isAddTaskDialogOpen = true }
+                .testTag("add_task_fab"),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = stringResource(R.string.add_task_fab_label),
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
+              )
+            }
+          }
+          CeNavTab.SCHEDULE -> {
+            Box(
+              modifier = Modifier
+                .size(62.dp)
+                .shadow(
+                  elevation = 14.dp,
+                  shape = CircleShape,
+                  ambientColor = Color(0x284338CA),
+                  spotColor = Color(0x404F46E5)
+                )
+                .clip(CircleShape)
+                .background(brush = LiquidOrbBrush, shape = CircleShape)
+                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
+                .clickable {
+                  editingSchedule = null
+                  isAddScheduleDialogOpen = true
+                }
+                .testTag("add_schedule_fab"),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = stringResource(R.string.add_schedule_fab_label),
+                tint = Color.White,
+                modifier = Modifier.size(28.dp)
+              )
+            }
+          }
+          else -> {}
+        }
+      },
+      bottomBar = {
+        CustomDockedBottomTaskBar(
+          selectedTab = selectedTab,
+          onSelectTab = { selectedTab = it },
+          metrics = metrics
         )
-        CeNavTab.EXTRAS -> ExtrasScreen(
-          viewModel = taskViewModel,
-          modifier = Modifier
-            .fillMaxSize()
-            .widthIn(max = metrics.maxContentWidth)
+      }
+    ) { innerPadding ->
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding),
+        contentAlignment = Alignment.TopCenter
+      ) {
+        when (selectedTab) {
+          CeNavTab.CLOCK -> ClockScreen(
+            viewModel = taskViewModel,
+            modifier = Modifier
+              .fillMaxSize()
+              .widthIn(max = metrics.maxContentWidth)
+          )
+          CeNavTab.EXTRAS -> ExtrasScreen(
+            viewModel = taskViewModel,
+            modifier = Modifier
+              .fillMaxSize()
+              .widthIn(max = metrics.maxContentWidth)
+          )
+          CeNavTab.DASHBOARD -> DashboardScreen(
+            viewModel = taskViewModel,
+            onProfileIconClick = { isProfileSettingsDialogOpen = true },
+            modifier = Modifier.fillMaxSize()
+          )
+          CeNavTab.TASKS -> CourseworkTaskManagerScreen(
+            viewModel = taskViewModel,
+            modifier = Modifier
+              .fillMaxSize()
+              .widthIn(max = metrics.maxContentWidth)
+          )
+          CeNavTab.SCHEDULE -> ClassTimetableScheduleScreen(
+            viewModel = taskViewModel,
+            selectedWeekDay = selectedScheduleWeekDay,
+            onSelectWeekDay = { selectedScheduleWeekDay = it },
+            onEditSchedule = { scheduleToEdit ->
+              editingSchedule = scheduleToEdit
+              isAddScheduleDialogOpen = true
+            },
+            modifier = Modifier
+              .fillMaxSize()
+              .widthIn(max = metrics.maxContentWidth)
+          )
+        }
+      }
+
+      if (isAddTaskDialogOpen) {
+        val schedulesSnapshot = taskViewModel.classSchedules.toList()
+        val availableCategories = remember(schedulesSnapshot) {
+          buildList {
+            add(DEFAULT_TASK_CATEGORY)
+            schedulesSnapshot
+              .map { it.subjectName.trim() }
+              .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
+              .distinctBy { it.lowercase(Locale.US) }
+              .forEach { add(it) }
+          }
+        }
+        val preselectedCategory = availableCategories.firstOrNull {
+          it.equals(taskViewModel.selectedTaskFolder, ignoreCase = true)
+        } ?: DEFAULT_TASK_CATEGORY
+
+        AddTaskDialog(
+          availableCategories = availableCategories,
+          initialCategory = preselectedCategory,
+          onDismiss = { isAddTaskDialogOpen = false },
+          onAddTask = { newTaskTitle, newTaskDueDate, selectedCategory ->
+            taskViewModel.addTask(
+              title = newTaskTitle,
+              dueDate = newTaskDueDate,
+              subjectCategory = selectedCategory
+            )
+            taskViewModel.selectTaskFolder(selectedCategory)
+            isAddTaskDialogOpen = false
+          }
         )
-        CeNavTab.DASHBOARD -> DashboardScreen(
-          viewModel = taskViewModel,
-          onProfileIconClick = { isProfileSettingsDialogOpen = true },
-          modifier = Modifier.fillMaxSize()
-        )
-        CeNavTab.TASKS -> CourseworkTaskManagerScreen(
-          viewModel = taskViewModel,
-          modifier = Modifier
-            .fillMaxSize()
-            .widthIn(max = metrics.maxContentWidth)
-        )
-        CeNavTab.SCHEDULE -> ClassTimetableScheduleScreen(
-          viewModel = taskViewModel,
-          selectedWeekDay = selectedScheduleWeekDay,
-          onSelectWeekDay = { selectedScheduleWeekDay = it },
-          onEditSchedule = { scheduleToEdit ->
-            editingSchedule = scheduleToEdit
-            isAddScheduleDialogOpen = true
+      }
+
+      if (isAddScheduleDialogOpen) {
+        AddClassScheduleDialog(
+          initialDay = selectedScheduleWeekDay,
+          editingSchedule = editingSchedule,
+          onDismiss = {
+            isAddScheduleDialogOpen = false
+            editingSchedule = null
           },
-          modifier = Modifier
-            .fillMaxSize()
-            .widthIn(max = metrics.maxContentWidth)
+          onSaveSchedule = { subjectName, timeRange, selectedDays, room, colorHex ->
+            val currentEditing = editingSchedule
+            if (currentEditing != null) {
+              taskViewModel.updateClassSchedule(
+                scheduleId = currentEditing.id,
+                subjectName = subjectName,
+                timeRange = timeRange,
+                days = selectedDays,
+                room = room,
+                colorHex = colorHex
+              )
+            } else {
+              taskViewModel.addClassSchedule(
+                subjectName = subjectName,
+                timeRange = timeRange,
+                days = selectedDays,
+                room = room,
+                colorHex = colorHex
+              )
+            }
+            // Automatically switch the active Week View day tab if needed so the saved class is immediately visible
+            val matchesCurrentTab = selectedDays.any { selectedScheduleWeekDay.matchesToken(it) }
+            if (!matchesCurrentTab) {
+              val firstMatchingDay = ScheduleWeekDay.entries.firstOrNull { weekDay ->
+                selectedDays.any { weekDay.matchesToken(it) }
+              }
+              if (firstMatchingDay != null) {
+                selectedScheduleWeekDay = firstMatchingDay
+              }
+            }
+            isAddScheduleDialogOpen = false
+            editingSchedule = null
+          }
         )
       }
-    }
 
-    if (isAddTaskDialogOpen) {
-      val schedulesSnapshot = taskViewModel.classSchedules.toList()
-      val availableCategories = remember(schedulesSnapshot) {
-        buildList {
-          add(DEFAULT_TASK_CATEGORY)
-          schedulesSnapshot
-            .map { it.subjectName.trim() }
-            .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
-            .distinctBy { it.lowercase(Locale.US) }
-            .forEach { add(it) }
-        }
+      if (isProfileSettingsDialogOpen) {
+        ProfileAndSettingsDialog(
+          viewModel = taskViewModel,
+          onDismiss = { isProfileSettingsDialogOpen = false },
+          onSwitchAccount = {
+            isProfileSettingsDialogOpen = false
+            onLogout()
+          }
+        )
       }
-      val preselectedCategory = availableCategories.firstOrNull {
-        it.equals(taskViewModel.selectedTaskFolder, ignoreCase = true)
-      } ?: DEFAULT_TASK_CATEGORY
 
-      AddTaskDialog(
-        availableCategories = availableCategories,
-        initialCategory = preselectedCategory,
-        onDismiss = { isAddTaskDialogOpen = false },
-        onAddTask = { newTaskTitle, newTaskDueDate, selectedCategory ->
-          taskViewModel.addTask(
-            title = newTaskTitle,
-            dueDate = newTaskDueDate,
-            subjectCategory = selectedCategory
-          )
-          taskViewModel.selectTaskFolder(selectedCategory)
-          isAddTaskDialogOpen = false
-        }
-      )
-    }
-
-    if (isAddScheduleDialogOpen) {
-      AddClassScheduleDialog(
-        initialDay = selectedScheduleWeekDay,
-        editingSchedule = editingSchedule,
-        onDismiss = {
-          isAddScheduleDialogOpen = false
-          editingSchedule = null
-        },
-        onSaveSchedule = { subjectName, timeRange, selectedDays, room, colorHex ->
-          val currentEditing = editingSchedule
-          if (currentEditing != null) {
-            taskViewModel.updateClassSchedule(
-              scheduleId = currentEditing.id,
-              subjectName = subjectName,
-              timeRange = timeRange,
-              days = selectedDays,
-              room = room,
-              colorHex = colorHex
-            )
-          } else {
-            taskViewModel.addClassSchedule(
-              subjectName = subjectName,
-              timeRange = timeRange,
-              days = selectedDays,
-              room = room,
-              colorHex = colorHex
-            )
-          }
-          // Automatically switch the active Week View day tab if needed so the saved class is immediately visible
-          val matchesCurrentTab = selectedDays.any { selectedScheduleWeekDay.matchesToken(it) }
-          if (!matchesCurrentTab) {
-            val firstMatchingDay = ScheduleWeekDay.entries.firstOrNull { weekDay ->
-              selectedDays.any { weekDay.matchesToken(it) }
+      val currentRingingTitle = ringingAlertTitle
+      if (currentRingingTitle != null) {
+        RingingAlertDialog(
+          alertTitle = currentRingingTitle,
+          alertDetail = activeRingingAlertMessage,
+          metrics = metrics,
+          onStop = {
+            AlarmSoundController.stopRinging()
+            try {
+              NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+            } catch (_: Exception) {
             }
-            if (firstMatchingDay != null) {
-              selectedScheduleWeekDay = firstMatchingDay
+          },
+          onSnoozeFiveMinutes = {
+            AlarmSoundController.stopRinging()
+            try {
+              NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+            } catch (_: Exception) {
             }
+            snoozeTargetEpochMillis = System.currentTimeMillis() + 5L * 60L * 1000L
+            snoozeTargetTitle = currentRingingTitle
+            taskViewModel.scheduleFiveMinuteSnoozeAlarm(currentRingingTitle)
+            scheduleTimerExactAlarm(
+              context = context,
+              durationSeconds = 5L * 60L,
+              label = "$currentRingingTitle (Snooze)"
+            )
+            Toast.makeText(context, "Snoozed for 5 minutes", Toast.LENGTH_SHORT).show()
           }
-          isAddScheduleDialogOpen = false
-          editingSchedule = null
-        }
-      )
-    }
-
-    if (isProfileSettingsDialogOpen) {
-      ProfileAndSettingsDialog(
-        viewModel = taskViewModel,
-        onDismiss = { isProfileSettingsDialogOpen = false },
-        onSwitchAccount = {
-          isProfileSettingsDialogOpen = false
-          onLogout()
-        }
-      )
-    }
-
-    val currentRingingTitle = ringingAlertTitle
-    if (currentRingingTitle != null) {
-      RingingAlertDialog(
-        alertTitle = currentRingingTitle,
-        alertDetail = activeRingingAlertMessage,
-        metrics = metrics,
-        onStop = {
-          AlarmSoundController.stopRinging()
-          try {
-            NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
-          } catch (_: Exception) {
-          }
-        },
-        onSnoozeFiveMinutes = {
-          AlarmSoundController.stopRinging()
-          try {
-            NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
-          } catch (_: Exception) {
-          }
-          snoozeTargetEpochMillis = System.currentTimeMillis() + 5L * 60L * 1000L
-          snoozeTargetTitle = currentRingingTitle
-          taskViewModel.scheduleFiveMinuteSnoozeAlarm(currentRingingTitle)
-          scheduleTimerExactAlarm(
-            context = context,
-            durationSeconds = 5L * 60L,
-            label = "$currentRingingTitle (Snooze)"
-          )
-          Toast.makeText(context, "Snoozed for 5 minutes", Toast.LENGTH_SHORT).show()
-        }
-      )
+        )
+      }
     }
   }
 }
 
 /**
- * Redesigned Custom Bottom Task Bar docked at the bottom of the Scaffold:
- * - Uses the warm cream card palette (`#FFFBF0`) in Light Mode and dark surface in Dark Mode.
- * - Arranges the 5 destinations horizontally from Left to Right:
- *   Clock, Extras, [Spacer / Center Floating Dashboard Button], Tasks, Schedule.
- * - Center Item (Dashboard): Prominent, floating-style button overlapping the center of the bar
- *   with distinct depth (`elevation = 12.dp`), rounded-square/circular shape, colored with
- *   `MaterialTheme.colorScheme.primary` and a high-contrast white/light icon (`onPrimary`).
- * - 4 Side Items (Clock, Extras, Tasks, Schedule): Highlighted with subtle colors when active.
+ * ============================================================================
+ * 2. THE HIGHLIGHT: FLOATING LIQUID GLASS TASK BAR ("LIQUID GLASS DOCK")
+ * ============================================================================
+ * - Floats detached above the bottom screen edge with
+ *   `Modifier.navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)`.
+ * - Dock Surface:
+ *   * Rounded pill capsule (`RoundedCornerShape(32.dp)`).
+ *   * Liquid glass material: `Color.White.copy(alpha = 0.72f)` background with a top-lit specular rim
+ *     (`BorderStroke(1.5.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.95f), Color.White.copy(alpha = 0.3f))))`).
+ *   * Soft atmospheric glow/shadow underneath (`elevation = 16.dp`).
+ * - Center Dashboard "Liquid Orb" Button:
+ *   * Sits prominently raised at the center of the dock (`RoundedCornerShape(22.dp)`, `elevation = 14.dp`).
+ *   * Fluid Gradient Fill: `Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4F46E5), Color(0xFF4338CA)))`.
+ *   * Specular Glass Sheen: `BorderStroke(1.5.dp, Color.White.copy(alpha = 0.6f))`.
+ *   * Clean white icon that pops with high contrast.
+ * - Side Nav Icons (Clock, Extras, Tasks, Schedule):
+ *   * Active: Glowing translucent pill indicator (`Color(0xFF6366F1).copy(alpha = 0.15f)`) with saturated brand tint.
+ *   * Inactive: Translucent charcoal tint (`Color(0xFF475569).copy(alpha = 0.65f)`) with clean micro-typography.
  */
 @Composable
 private fun CustomDockedBottomTaskBar(
@@ -4124,37 +5424,57 @@ private fun CustomDockedBottomTaskBar(
   metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier
 ) {
-  val barContainerColor = dashboardCreamCardColor()
-  val isLight = MaterialTheme.colorScheme.background.red > 0.5f
-  val topBorderColor = if (isLight) {
-    Color(0xFFE6DEC8)
+  val palette = currentGlassPalette()
+  val dockShape = RoundedCornerShape(32.dp)
+  val dockBackgroundColor = palette.dockFill
+  val dockSpecularBorder = if (!palette.isDark) {
+    BorderStroke(
+      width = 1.5.dp,
+      color = palette.dockBorderColor
+    )
   } else {
-    MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+    BorderStroke(
+      width = 1.5.dp,
+      brush = Brush.verticalGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.35f),
+          Color(0xFF6366F1).copy(alpha = 0.25f)
+        )
+      )
+    )
   }
 
   Box(
     modifier = modifier
       .fillMaxWidth()
       .navigationBarsPadding()
+      .padding(horizontal = 20.dp, vertical = 10.dp)
       .testTag("bottom_navigation_bar"),
     contentAlignment = Alignment.BottomCenter
   ) {
-    // Docked Cream Bar Surface
-    Surface(
+    // Detached Floating Pill Capsule Dock Surface
+    Box(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = 18.dp),
-      color = barContainerColor,
-      tonalElevation = 6.dp,
-      shadowElevation = 10.dp,
-      shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-      border = BorderStroke(1.dp, topBorderColor)
+        .widthIn(max = metrics.maxContentWidth)
+        .padding(top = 16.dp)
+        .shadow(
+          elevation = 16.dp,
+          shape = dockShape,
+          ambientColor = palette.shadowAmbient,
+          spotColor = palette.shadowSpot
+        )
+        .clip(dockShape)
+        .background(
+          color = dockBackgroundColor,
+          shape = dockShape
+        )
+        .border(border = dockSpecularBorder, shape = dockShape)
     ) {
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .widthIn(max = metrics.maxContentWidth)
-          .padding(horizontal = metrics.scaledDp(8), vertical = 8.dp),
+          .padding(horizontal = metrics.scaledDp(10), vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -4174,8 +5494,8 @@ private fun CustomDockedBottomTaskBar(
           modifier = Modifier.weight(1f)
         )
 
-        // Center Spacer reserved for the overlapping Dashboard button
-        Spacer(modifier = Modifier.width(metrics.scaledDp(76)))
+        // Center Spacer reserved for the raised Liquid Orb Dashboard button
+        Spacer(modifier = Modifier.width(metrics.scaledDp(74)))
 
         // Right Side: Tasks & Schedule
         CustomSideBottomBarItem(
@@ -4195,62 +5515,81 @@ private fun CustomDockedBottomTaskBar(
       }
     }
 
-    // Prominent Floating Center Button for Dashboard overlapping the center of the bar
+    // Center Dashboard "Liquid Orb" Button raised prominently at the center of the dock
     val isDashboardSelected = selectedTab == CeNavTab.DASHBOARD
+    val orbShape = RoundedCornerShape(22.dp)
+    val orbBrush = Brush.linearGradient(
+      colors = listOf(
+        Color(0xFF6366F1),
+        Color(0xFF4F46E5),
+        Color(0xFF4338CA)
+      )
+    )
+
     Column(
       modifier = Modifier
         .align(Alignment.TopCenter)
-        .padding(bottom = 6.dp),
+        .padding(bottom = 8.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.spacedBy(2.dp)
+      verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-      Card(
-        onClick = { onSelectTab(CeNavTab.DASHBOARD) },
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-          containerColor = MaterialTheme.colorScheme.primary,
-          contentColor = MaterialTheme.colorScheme.onPrimary
-        ),
-        elevation = CardDefaults.cardElevation(
-          defaultElevation = 12.dp,
-          pressedElevation = 16.dp
-        ),
-        border = if (isDashboardSelected) {
-          BorderStroke(2.5.dp, barContainerColor)
-        } else {
-          BorderStroke(1.5.dp, barContainerColor.copy(alpha = 0.85f))
-        },
+      Box(
         modifier = Modifier
           .size(metrics.scaledDp(58))
-          .testTag(CeNavTab.DASHBOARD.routeTag)
-      ) {
-        Box(
-          modifier = Modifier.fillMaxSize(),
-          contentAlignment = Alignment.Center
-        ) {
-          Icon(
-            imageVector = if (isDashboardSelected) {
-              CeNavTab.DASHBOARD.selectedIcon
-            } else {
-              CeNavTab.DASHBOARD.unselectedIcon
-            },
-            contentDescription = CeNavTab.DASHBOARD.title,
-            tint = Color.White,
-            modifier = Modifier.size(28.dp)
+          .shadow(
+            elevation = 14.dp,
+            shape = orbShape,
+            ambientColor = Color(0x334338CA),
+            spotColor = Color(0x554F46E5)
           )
-        }
+          .clip(orbShape)
+          .background(brush = orbBrush, shape = orbShape)
+          .border(
+            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.6f)),
+            shape = orbShape
+          )
+          .clickable { onSelectTab(CeNavTab.DASHBOARD) }
+          .testTag(CeNavTab.DASHBOARD.routeTag),
+        contentAlignment = Alignment.Center
+      ) {
+        // Subtle top-half inner glass highlight sheen inside the Liquid Orb
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(metrics.scaledDp(26))
+            .align(Alignment.TopCenter)
+            .background(
+              brush = Brush.verticalGradient(
+                colors = listOf(
+                  Color.White.copy(alpha = 0.28f),
+                  Color.Transparent
+                )
+              )
+            )
+        )
+
+        Icon(
+          imageVector = if (isDashboardSelected) {
+            CeNavTab.DASHBOARD.selectedIcon
+          } else {
+            CeNavTab.DASHBOARD.unselectedIcon
+          },
+          contentDescription = CeNavTab.DASHBOARD.title,
+          tint = Color.White,
+          modifier = Modifier.size(27.dp)
+        )
       }
 
       Text(
         text = CeNavTab.DASHBOARD.title,
         style = MaterialTheme.typography.labelSmall.copy(
           fontSize = metrics.scaledSp(11),
-          fontWeight = if (isDashboardSelected) FontWeight.Bold else FontWeight.SemiBold
+          fontWeight = if (isDashboardSelected) FontWeight.ExtraBold else FontWeight.SemiBold
         ),
         color = if (isDashboardSelected) {
-          MaterialTheme.colorScheme.primary
+          palette.accentIndigo
         } else {
-          MaterialTheme.colorScheme.onSurfaceVariant
+          palette.textSecondary
         },
         maxLines = 1,
         overflow = TextOverflow.Ellipsis
@@ -4267,24 +5606,28 @@ private fun CustomSideBottomBarItem(
   metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier
 ) {
-  val activePillColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-  val iconTint = if (isSelected) {
-    MaterialTheme.colorScheme.primary
-  } else {
-    MaterialTheme.colorScheme.onSurfaceVariant
-  }
-  val textColor = if (isSelected) {
-    MaterialTheme.colorScheme.primary
-  } else {
-    MaterialTheme.colorScheme.onSurfaceVariant
-  }
+  val palette = currentGlassPalette()
+  val activePillColor = Color(0xFF6366F1).copy(alpha = 0.16f)
+  val saturatedBrandColor = palette.accentIndigo
+  val inactiveTint = palette.textSecondary
+
+  val animatedIconTint by animateColorAsState(
+    targetValue = if (isSelected) saturatedBrandColor else inactiveTint,
+    animationSpec = tween(durationMillis = 220),
+    label = "nav_icon_tint_${tab.name}"
+  )
+  val animatedTextColor by animateColorAsState(
+    targetValue = if (isSelected) saturatedBrandColor else inactiveTint,
+    animationSpec = tween(durationMillis = 220),
+    label = "nav_text_color_${tab.name}"
+  )
 
   Column(
     modifier = modifier
-      .clip(RoundedCornerShape(16.dp))
+      .clip(RoundedCornerShape(18.dp))
       .clickable(onClick = onClick)
       .minimumInteractiveComponentSize()
-      .padding(vertical = 4.dp, horizontal = 4.dp)
+      .padding(vertical = 3.dp, horizontal = 2.dp)
       .testTag(tab.routeTag),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -4292,26 +5635,36 @@ private fun CustomSideBottomBarItem(
     Box(
       modifier = Modifier
         .height(32.dp)
-        .width(52.dp)
+        .width(54.dp)
         .clip(CircleShape)
-        .background(if (isSelected) activePillColor else Color.Transparent),
+        .background(if (isSelected) activePillColor else Color.Transparent)
+        .then(
+          if (isSelected) {
+            Modifier.border(
+              BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f)),
+              CircleShape
+            )
+          } else {
+            Modifier
+          }
+        ),
       contentAlignment = Alignment.Center
     ) {
       Icon(
         imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
         contentDescription = tab.title,
-        tint = iconTint,
-        modifier = Modifier.size(22.dp)
+        tint = animatedIconTint,
+        modifier = Modifier.size(21.dp)
       )
     }
 
     Text(
       text = tab.title,
       style = MaterialTheme.typography.labelSmall.copy(
-        fontSize = metrics.scaledSp(11),
-        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+        fontSize = metrics.scaledSp(10),
+        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
       ),
-      color = textColor,
+      color = animatedTextColor,
       maxLines = 1,
       overflow = TextOverflow.Ellipsis
     )
@@ -4319,12 +5672,13 @@ private fun CustomSideBottomBarItem(
 }
 
 /**
- * Main Academic Dashboard Screen (single, static vertical scrolling screen without HorizontalPager or right-edge Extras pill):
- * - Subtle geometric Canvas background behind dashboard content.
- * - Real Open-Meteo Weather Summary & live ticking `LocalDateTime` header.
+ * Main Academic Dashboard Screen styled with the Liquid Glass (Glassmorphic) design system:
+ * - Layered over the root `LiquidGlassBackgroundMesh` so ambient glows shine through.
+ * - Real Open-Meteo Weather Summary & live ticking `LocalDateTime` header with frosted glass badges.
  * - Clickable upper-right Profile Icon opening the Settings Dialog.
- * - Side-by-side "Daily Progress" ring + "Today's Schedule" interactive card.
- * - Dynamic "Upcoming Deadlines" Task List connected to `TaskViewModel`.
+ * - Side-by-side frosted glass pods for "Daily Progress" (with Cyan-to-Electric-Violet gradient arc)
+ *   and "Today's Schedule".
+ * - Dynamic "Upcoming Deadlines" translucent glass tiles with subtle glowing status dots.
  */
 @Composable
 fun DashboardScreen(
@@ -4335,6 +5689,7 @@ fun DashboardScreen(
   val context = LocalContext.current
   val coroutineScope = rememberCoroutineScope()
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
 
   val allTasks = viewModel.tasks
   val tasksSnapshot = allTasks.toList()
@@ -4392,17 +5747,11 @@ fun DashboardScreen(
     }
   }
 
-  val primaryShapeColor = MaterialTheme.colorScheme.primary
-  val secondaryShapeColor = MaterialTheme.colorScheme.secondary
-  val tertiaryShapeColor = MaterialTheme.colorScheme.tertiary
-
   Box(
-    modifier = modifier
-      .fillMaxSize()
-      .background(MaterialTheme.colorScheme.background),
+    modifier = modifier.fillMaxSize(),
     contentAlignment = Alignment.TopCenter
   ) {
-    // Subtle, low-opacity geometric Canvas background behind dashboard content
+    // Ambient geometric glass light refractions behind dashboard content
     Canvas(
       modifier = Modifier
         .fillMaxSize()
@@ -4412,42 +5761,29 @@ fun DashboardScreen(
       val h = size.height
 
       drawCircle(
-        color = primaryShapeColor.copy(alpha = 0.05f),
+        color = LiquidRoyalPeriwinkle.copy(alpha = 0.06f),
         radius = w * 0.44f,
         center = Offset(x = w * 0.88f, y = h * 0.12f)
       )
       drawCircle(
-        color = secondaryShapeColor.copy(alpha = 0.04f),
+        color = LiquidCyanGlow.copy(alpha = 0.05f),
         radius = w * 0.36f,
         center = Offset(x = w * 0.14f, y = h * 0.34f)
       )
       drawCircle(
-        color = tertiaryShapeColor.copy(alpha = 0.045f),
+        color = LiquidElectricViolet.copy(alpha = 0.05f),
         radius = w * 0.46f,
         center = Offset(x = w * 0.82f, y = h * 0.82f)
       )
 
       rotate(degrees = -14f, pivot = Offset(w * 0.25f, h * 0.18f)) {
         drawRoundRect(
-          color = primaryShapeColor.copy(alpha = 0.04f),
+          color = Color.White.copy(alpha = if (palette.isDark) 0.05f else 0.22f),
           topLeft = Offset(x = -w * 0.08f, y = h * 0.08f),
           size = Size(width = w * 0.56f, height = h * 0.14f),
           cornerRadius = CornerRadius(36f, 36f)
         )
       }
-
-      val polyPath = Path().apply {
-        moveTo(w * 0.06f, h * 0.68f)
-        lineTo(w * 0.28f, h * 0.62f)
-        lineTo(w * 0.42f, h * 0.74f)
-        lineTo(w * 0.30f, h * 0.88f)
-        lineTo(w * 0.08f, h * 0.84f)
-        close()
-      }
-      drawPath(
-        path = polyPath,
-        color = primaryShapeColor.copy(alpha = 0.035f)
-      )
     }
 
     // Single, static vertical scrolling Dashboard Content
@@ -4462,111 +5798,126 @@ fun DashboardScreen(
       ),
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(20))
     ) {
-      // 1. Dynamic Top Header: Logged-in Username ("Guest User" if guest), Weather Summary, Live LocalDateTime, and Profile Icon
+      // 1. Dynamic Top Header inside a Frosted Liquid Glass Banner Pod
       item {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
-          verticalAlignment = Alignment.CenterVertically
+        LiquidGlassCard(
+          cornerRadius = 26.dp,
+          elevation = 8.dp,
+          modifier = Modifier.fillMaxWidth()
         ) {
-          Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
-          ) {
-            Text(
-              text = viewModel.displayUsername,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = metrics.scaledSp(16),
-                fontWeight = FontWeight.Bold
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(
+                horizontal = metrics.scaledDp(18),
+                vertical = metrics.scaledDp(16)
               ),
-              color = MaterialTheme.colorScheme.primary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("dashboard_username_header")
-            )
-
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .clickable {
-                  coroutineScope.launch {
-                    val (lat, lon) = resolveDeviceCoordinatesOrFallback(context)
-                    viewModel.fetchWeather(latitude = lat, longitude = lon)
-                  }
-                },
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
             ) {
-              Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(14.dp),
-                shadowElevation = 4.dp,
-                modifier = Modifier.size(40.dp)
-              ) {
-                Box(contentAlignment = Alignment.Center) {
-                  Icon(
-                    imageVector = Icons.Filled.Cloud,
-                    contentDescription = "Live Weather Icon",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                  )
-                }
-              }
-
               Text(
-                text = viewModel.weatherText,
-                style = MaterialTheme.typography.headlineLarge.copy(
-                  fontSize = metrics.scaledSp(24),
-                  lineHeight = metrics.scaledSp(30),
+                text = viewModel.displayUsername,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(15),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onBackground,
+                color = palette.accentIndigo,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
-                  .weight(1f)
-                  .testTag("dashboard_weather_header")
+                  .fillMaxWidth()
+                  .testTag("dashboard_username_header")
+              )
+
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(14.dp))
+                  .clickable {
+                    coroutineScope.launch {
+                      val (lat, lon) = resolveDeviceCoordinatesOrFallback(context)
+                      viewModel.fetchWeather(latitude = lat, longitude = lon)
+                    }
+                  },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(brush = LiquidCyanVioletGradient)
+                    .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)), RoundedCornerShape(14.dp)),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Cloud,
+                    contentDescription = "Live Weather Icon",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                  )
+                }
+
+                Text(
+                  text = viewModel.weatherText,
+                  style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = metrics.scaledSp(23),
+                    lineHeight = metrics.scaledSp(29),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier
+                    .weight(1f)
+                    .testTag("dashboard_weather_header")
+                )
+              }
+
+              Text(
+                text = currentDateTimeText,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("dashboard_datetime_header")
               )
             }
 
-            Text(
-              text = currentDateTimeText,
-              style = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = metrics.scaledSp(15),
-                fontWeight = FontWeight.Bold
-              ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
+            LiquidGlassContainer(
+              cornerRadius = 24.dp,
+              fillAlpha = 0.65f,
+              onClick = onProfileIconClick,
               modifier = Modifier
-                .fillMaxWidth()
-                .testTag("dashboard_datetime_header")
-            )
-          }
-
-          IconButton(
-            onClick = onProfileIconClick,
-            modifier = Modifier
-              .size(48.dp)
-              .minimumInteractiveComponentSize()
-              .testTag("dashboard_profile_icon_button")
-          ) {
-            Icon(
-              imageVector = Icons.Default.AccountCircle,
-              contentDescription = "Open Profile & Settings",
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(36.dp)
-            )
+                .size(48.dp)
+                .minimumInteractiveComponentSize()
+                .testTag("dashboard_profile_icon_button")
+            ) {
+              Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Default.AccountCircle,
+                  contentDescription = "Open Profile & Settings",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(32.dp)
+                )
+              }
+            }
           }
         }
       }
 
-      // 2. Middle Section (Side-by-Side): Floating Daily Progress Card next to Dynamic Today's Schedule Card
+      // 2. Middle Section (Side-by-Side): Frosted Glass Daily Progress Pod + Today's Schedule Pod
       item {
-        val middleRowHeight = metrics.scaledDp(276)
+        val middleRowHeight = metrics.scaledDp(278)
         val todayAbbreviation = remember { resolveTodayCorDayAbbreviation() }
         val schedulesSnapshot = viewModel.classSchedules.toList()
         val todaysFilteredClasses = remember(schedulesSnapshot, todayAbbreviation) {
@@ -4600,7 +5951,7 @@ fun DashboardScreen(
         }
       }
 
-      // 3. Bottom Section: Dynamic "Upcoming Deadlines" Task List connected to ViewModel
+      // 3. Bottom Section: Dynamic "Upcoming Deadlines" Task List in Frosted Glass
       item {
         UpcomingDeadlinesSectionCard(
           activeTasks = activeTasks,
@@ -4615,8 +5966,8 @@ fun DashboardScreen(
 }
 
 /**
- * Side-by-side Floating Daily Progress Ring Card for the middle row of Page 0.
- * Styled with a warm cream background (`#FFFBF0`), `8.dp` elevation, and high-contrast text/rings.
+ * Frosted Glass Daily Progress Pod (`LiquidGlassCard`) featuring a vibrant
+ * Cyan-to-Electric-Violet gradient progress arc contrasting against a frosted circular track.
  */
 @Composable
 private fun CompactDailyProgressCard(
@@ -4625,6 +5976,7 @@ private fun CompactDailyProgressCard(
   metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier
 ) {
+  val palette = currentGlassPalette()
   val rawProgress = if (totalCount > 0) {
     (completedCount.toFloat() / totalCount.toFloat()).coerceIn(0f, 1f)
   } else {
@@ -4638,19 +5990,12 @@ private fun CompactDailyProgressCard(
   )
   val percentInt = (rawProgress * 100).toInt()
   val ringDiameter = if (metrics.screenWidthDp < 360) 104.dp else metrics.scaledDp(118)
-  val cardContainerColor = dashboardCreamCardColor()
-  val ringTrackColor = dashboardProgressTrackColor()
+  val ringTrackColor = palette.trackColor
 
-  Card(
-    modifier = modifier.testTag("daily_study_progress_card"),
-    shape = RoundedCornerShape(22.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = cardContainerColor
-    ),
-    elevation = CardDefaults.cardElevation(
-      defaultElevation = 8.dp,
-      pressedElevation = 10.dp
-    )
+  LiquidGlassCard(
+    cornerRadius = 26.dp,
+    elevation = 8.dp,
+    modifier = modifier.testTag("daily_study_progress_card")
   ) {
     Column(
       modifier = Modifier
@@ -4670,7 +6015,7 @@ private fun CompactDailyProgressCard(
             fontSize = metrics.scaledSp(16),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.weight(1f)
@@ -4686,14 +6031,13 @@ private fun CompactDailyProgressCard(
           },
         contentAlignment = Alignment.Center
       ) {
-        val progressColor = MaterialTheme.colorScheme.primary
-
         Canvas(modifier = Modifier.fillMaxSize()) {
           val strokeWidth = 11.dp.toPx()
           val diameter = size.minDimension - strokeWidth
           val topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f)
           val arcSize = Size(diameter, diameter)
 
+          // Frosted circular track
           drawArc(
             color = ringTrackColor,
             startAngle = -90f,
@@ -4704,15 +6048,26 @@ private fun CompactDailyProgressCard(
             style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
           )
 
-          drawArc(
-            color = progressColor,
-            startAngle = -90f,
-            sweepAngle = 360f * animatedProgress,
-            useCenter = false,
-            topLeft = topLeft,
-            size = arcSize,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-          )
+          // Vibrant Cyan to Electric Violet gradient progress arc
+          if (animatedProgress > 0f) {
+            drawArc(
+              brush = Brush.linearGradient(
+                colors = listOf(
+                  LiquidCyanGlow,
+                  LiquidRoyalPeriwinkle,
+                  LiquidElectricViolet
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(size.width, size.height)
+              ),
+              startAngle = -90f,
+              sweepAngle = 360f * animatedProgress,
+              useCenter = false,
+              topLeft = topLeft,
+              size = arcSize,
+              style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+          }
         }
 
         Column(
@@ -4724,7 +6079,7 @@ private fun CompactDailyProgressCard(
             fontFamily = JetBrainsMonoFamily,
             fontWeight = FontWeight.Bold,
             fontSize = metrics.scaledSp(20),
-            color = MaterialTheme.colorScheme.onSurface,
+            color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
@@ -4734,7 +6089,7 @@ private fun CompactDailyProgressCard(
               fontSize = metrics.scaledSp(11),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
@@ -4752,7 +6107,7 @@ private fun CompactDailyProgressCard(
             .height(8.dp)
             .clip(CircleShape)
             .testTag("daily_study_linear_progress"),
-          color = MaterialTheme.colorScheme.primary,
+          color = LiquidElectricViolet,
           trackColor = ringTrackColor
         )
         Text(
@@ -4761,7 +6116,7 @@ private fun CompactDailyProgressCard(
             fontSize = metrics.scaledSp(11),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          color = palette.textSecondary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           textAlign = TextAlign.Center,
@@ -4773,12 +6128,7 @@ private fun CompactDailyProgressCard(
 }
 
 /**
- * Dynamic Floating "Today's Schedule" Card on the Main Dashboard:
- * - Styled with warm cream background (`#FFFBF0`) and `elevation = 8.dp`.
- * - Uses `LazyColumn` to recycle schedule items efficiently on low-end devices.
- * - Displays classes from `ViewModel.classSchedules` filtered by `LocalDate.now().dayOfWeek`
- *   ("M", "Tue", "W", "Th", "F", "Sat").
- * - If the filtered list is empty, displays a cleanly centered "Empty" label inside the card.
+ * Dynamic Frosted Glass "Today's Schedule" Pod on the Main Dashboard (`LiquidGlassCard`).
  */
 @Composable
 private fun TodaysScheduleInteractiveCard(
@@ -4787,20 +6137,13 @@ private fun TodaysScheduleInteractiveCard(
   metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier
 ) {
+  val palette = currentGlassPalette()
   var selectedClassId by rememberSaveable { mutableIntStateOf(todaysClasses.firstOrNull()?.id ?: -1) }
-  val cardContainerColor = dashboardCreamCardColor()
-  val innerItemColor = dashboardIvoryInnerColor()
 
-  Card(
-    modifier = modifier.testTag("todays_schedule_card"),
-    shape = RoundedCornerShape(22.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = cardContainerColor
-    ),
-    elevation = CardDefaults.cardElevation(
-      defaultElevation = 8.dp,
-      pressedElevation = 10.dp
-    )
+  LiquidGlassCard(
+    cornerRadius = 26.dp,
+    elevation = 8.dp,
+    modifier = modifier.testTag("todays_schedule_card")
   ) {
     Column(
       modifier = Modifier
@@ -4819,15 +6162,17 @@ private fun TodaysScheduleInteractiveCard(
             fontSize = metrics.scaledSp(15),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.weight(1f)
         )
 
-        Surface(
-          color = MaterialTheme.colorScheme.primaryContainer,
-          shape = CircleShape
+        Box(
+          modifier = Modifier
+            .clip(CircleShape)
+            .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
+            .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
         ) {
           Text(
             text = "$todayAbbreviation • ${todaysClasses.size}",
@@ -4835,7 +6180,7 @@ private fun TodaysScheduleInteractiveCard(
               fontSize = metrics.scaledSp(10),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = palette.accentIndigo,
             maxLines = 1,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
           )
@@ -4856,7 +6201,7 @@ private fun TodaysScheduleInteractiveCard(
               fontSize = metrics.scaledSp(16),
               fontWeight = FontWeight.SemiBold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -4864,7 +6209,6 @@ private fun TodaysScheduleInteractiveCard(
           )
         }
       } else {
-        // LazyColumn of today's classes inside the card for low-end device view recycling
         LazyColumn(
           modifier = Modifier
             .weight(1f)
@@ -4878,19 +6222,17 @@ private fun TodaysScheduleInteractiveCard(
           ) { item ->
             val isSelected = selectedClassId == item.id
             val accentColor = Color(item.colorHex)
-            Surface(
+            LiquidGlassContainer(
+              cornerRadius = 14.dp,
+              fillAlpha = if (isSelected) 0.85f else 0.72f,
+              borderStroke = BorderStroke(
+                width = if (isSelected) 1.4.dp else 1.dp,
+                color = if (isSelected) accentColor.copy(alpha = 0.75f) else palette.nestedBorderColor
+              ),
+              onClick = { selectedClassId = item.id },
               modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .clickable { selectedClassId = item.id }
-                .testTag("schedule_item_${item.id}"),
-              shape = RoundedCornerShape(14.dp),
-              color = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-              } else {
-                innerItemColor
-              },
-              shadowElevation = 1.dp
+                .testTag("schedule_item_${item.id}")
             ) {
               Column(
                 modifier = Modifier
@@ -4908,7 +6250,8 @@ private fun TodaysScheduleInteractiveCard(
                 ) {
                   Box(
                     modifier = Modifier
-                      .size(8.dp)
+                      .size(9.dp)
+                      .shadow(4.dp, CircleShape, spotColor = accentColor)
                       .clip(CircleShape)
                       .background(accentColor)
                   )
@@ -4918,11 +6261,7 @@ private fun TodaysScheduleInteractiveCard(
                       fontSize = metrics.scaledSp(12),
                       fontWeight = FontWeight.Bold
                     ),
-                    color = if (isSelected) {
-                      MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                      MaterialTheme.colorScheme.onSurface
-                    },
+                    color = palette.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -4936,9 +6275,9 @@ private fun TodaysScheduleInteractiveCard(
                     fontWeight = FontWeight.SemiBold
                   ),
                   color = if (isSelected) {
-                    MaterialTheme.colorScheme.primary
+                    palette.accentIndigo
                   } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
+                    palette.textSecondary
                   },
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
@@ -4953,7 +6292,7 @@ private fun TodaysScheduleInteractiveCard(
                   Icon(
                     imageVector = Icons.Outlined.LocationOn,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = palette.accentIndigo,
                     modifier = Modifier.size(14.dp)
                   )
                   Text(
@@ -4962,7 +6301,7 @@ private fun TodaysScheduleInteractiveCard(
                       fontSize = metrics.scaledSp(11),
                       fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.primary,
+                    color = palette.accentIndigo,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -4978,8 +6317,8 @@ private fun TodaysScheduleInteractiveCard(
 }
 
 /**
- * Floating rounded section Card containing the dynamic "Upcoming Deadlines" list,
- * styled with a warm cream background (`#FFFBF0`) and `elevation = 8.dp`.
+ * Frosted Glass "Upcoming Deadlines" section (`LiquidGlassCard`) with translucent glass tiles
+ * and subtle glowing status dots.
  */
 @Composable
 private fun UpcomingDeadlinesSectionCard(
@@ -4987,20 +6326,13 @@ private fun UpcomingDeadlinesSectionCard(
   metrics: ResponsiveMetrics,
   onToggleComplete: (Int) -> Unit
 ) {
-  val cardContainerColor = dashboardCreamCardColor()
-
-  Card(
+  val palette = currentGlassPalette()
+  LiquidGlassCard(
+    cornerRadius = 26.dp,
+    elevation = 8.dp,
     modifier = Modifier
       .fillMaxWidth()
-      .testTag("upcoming_deadlines_section_card"),
-    shape = RoundedCornerShape(24.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = cardContainerColor
-    ),
-    elevation = CardDefaults.cardElevation(
-      defaultElevation = 8.dp,
-      pressedElevation = 10.dp
-    )
+      .testTag("upcoming_deadlines_section_card")
   ) {
     Column(
       modifier = Modifier
@@ -5019,7 +6351,7 @@ private fun UpcomingDeadlinesSectionCard(
             fontSize = metrics.scaledSp(19),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier
@@ -5027,9 +6359,11 @@ private fun UpcomingDeadlinesSectionCard(
             .testTag("upcoming_deadlines_header")
         )
 
-        Surface(
-          color = MaterialTheme.colorScheme.primaryContainer,
-          shape = CircleShape
+        Box(
+          modifier = Modifier
+            .clip(CircleShape)
+            .background(LiquidRoyalPeriwinkle.copy(alpha = 0.15f))
+            .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
         ) {
           Text(
             text = "${activeTasks.size} Active",
@@ -5037,7 +6371,7 @@ private fun UpcomingDeadlinesSectionCard(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = palette.accentIndigo,
             maxLines = 1,
             modifier = Modifier.padding(
               horizontal = metrics.scaledDp(12),
@@ -5061,7 +6395,7 @@ private fun UpcomingDeadlinesSectionCard(
               fontSize = metrics.scaledSp(16),
               fontWeight = FontWeight.SemiBold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             textAlign = TextAlign.Center,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
@@ -5085,9 +6419,8 @@ private fun UpcomingDeadlinesSectionCard(
 }
 
 /**
- * Clean, breathable mini-card for each active task in the Upcoming Deadlines section.
- * Uses warm ivory (`#FDFBF7`) in light mode, `Modifier.weight(1f)` on the text column,
- * and `TextOverflow.Ellipsis`.
+ * Translucent glass tile (`LiquidGlassContainer`) for each active task in Upcoming Deadlines,
+ * featuring a subtle glowing status dot and frosted category pill.
  */
 @Composable
 private fun DashboardTaskMiniCard(
@@ -5095,17 +6428,14 @@ private fun DashboardTaskMiniCard(
   metrics: ResponsiveMetrics,
   onToggleComplete: () -> Unit
 ) {
-  val innerSurfaceColor = dashboardIvoryInnerColor()
-
-  Surface(
+  val palette = currentGlassPalette()
+  LiquidGlassContainer(
+    cornerRadius = 18.dp,
+    fillAlpha = 0.75f,
+    onClick = onToggleComplete,
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(16.dp))
-      .clickable(onClick = onToggleComplete)
-      .testTag("dashboard_deadline_card_${task.id}"),
-    shape = RoundedCornerShape(16.dp),
-    color = innerSurfaceColor,
-    shadowElevation = 2.dp
+      .testTag("dashboard_deadline_card_${task.id}")
   ) {
     Row(
       modifier = Modifier
@@ -5117,12 +6447,26 @@ private fun DashboardTaskMiniCard(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
     ) {
-      Icon(
-        imageVector = Icons.Filled.RadioButtonUnchecked,
-        contentDescription = "Mark ${task.title} complete",
-        tint = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.size(24.dp)
-      )
+      // Glowing status dot + interactive completion ring
+      Box(
+        modifier = Modifier
+          .size(28.dp)
+          .clip(CircleShape)
+          .background(palette.checkboxUncheckedFill)
+          .border(
+            BorderStroke(1.5.dp, palette.checkboxUncheckedBorder),
+            CircleShape
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        Box(
+          modifier = Modifier
+            .size(9.dp)
+            .shadow(4.dp, CircleShape, spotColor = LiquidCyanGlow)
+            .clip(CircleShape)
+            .background(brush = LiquidCyanVioletGradient)
+        )
+      }
 
       Column(
         modifier = Modifier.weight(1f),
@@ -5134,7 +6478,7 @@ private fun DashboardTaskMiniCard(
             fontSize = metrics.scaledSp(16),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 2,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.fillMaxWidth()
@@ -5148,8 +6492,8 @@ private fun DashboardTaskMiniCard(
           Icon(
             imageVector = Icons.Outlined.CalendarToday,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(16.dp)
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(15.dp)
           )
           Text(
             text = "Due ${task.dueDate}",
@@ -5157,14 +6501,16 @@ private fun DashboardTaskMiniCard(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.SemiBold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
           )
-          Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shape = CircleShape
+          Box(
+            modifier = Modifier
+              .clip(CircleShape)
+              .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
+              .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
           ) {
             Text(
               text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
@@ -5172,7 +6518,7 @@ private fun DashboardTaskMiniCard(
                 fontSize = metrics.scaledSp(10),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              color = palette.accentIndigo,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier
@@ -5209,8 +6555,10 @@ fun ExtrasScreen(
   }
 
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   var selectedToolTitle by rememberSaveable { mutableStateOf<String?>(null) }
   var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
+  var isFormulaVaultOpen by rememberSaveable { mutableStateOf(false) }
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
 
   val extraTools = remember {
@@ -5238,11 +6586,26 @@ fun ExtrasScreen(
         title = "Smart Flashcards",
         subtitle = "CE active-recall & PDF import",
         icon = Icons.Filled.AutoAwesome
+      ),
+      ExtraToolItem(
+        id = "ce_formula_vault",
+        title = "CE Formula Vault",
+        subtitle = "Interactive structural & hydro solvers",
+        icon = Icons.Filled.Functions
       )
     )
   }
 
   val activeStudyDeck = viewModel.flashcardDecks.firstOrNull { it.id == activeStudyDeckId }
+
+  if (isFormulaVaultOpen) {
+    FormulaVaultMainView(
+      metrics = metrics,
+      onBackToExtras = { isFormulaVaultOpen = false },
+      modifier = modifier
+    )
+    return
+  }
 
   if (isFlashcardsOpen) {
     if (activeStudyDeck != null) {
@@ -5255,6 +6618,9 @@ fun ExtrasScreen(
             cardId = cardId,
             newMasteryLevel = rating
           )
+        },
+        onResetMastery = {
+          viewModel.resetDeckMastery(activeStudyDeck.id)
         },
         onBackToDecks = { activeStudyDeckId = null },
         modifier = modifier
@@ -5294,7 +6660,7 @@ fun ExtrasScreen(
           fontSize = metrics.scaledSp(26),
           fontWeight = FontWeight.Bold
         ),
-        color = MaterialTheme.colorScheme.onBackground,
+        color = palette.textPrimary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
@@ -5307,14 +6673,14 @@ fun ExtrasScreen(
           fontSize = metrics.scaledSp(14),
           fontWeight = FontWeight.SemiBold
         ),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        color = palette.textSecondary,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.fillMaxWidth()
       )
     }
 
-    // Neat 2x2 Grid of Floating Engineering Tool Cards
+    // 3D Frosted Glass Engineering Tool Grid
     Column(
       modifier = Modifier.fillMaxWidth(),
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
@@ -5354,14 +6720,22 @@ fun ExtrasScreen(
           modifier = Modifier.weight(1f)
         )
       }
+
+      // Featured Full-Width CE Formula Vault Card
+      ExtraToolPlaceholderCard(
+        tool = extraTools[4],
+        metrics = metrics,
+        onClick = { isFormulaVaultOpen = true },
+        modifier = Modifier.fillMaxWidth()
+      )
     }
   }
 
   if (selectedToolTitle != null) {
     AlertDialog(
       onDismissRequest = { selectedToolTitle = null },
-      shape = RoundedCornerShape(24.dp),
-      containerColor = MaterialTheme.colorScheme.surface,
+      shape = RoundedCornerShape(28.dp),
+      containerColor = palette.dialogSurface,
       title = {
         Text(
           text = selectedToolTitle ?: "",
@@ -5369,7 +6743,7 @@ fun ExtrasScreen(
             fontSize = metrics.scaledSp(22),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 2,
           overflow = TextOverflow.Ellipsis
         )
@@ -5380,13 +6754,17 @@ fun ExtrasScreen(
           style = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15)
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant
+          color = palette.textSecondary
         )
       },
       confirmButton = {
         Button(
           onClick = { selectedToolTitle = null },
-          shape = CircleShape
+          shape = CircleShape,
+          colors = ButtonDefaults.buttonColors(
+            containerColor = palette.accentIndigo,
+            contentColor = Color.White
+          )
         ) {
           Text(
             text = "Close",
@@ -5397,6 +6775,557 @@ fun ExtrasScreen(
         }
       }
     )
+  }
+}
+
+private data class CeFormulaEntry(
+  val id: String,
+  val title: String,
+  val category: String,
+  val equationDisplay: String,
+  val description: String,
+  val param1Label: String,
+  val param1Default: String,
+  val param2Label: String,
+  val param2Default: String,
+  val param3Label: String,
+  val param3Default: String,
+  val outputUnit: String,
+  val compute: (Double, Double, Double) -> Double
+)
+
+@Composable
+fun FormulaVaultMainView(
+  metrics: ResponsiveMetrics,
+  onBackToExtras: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  BackHandler {
+    onBackToExtras()
+  }
+
+  val palette = currentGlassPalette()
+  val formulas = remember {
+    listOf(
+      CeFormulaEntry(
+        id = "beam_bending_moment",
+        title = "Simply Supported Beam Max Moment",
+        category = "Structural",
+        equationDisplay = "M_max = (w · L²) / 8",
+        description = "Calculates maximum midspan bending moment under uniform distributed load w over span L.",
+        param1Label = "Uniform Load w (kN/m)",
+        param1Default = "24.0",
+        param2Label = "Span Length L (m)",
+        param2Default = "6.0",
+        param3Label = "Load Factor γ (optional, 1.0 = service)",
+        param3Default = "1.0",
+        outputUnit = "kN·m",
+        compute = { w, l, gamma -> (w * l.pow(2.0) / 8.0) * gamma }
+      ),
+      CeFormulaEntry(
+        id = "manning_open_channel",
+        title = "Manning's Open Channel Velocity",
+        category = "Hydraulics",
+        equationDisplay = "V = (1 / n) · R^(2/3) · S^(1/2)",
+        description = "Determines uniform flow velocity in open channels and storm drainage conduits.",
+        param1Label = "Manning Roughness n",
+        param1Default = "0.013",
+        param2Label = "Hydraulic Radius R (m)",
+        param2Default = "0.85",
+        param3Label = "Channel Slope S (m/m)",
+        param3Default = "0.004",
+        outputUnit = "m/s",
+        compute = { n, r, s ->
+          if (n <= 0.0 || r < 0.0 || s < 0.0) 0.0
+          else (1.0 / n) * r.pow(2.0 / 3.0) * sqrt(s)
+        }
+      ),
+      CeFormulaEntry(
+        id = "terzaghi_effective_stress",
+        title = "Terzaghi Vertical Effective Stress",
+        category = "Geotech",
+        equationDisplay = "σ'_v = (γ_sat · z) - (γ_w · h_w)",
+        description = "Computes effective intergranular soil stress at depth z with piezometric head h_w.",
+        param1Label = "Unit Weight γ_sat (kN/m³)",
+        param1Default = "19.5",
+        param2Label = "Soil Depth z (m)",
+        param2Default = "5.0",
+        param3Label = "Pore Water Head h_w (m)",
+        param3Default = "3.0",
+        outputUnit = "kPa",
+        compute = { gammaSat, z, hw -> (gammaSat * z) - (9.81 * hw) }
+      ),
+      CeFormulaEntry(
+        id = "aci_concrete_modulus",
+        title = "ACI 318 Concrete Elastic Modulus",
+        category = "Concrete",
+        equationDisplay = "E_c = 4700 · √f'_c  (MPa)",
+        description = "Normal-weight concrete secant modulus of elasticity per ACI 318 / NSCP 2015.",
+        param1Label = "Specified Strength f'_c (MPa)",
+        param1Default = "28.0",
+        param2Label = "Unit Weight Factor (1.0 normal)",
+        param2Default = "1.0",
+        param3Label = "Safety Multiplier (1.0 nominal)",
+        param3Default = "1.0",
+        outputUnit = "MPa",
+        compute = { fc, factor, mult ->
+          if (fc <= 0.0) 0.0 else 4700.0 * sqrt(fc) * factor * mult
+        }
+      ),
+      CeFormulaEntry(
+        id = "mohr_coulomb_shear",
+        title = "Mohr-Coulomb Soil Shear Strength",
+        category = "Geotech",
+        equationDisplay = "τ_f = c' + σ'_n · tan(φ')",
+        description = "Drained shear strength envelope along failure plane given cohesion c' and friction angle φ'.",
+        param1Label = "Effective Cohesion c' (kPa)",
+        param1Default = "15.0",
+        param2Label = "Effective Normal Stress σ'_n (kPa)",
+        param2Default = "120.0",
+        param3Label = "Friction Angle φ' (degrees)",
+        param3Default = "32.0",
+        outputUnit = "kPa",
+        compute = { c, sigma, phiDeg ->
+          c + sigma * tan(phiDeg * PI / 180.0)
+        }
+      ),
+      CeFormulaEntry(
+        id = "euler_buckling_load",
+        title = "Euler Critical Column Buckling",
+        category = "Structural",
+        equationDisplay = "P_cr = (π² · E · I) / (K · L)²",
+        description = "Elastic buckling capacity for slender compression members (output in kN).",
+        param1Label = "Flexural Rigidity E·I (kN·m²)",
+        param1Default = "12500.0",
+        param2Label = "Unbraced Length L (m)",
+        param2Default = "4.5",
+        param3Label = "Effective Length Factor K",
+        param3Default = "1.0",
+        outputUnit = "kN",
+        compute = { ei, l, k ->
+          val kl = k * l
+          if (kl <= 0.0) 0.0 else (PI.pow(2.0) * ei) / kl.pow(2.0)
+        }
+      )
+    )
+  }
+
+  val categories = remember { listOf("All", "Structural", "Hydraulics", "Geotech", "Concrete") }
+  var selectedCategory by rememberSaveable { mutableStateOf("All") }
+  var searchQuery by rememberSaveable { mutableStateOf("") }
+  var activeQuickSolveFormulaId by rememberSaveable { mutableStateOf<String?>(null) }
+
+  val filteredFormulas = remember(formulas, selectedCategory, searchQuery) {
+    formulas.filter { entry ->
+      val matchesCategory = selectedCategory == "All" || entry.category.equals(selectedCategory, ignoreCase = true)
+      val q = searchQuery.trim()
+      val matchesSearch = q.isEmpty() ||
+        entry.title.contains(q, ignoreCase = true) ||
+        entry.equationDisplay.contains(q, ignoreCase = true) ||
+        entry.description.contains(q, ignoreCase = true) ||
+        entry.category.contains(q, ignoreCase = true)
+      matchesCategory && matchesSearch
+    }
+  }
+
+  val activeFormula = formulas.firstOrNull { it.id == activeQuickSolveFormulaId }
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = metrics.maxContentWidth)
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = metrics.scaledDp(20), vertical = metrics.scaledDp(20))
+      .testTag("formula_vault_screen"),
+    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+  ) {
+    // Top Header
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      Surface(
+        onClick = onBackToExtras,
+        shape = CircleShape,
+        color = palette.cardFill,
+        border = palette.glassBorder,
+        shadowElevation = 6.dp,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag("formula_vault_back_button")
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to Extras",
+            tint = palette.textPrimary,
+            modifier = Modifier.size(26.dp)
+          )
+        }
+      }
+
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "CE Formula Vault",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(22),
+            fontWeight = FontWeight.ExtraBold
+          ),
+          color = palette.textPrimary
+        )
+        Text(
+          text = "Frosted Reference & Instant Quick-Solve Engine",
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = palette.accentIndigo
+        )
+      }
+    }
+
+    // Frosted Glass Search Bar
+    LiquidGlassCard(
+      shape = RoundedCornerShape(22.dp),
+      elevation = 6.dp,
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      OutlinedTextField(
+        value = searchQuery,
+        onValueChange = { searchQuery = it },
+        placeholder = {
+          Text(
+            text = "Search beam, Manning, Terzaghi, ACI...",
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = metrics.scaledSp(14)),
+            color = palette.textSecondary
+          )
+        },
+        leadingIcon = {
+          Icon(
+            imageVector = Icons.Filled.Search,
+            contentDescription = "Search formulas",
+            tint = palette.accentIndigo
+          )
+        },
+        trailingIcon = {
+          if (searchQuery.isNotEmpty()) {
+            IconButton(onClick = { searchQuery = "" }) {
+              Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Clear search",
+                tint = palette.textSecondary
+              )
+            }
+          }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(22.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+          focusedTextColor = palette.textPrimary,
+          unfocusedTextColor = palette.textPrimary,
+          focusedContainerColor = Color.Transparent,
+          unfocusedContainerColor = Color.Transparent,
+          focusedBorderColor = Color.Transparent,
+          unfocusedBorderColor = Color.Transparent,
+          cursorColor = palette.accentIndigo
+        ),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("formula_vault_search_input")
+      )
+    }
+
+    // Floating Glass Category Chips
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      categories.forEach { category ->
+        val isSelected = selectedCategory == category
+        Box(
+          modifier = Modifier
+            .clip(CircleShape)
+            .background(
+              brush = if (isSelected) {
+                LiquidVioletChipGradient
+              } else {
+                Brush.linearGradient(
+                  listOf(
+                    palette.nestedCardFill,
+                    palette.cardFill
+                  )
+                )
+              }
+            )
+            .border(
+              border = if (isSelected) {
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f))
+              } else {
+                palette.nestedBorder
+              },
+              shape = CircleShape
+            )
+            .clickable { selectedCategory = category }
+            .padding(horizontal = 16.dp, vertical = 9.dp)
+            .testTag("formula_category_chip_$category")
+        ) {
+          Text(
+            text = category,
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = metrics.scaledSp(12),
+              fontWeight = FontWeight.Bold
+            ),
+            color = if (isSelected) Color.White else palette.textPrimary
+          )
+        }
+      }
+    }
+
+    // Formula Cards List
+    filteredFormulas.forEach { formula ->
+      LiquidGlassCard(
+        onClick = { activeQuickSolveFormulaId = formula.id },
+        shape = RoundedCornerShape(26.dp),
+        elevation = 8.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("formula_card_${formula.id}")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(18)),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Box(
+              modifier = Modifier
+                .clip(CircleShape)
+                .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
+                .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+              Text(
+                text = formula.category.uppercase(),
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(10),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.accentIndigo
+              )
+            }
+
+            Text(
+              text = "Tap to Quick-Solve →",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = metrics.scaledSp(11),
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.accentIndigo
+            )
+          }
+
+          Text(
+            text = formula.title,
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(17),
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textPrimary
+          )
+
+          LiquidGlassContainer(
+            shape = RoundedCornerShape(16.dp),
+            fillAlpha = 0.75f,
+            elevation = 2.dp,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = formula.equationDisplay,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(15),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.accentIndigo,
+              modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+            )
+          }
+
+          Text(
+            text = formula.description,
+            style = MaterialTheme.typography.bodySmall.copy(
+              fontSize = metrics.scaledSp(12),
+              lineHeight = metrics.scaledSp(17),
+              fontWeight = FontWeight.Medium
+            ),
+            color = palette.textSecondary
+          )
+        }
+      }
+    }
+  }
+
+  // Quick-Solve Translucent Modal Sheet
+  if (activeFormula != null) {
+    FormulaQuickSolveModalSheet(
+      formula = activeFormula,
+      metrics = metrics,
+      onDismiss = { activeQuickSolveFormulaId = null }
+    )
+  }
+}
+
+@Composable
+private fun FormulaQuickSolveModalSheet(
+  formula: CeFormulaEntry,
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  var param1Text by rememberSaveable(formula.id) { mutableStateOf(formula.param1Default) }
+  var param2Text by rememberSaveable(formula.id) { mutableStateOf(formula.param2Default) }
+  var param3Text by rememberSaveable(formula.id) { mutableStateOf(formula.param3Default) }
+
+  val p1 = param1Text.toDoubleOrNull() ?: 0.0
+  val p2 = param2Text.toDoubleOrNull() ?: 0.0
+  val p3 = param3Text.toDoubleOrNull() ?: 0.0
+  val computedResult = remember(formula, p1, p2, p3) {
+    formula.compute(p1, p2, p3)
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Surface(
+      shape = RoundedCornerShape(30.dp),
+      color = palette.dialogSurface,
+      border = palette.glassBorder,
+      shadowElevation = 16.dp,
+      modifier = Modifier
+        .fillMaxWidth(0.92f)
+        .widthIn(max = 480.dp)
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 22.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = formula.title,
+              style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = metrics.scaledSp(19),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.textPrimary
+            )
+            Text(
+              text = formula.equationDisplay,
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(13),
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.accentIndigo
+            )
+          }
+
+          IconButton(onClick = onDismiss) {
+            Icon(
+              imageVector = Icons.Filled.Close,
+              contentDescription = "Close quick solver",
+              tint = palette.textSecondary
+            )
+          }
+        }
+
+        OutlinedTextField(
+          value = param1Text,
+          onValueChange = { param1Text = it },
+          label = { Text(formula.param1Label) },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+          value = param2Text,
+          onValueChange = { param2Text = it },
+          label = { Text(formula.param2Label) },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+          value = param3Text,
+          onValueChange = { param3Text = it },
+          label = { Text(formula.param3Label) },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        LiquidGlassContainer(
+          shape = RoundedCornerShape(22.dp),
+          fillAlpha = 0.78f,
+          elevation = 6.dp,
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column {
+              Text(
+                text = "COMPUTED OUTPUT",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(10),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textSecondary
+              )
+              Text(
+                text = String.format(Locale.US, "%.3f %s", computedResult, formula.outputUnit),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(22),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.accentIndigo,
+                modifier = Modifier.testTag("formula_quick_solve_output")
+              )
+            }
+          }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+      }
+    }
   }
 }
 
@@ -5428,17 +7357,40 @@ private fun resolveDocumentFileName(context: Context, uri: Uri): String {
 }
 
 /**
+ * Plays a subtle, tactile system click / acoustic beep when interacting with flashcards,
+ * rating buttons, or deck stacks. Wrapped safely in try/catch so it never fails on silent
+ * devices or JVM unit tests.
+ */
+fun playCardHapticSound(context: Context, view: View? = null) {
+  try {
+    view?.playSoundEffect(SoundEffectConstants.CLICK)
+  } catch (_: Exception) {
+  }
+  try {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    audioManager?.playSoundEffect(AudioManager.FX_KEY_CLICK, 0.45f)
+  } catch (_: Exception) {
+  }
+  try {
+    val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 40)
+    toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 22)
+    Handler(Looper.getMainLooper()).postDelayed({
+      try {
+        toneGenerator.release()
+      } catch (_: Exception) {
+      }
+    }, 60L)
+  } catch (_: Exception) {
+  }
+}
+
+/**
  * Smart Flashcards Main View (`FlashcardMainView`) inside the Extras tab:
- * - Top Header: "Smart Flashcards" with a back button returning to the Extras hub.
- * - Action Bar with:
- *   1. "Import Document" launching `ActivityResultContracts.OpenDocument()` for `.docx`, `.pdf`, and `.txt`
- *      and extracting study flashcards 100% offline via `OfflineDeckExtractor`.
- *   2. "Paste Text / Notes" opening a dialog where students can paste any text/lecture notes and convert them
- *      into a 5–12 card study deck in one tap (also serves as automatic fallback for scanned/image-only PDFs).
- *   3. "+ New Deck" to manually create a custom deck and cards.
- * - Decks List: Cream cards (`#FFFBF0`) placing the title & category on the left (`Modifier.weight(1f)`),
- *   a trash Delete icon button on each deck card, "+ Add Card" button, and a sleek horizontal pill
- *   "Start Review" button (`RoundedCornerShape(20.dp)`).
+ * - Top Header: "Smart Flashcards" with a back button returning to the Extras hub and a top-right
+ *   Key/Settings button to configure/override the Gemini API key in `SharedPreferences`.
+ * - Theme-aware Frosted Glass Action Pills ("Import Document" and "+ New Deck") bound to
+ *   `palette.nestedCardFill`, `palette.glassBorder`, `palette.textPrimary`, and `palette.accentIndigo`.
+ * - Realistic 3-Layer Physical Deck Depth (Stacked Index Card Effect) with full Light & Dark Mode parity.
  */
 @Composable
 fun FlashcardMainView(
@@ -5449,7 +7401,9 @@ fun FlashcardMainView(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
+  val localView = LocalView.current
   val coroutineScope = rememberCoroutineScope()
+  val palette = currentGlassPalette()
   val decks = viewModel.flashcardDecks.toList()
 
   var isNewDeckDialogOpen by rememberSaveable { mutableStateOf(false) }
@@ -5457,18 +7411,163 @@ fun FlashcardMainView(
   var pasteDialogInitialTitle by rememberSaveable { mutableStateOf("") }
   var pasteDialogNoticeMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var addCardTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
-  var importingDocumentName by rememberSaveable { mutableStateOf<String?>(null) }
-  var currentExtractionStatus by rememberSaveable {
-    mutableStateOf("Reading document offline...")
+  var resetMasteryTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+
+  // API Key Quick-Verify & Override Dialog state
+  var isApiKeyDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var hasCheckedInitialApiKeyPrompt by rememberSaveable { mutableStateOf(false) }
+
+  // Automatically pop up the clean Quick-Verify API Key dialog if the hardcoded constant is still
+  // the default key and no key has been saved in SharedPreferences yet.
+  LaunchedEffect(Unit) {
+    if (!hasCheckedInitialApiKeyPrompt) {
+      hasCheckedInitialApiKeyPrompt = true
+      if (
+        DEFAULT_GEMINI_API_KEY == "AIzaSyANkLy-HqqeUQzPeAkAnN2m5xWx5NaDgew" &&
+        !viewModel.hasSavedGeminiApiKey()
+      ) {
+        isApiKeyDialogOpen = true
+      }
+    }
+  }
+
+  // Gizmo-Style Multi-Batch Progress Modal State
+  var isBatchExtracting by remember { mutableStateOf(false) }
+  var activeBatchJob by remember { mutableStateOf<Job?>(null) }
+  var batchDocumentName by rememberSaveable { mutableStateOf("") }
+  var batchDeckTitle by rememberSaveable { mutableStateOf("") }
+  var batchSubjectTag by rememberSaveable { mutableStateOf("General") }
+  var currentBatchIndex by rememberSaveable { mutableIntStateOf(1) }
+  var totalBatchCount by rememberSaveable { mutableIntStateOf(1) }
+  var batchStatusLabel by rememberSaveable { mutableStateOf("Preparing document batches...") }
+  var accumulatedBatchCards by remember { mutableStateOf<List<FlashcardItem>>(emptyList()) }
+  var latestGeneratedQuestion by rememberSaveable { mutableStateOf("") }
+
+  // Detailed HTTP / Gemini Error Reporting Dialog State
+  var extractionErrorDialogMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
+  fun inferSubjectTagFromCardsOrTitle(title: String, cards: List<FlashcardItem>, fallback: String): String {
+    if (fallback.isNotBlank() && !fallback.equals("General", ignoreCase = true)) {
+      return fallback
+    }
+    val combinedSample = buildString {
+      append(title).append(" ")
+      cards.take(10).forEach {
+        append(it.question).append(" ").append(it.answer).append(" ")
+      }
+    }
+    return when {
+      combinedSample.contains("moment", ignoreCase = true) ||
+        combinedSample.contains("shear", ignoreCase = true) ||
+        combinedSample.contains("rebar", ignoreCase = true) ||
+        combinedSample.contains("concrete", ignoreCase = true) ||
+        combinedSample.contains("nscp", ignoreCase = true) -> "PSAD"
+      combinedSample.contains("manning", ignoreCase = true) ||
+        combinedSample.contains("reynolds", ignoreCase = true) ||
+        combinedSample.contains("soil", ignoreCase = true) ||
+        combinedSample.contains("atterberg", ignoreCase = true) ||
+        combinedSample.contains("hydraulic", ignoreCase = true) -> "HPGE"
+      combinedSample.contains("derivative", ignoreCase = true) ||
+        combinedSample.contains("curve", ignoreCase = true) ||
+        combinedSample.contains("economy", ignoreCase = true) ||
+        combinedSample.contains("probability", ignoreCase = true) -> "MSTE"
+      else -> fallback.ifBlank { "General" }
+    }
+  }
+
+  fun saveAccumulatedCardsAsDeck(cardsToSave: List<FlashcardItem>, stoppedEarly: Boolean) {
+    if (cardsToSave.isEmpty()) {
+      Toast.makeText(
+        context,
+        "Stopped before any flashcards were generated.",
+        Toast.LENGTH_SHORT
+      ).show()
+      return
+    }
+    val resolvedTag = inferSubjectTagFromCardsOrTitle(
+      title = batchDeckTitle,
+      cards = cardsToSave,
+      fallback = batchSubjectTag
+    )
+    val finalCards = cardsToSave.mapIndexed { idx, card ->
+      card.copy(
+        id = idx + 1,
+        category = resolvedTag
+      )
+    }
+    val createdDeck = viewModel.addFlashcardDeck(
+      title = batchDeckTitle.ifBlank { "Smart Study Deck" },
+      subjectTag = resolvedTag,
+      initialCards = finalCards
+    )
+    val toastMsg = if (stoppedEarly) {
+      "Saved \"${createdDeck.title}\" (${createdDeck.cards.size} flashcards generated so far)"
+    } else {
+      "Built \"${createdDeck.title}\" (${createdDeck.cards.size} flashcards)"
+    }
+    Toast.makeText(context, toastMsg, Toast.LENGTH_LONG).show()
+  }
+
+  fun launchTextBatchExtraction(deckTitle: String, subjectTag: String, rawText: String) {
+    activeBatchJob?.cancel()
+    batchDocumentName = "$deckTitle (${rawText.length} chars)"
+    batchDeckTitle = deckTitle.ifBlank { "Lecture Notes Study Deck" }
+    batchSubjectTag = subjectTag.ifBlank { "General" }
+    currentBatchIndex = 1
+    totalBatchCount = maxOf(1, (rawText.length + 4999) / 5000)
+    batchStatusLabel = "Preparing text chunks for Gemini 2.5 Flash..."
+    accumulatedBatchCards = emptyList()
+    latestGeneratedQuestion = ""
+    extractionErrorDialogMessage = null
+    isBatchExtracting = true
+
+    val activeKey = viewModel.getActiveGeminiApiKey()
+    activeBatchJob = coroutineScope.launch {
+      try {
+        val finalCards = GizmoBatchFlashcardEngine.processTextInChunks(
+          rawText = rawText,
+          activeApiKey = activeKey,
+          defaultCategory = batchSubjectTag,
+          onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ ->
+            coroutineScope.launch(Dispatchers.Main.immediate) {
+              currentBatchIndex = currentBatch
+              totalBatchCount = maxOf(1, totalBatches)
+              batchStatusLabel = statusLabel
+              accumulatedBatchCards = cardsSoFar
+              if (latestQ.isNotBlank()) {
+                latestGeneratedQuestion = latestQ
+              }
+            }
+          }
+        )
+        isBatchExtracting = false
+        activeBatchJob = null
+        if (finalCards.isNotEmpty()) {
+          saveAccumulatedCardsAsDeck(finalCards, stoppedEarly = false)
+        } else {
+          extractionErrorDialogMessage =
+            "Gemini analyzed the text but returned 0 flashcards. Try adding more detailed engineering notes or definitions."
+        }
+      } catch (e: CancellationException) {
+        isBatchExtracting = false
+        activeBatchJob = null
+        throw e
+      } catch (e: Exception) {
+        isBatchExtracting = false
+        activeBatchJob = null
+        extractionErrorDialogMessage = e.message
+          ?: "An unexpected error occurred while communicating with Gemini 2.5 Flash."
+      }
+    }
   }
 
   BackHandler {
-    if (importingDocumentName == null) {
+    if (!isBatchExtracting) {
       onBackToExtras()
     }
   }
 
-  // Native Android Document Picker for .docx, .pdf, and .txt files processed 100% offline
+  // Native Android Document Picker for .pdf, .docx, and .txt files of ANY length
   val documentPickerLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.OpenDocument()
   ) { uri: Uri? ->
@@ -5480,66 +7579,60 @@ fun FlashcardMainView(
         .trim()
         .ifEmpty { "Imported CE Reviewers" }
 
-      importingDocumentName = resolvedName
-      currentExtractionStatus = "Extracting text locally from $resolvedName..."
+      activeBatchJob?.cancel()
+      batchDocumentName = resolvedName
+      batchDeckTitle = cleanTitle
+      batchSubjectTag = "General"
+      currentBatchIndex = 1
+      totalBatchCount = 1
+      batchStatusLabel = "Opening $resolvedName..."
+      accumulatedBatchCards = emptyList()
+      latestGeneratedQuestion = ""
+      extractionErrorDialogMessage = null
+      isBatchExtracting = true
 
-      coroutineScope.launch {
+      val activeKey = viewModel.getActiveGeminiApiKey()
+      activeBatchJob = coroutineScope.launch {
         try {
-          val extractedText = OfflineDeckExtractor.extractRawTextFromUri(
+          val generatedCards = GizmoBatchFlashcardEngine.processDocumentUriInBatches(
             context = context,
             uri = uri,
-            fileName = resolvedName
-          )
-          importingDocumentName = null
-
-          if (extractedText.isBlank()) {
-            // Scanned or image-only PDF fallback: open Paste Text / Notes dialog automatically
-            pasteDialogInitialTitle = cleanTitle
-            pasteDialogNoticeMessage =
-              "\"$resolvedName\" appears to be a scanned/image-only document. Paste your lecture notes or text below to generate your study deck offline in one tap!"
-            isPasteTextDialogOpen = true
-          } else {
-            val inferredTag = when {
-              extractedText.contains("moment", ignoreCase = true) ||
-                extractedText.contains("shear", ignoreCase = true) ||
-                extractedText.contains("rebar", ignoreCase = true) ||
-                extractedText.contains("concrete", ignoreCase = true) -> "PSAD"
-              extractedText.contains("manning", ignoreCase = true) ||
-                extractedText.contains("reynolds", ignoreCase = true) ||
-                extractedText.contains("soil", ignoreCase = true) ||
-                extractedText.contains("atterberg", ignoreCase = true) -> "HPGE"
-              extractedText.contains("derivative", ignoreCase = true) ||
-                extractedText.contains("curve", ignoreCase = true) ||
-                extractedText.contains("economy", ignoreCase = true) -> "MSTE"
-              else -> "General"
+            fileName = resolvedName,
+            activeApiKey = activeKey,
+            defaultCategory = "General",
+            onProgressUpdate = { currentBatch, totalBatches, statusLabel, cardsSoFar, latestQ ->
+              coroutineScope.launch(Dispatchers.Main.immediate) {
+                currentBatchIndex = currentBatch
+                totalBatchCount = maxOf(1, totalBatches)
+                batchStatusLabel = statusLabel
+                accumulatedBatchCards = cardsSoFar
+                if (latestQ.isNotBlank()) {
+                  latestGeneratedQuestion = latestQ
+                }
+              }
             }
-            val createdDeck = viewModel.createDeckFromOfflineText(
-              deckTitle = cleanTitle,
-              subjectTag = inferredTag,
-              rawText = extractedText
-            )
-            Toast.makeText(
-              context,
-              "Created \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
-              Toast.LENGTH_SHORT
-            ).show()
+          )
+          isBatchExtracting = false
+          activeBatchJob = null
+          if (generatedCards.isNotEmpty()) {
+            saveAccumulatedCardsAsDeck(generatedCards, stoppedEarly = false)
+          } else {
+            extractionErrorDialogMessage =
+              "Gemini completed scanning \"$resolvedName\" but found no extractable flashcard items."
           }
         } catch (e: CancellationException) {
-          importingDocumentName = null
+          isBatchExtracting = false
+          activeBatchJob = null
           throw e
-        } catch (_: Exception) {
-          importingDocumentName = null
-          pasteDialogInitialTitle = cleanTitle
-          pasteDialogNoticeMessage =
-            "Could not read binary structure of \"$resolvedName\". Paste your text or notes below to convert them into flashcards offline!"
-          isPasteTextDialogOpen = true
+        } catch (e: Exception) {
+          isBatchExtracting = false
+          activeBatchJob = null
+          extractionErrorDialogMessage = e.message
+            ?: "Failed to extract flashcards from \"$resolvedName\"."
         }
       }
     }
   }
-
-  val creamCardColor = dashboardCreamCardColor()
-  val ivoryInnerColor = dashboardIvoryInnerColor()
 
   LazyColumn(
     modifier = modifier
@@ -5554,7 +7647,7 @@ fun FlashcardMainView(
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
   ) {
-    // 1. Top Header with Back Button returning to Extras Hub
+    // 1. Top Header with Back Button and Top-Right Gemini API Key Button
     item {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -5562,10 +7655,13 @@ fun FlashcardMainView(
         horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
       ) {
         Surface(
-          onClick = onBackToExtras,
+          onClick = {
+            playCardHapticSound(context, localView)
+            onBackToExtras()
+          },
           shape = CircleShape,
-          color = creamCardColor,
-          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+          color = palette.cardFill,
+          border = palette.glassBorder,
           shadowElevation = 4.dp,
           modifier = Modifier
             .size(48.dp)
@@ -5575,7 +7671,7 @@ fun FlashcardMainView(
             Icon(
               imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
               contentDescription = "Back to Extras",
-              tint = MaterialTheme.colorScheme.onSurface,
+              tint = palette.textPrimary,
               modifier = Modifier.size(26.dp)
             )
           }
@@ -5588,148 +7684,151 @@ fun FlashcardMainView(
               fontSize = metrics.scaledSp(24),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onBackground,
+            color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("flashcards_header_title")
           )
           Text(
-            text = "Offline Document (.docx, .pdf, .txt) & Notes Study Engine",
+            text = "Gizmo-Style Multi-Batch AI Flashcard Generator",
             style = MaterialTheme.typography.bodyMedium.copy(
-              fontSize = metrics.scaledSp(13),
+              fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.SemiBold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
         }
+
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            isApiKeyDialogOpen = true
+          },
+          shape = CircleShape,
+          color = palette.nestedCardFill,
+          border = palette.glassBorder,
+          shadowElevation = 4.dp,
+          modifier = Modifier
+            .size(48.dp)
+            .testTag("flashcards_api_key_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Filled.Key,
+              contentDescription = "Configure Gemini API Key",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(22.dp)
+            )
+          }
+        }
       }
     }
 
-    // 2. Action Bar with "Import Document", "Paste Text / Notes", and "+ New Deck"
+    // 2. Cleaner Action Bar with Theme-Aware Frosted Glass Pills ("Import Document" & "+ New Deck")
     item {
-      Column(
+      Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            try {
+              documentPickerLauncher.launch(OfflineDeckExtractor.SUPPORTED_DOCUMENT_MIME_TYPES)
+            } catch (_: Exception) {
+              pasteDialogInitialTitle = ""
+              pasteDialogNoticeMessage = null
+              isPasteTextDialogOpen = true
+            }
+          },
+          shape = CircleShape,
+          color = palette.nestedCardFill,
+          border = palette.glassBorder,
+          shadowElevation = 2.dp,
+          modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp)
+            .testTag("import_document_button")
         ) {
-          Button(
-            onClick = {
-              try {
-                documentPickerLauncher.launch(OfflineDeckExtractor.SUPPORTED_DOCUMENT_MIME_TYPES)
-              } catch (_: Exception) {
-                pasteDialogInitialTitle = ""
-                pasteDialogNoticeMessage = null
-                isPasteTextDialogOpen = true
-              }
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+          Row(
             modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 50.dp)
-              .testTag("import_document_button")
+              .fillMaxWidth()
+              .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
           ) {
             Icon(
               imageVector = Icons.Filled.Description,
               contentDescription = "Import Document",
-              modifier = Modifier.size(18.dp)
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
               text = "Import Document",
               style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
               ),
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          }
-
-          Button(
-            onClick = {
-              pasteDialogInitialTitle = ""
-              pasteDialogNoticeMessage = null
-              isPasteTextDialogOpen = true
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.secondary,
-              contentColor = MaterialTheme.colorScheme.onSecondary
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-            modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 50.dp)
-              .testTag("paste_text_notes_button")
-          ) {
-            Icon(
-              imageVector = Icons.Filled.ContentPaste,
-              contentDescription = "Paste Text / Notes",
-              modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-              text = "Paste Text / Notes",
-              style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
-              ),
+              color = palette.textPrimary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           }
         }
 
-        OutlinedButton(
-          onClick = { isNewDeckDialogOpen = true },
-          shape = RoundedCornerShape(18.dp),
-          colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = creamCardColor,
-            contentColor = MaterialTheme.colorScheme.primary
-          ),
-          border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            isNewDeckDialogOpen = true
+          },
+          shape = CircleShape,
+          color = palette.nestedCardFill,
+          border = palette.glassBorder,
+          shadowElevation = 2.dp,
           modifier = Modifier
-            .fillMaxWidth()
+            .weight(1f)
             .heightIn(min = 48.dp)
             .testTag("new_deck_button")
         ) {
-          Text(
-            text = "+ New Deck (Manual Card Builder)",
-            style = MaterialTheme.typography.labelLarge.copy(
-              fontSize = metrics.scaledSp(13),
-              fontWeight = FontWeight.Bold
-            ),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Add,
+              contentDescription = "New Deck",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "+ New Deck",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
         }
       }
     }
 
-    // 3. Empty State or Decks List
+    // 3. Empty State or 3-Layer Physical Stacked Decks List
     if (decks.isEmpty()) {
       item {
-        Card(
-          shape = RoundedCornerShape(22.dp),
-          colors = CardDefaults.cardColors(containerColor = creamCardColor),
-          elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-          border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
-          ),
+        LiquidGlassCard(
+          shape = RoundedCornerShape(24.dp),
+          elevation = 8.dp,
           modifier = Modifier
             .fillMaxWidth()
             .testTag("flashcards_empty_state_card")
@@ -5743,14 +7842,15 @@ fun FlashcardMainView(
           ) {
             Surface(
               shape = CircleShape,
-              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+              color = LiquidRoyalPeriwinkle.copy(alpha = 0.18f),
+              border = BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)),
               modifier = Modifier.size(64.dp)
             ) {
               Box(contentAlignment = Alignment.Center) {
                 Icon(
                   imageVector = Icons.Filled.AutoAwesome,
                   contentDescription = "No Decks Available",
-                  tint = MaterialTheme.colorScheme.primary,
+                  tint = palette.accentIndigo,
                   modifier = Modifier.size(30.dp)
                 )
               }
@@ -5762,16 +7862,16 @@ fun FlashcardMainView(
                 fontSize = metrics.scaledSp(19),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
+              color = palette.textPrimary,
               textAlign = TextAlign.Center
             )
 
             Text(
-              text = "Tap 'Import Document' (.docx, .pdf, .txt), 'Paste Text / Notes', or '+ New Deck' above to build your offline study deck.",
+              text = "Tap 'Import Document' (.pdf, .docx, .txt of any length) or '+ New Deck' above to build your smart study deck.",
               style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = metrics.scaledSp(14)
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               textAlign = TextAlign.Center
             )
           }
@@ -5779,175 +7879,395 @@ fun FlashcardMainView(
       }
     } else {
       items(decks, key = { it.id }) { deck ->
-        val masteredCount = deck.cards.count { it.masteryLevel.equals("Good", ignoreCase = true) }
-        val hasCards = deck.cards.isNotEmpty()
-        Card(
-          shape = RoundedCornerShape(22.dp),
-          colors = CardDefaults.cardColors(containerColor = creamCardColor),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-          border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
-          ),
+        val totalCount = deck.cards.size
+        val masteredCount = deck.cards.count { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) }
+        val isDeckFullyMastered = masteredCount == totalCount && totalCount > 0
+        val hasCards = totalCount > 0
+        val deckCardShape = RoundedCornerShape(24.dp)
+
+        val deckProgressFraction = if (totalCount == 0) {
+          0f
+        } else {
+          (masteredCount.toFloat() / totalCount.toFloat()).coerceIn(0f, 1f)
+        }
+        val animatedDeckProgress by animateFloatAsState(
+          targetValue = deckProgressFraction,
+          animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+          label = "deck_mastery_progress_${deck.id}"
+        )
+
+        // 3-Layer Physical Stacked Engineering Index Card Effect (Dark & Light Mode Parity)
+        Box(
           modifier = Modifier
             .fillMaxWidth()
-            .testTag("flashcard_deck_card_${deck.id}")
+            .padding(bottom = 10.dp),
+          contentAlignment = Alignment.TopCenter
         ) {
-          Column(
+          // Bottom Stack Layer (offset(y = 8.dp))
+          Box(
+            modifier = Modifier
+              .matchParentSize()
+              .offset(y = 8.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight()
+                .shadow(
+                  elevation = 4.dp,
+                  shape = deckCardShape,
+                  ambientColor = palette.shadowAmbient,
+                  spotColor = palette.shadowSpot
+                )
+                .clip(deckCardShape)
+                .background(palette.stackBottomFill)
+                .border(
+                  BorderStroke(1.dp, palette.stackMidBorder),
+                  deckCardShape
+                )
+            )
+          }
+
+          // Middle Stack Layer (offset(y = 4.dp))
+          Box(
+            modifier = Modifier
+              .matchParentSize()
+              .offset(y = 4.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth(0.97f)
+                .fillMaxHeight()
+                .shadow(
+                  elevation = 6.dp,
+                  shape = deckCardShape,
+                  ambientColor = palette.shadowAmbient,
+                  spotColor = palette.shadowSpot
+                )
+                .clip(deckCardShape)
+                .background(palette.stackMidFill)
+                .border(
+                  BorderStroke(1.dp, palette.stackMidBorder),
+                  deckCardShape
+                )
+            )
+          }
+
+          // Main Top Card: palette.stackTopFill with palette.glassBorder
+          Surface(
+            shape = deckCardShape,
+            color = palette.stackTopFill,
+            border = palette.glassBorder,
             modifier = Modifier
               .fillMaxWidth()
-              .padding(metrics.scaledDp(18)),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+              .shadow(
+                elevation = 10.dp,
+                shape = deckCardShape,
+                ambientColor = palette.shadowAmbient,
+                spotColor = palette.shadowSpot
+              )
+              .clip(deckCardShape)
+              .testTag("flashcard_deck_card_${deck.id}")
           ) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.Top
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(metrics.scaledDp(18)),
+              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
             ) {
-              Column(
-                modifier = Modifier
-                  .weight(1f)
-                  .padding(end = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
               ) {
-                Surface(
-                  color = MaterialTheme.colorScheme.primaryContainer,
-                  shape = CircleShape
+                Column(
+                  modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 10.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                  // Subject Tag + Tactile Deck Thickness Indicator Pill Badge
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Surface(
+                      color = LiquidRoyalPeriwinkle.copy(alpha = 0.18f),
+                      shape = CircleShape,
+                      border = BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.40f))
+                    ) {
+                      Text(
+                        text = deck.subjectTag,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = metrics.scaledSp(11),
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.accentIndigo,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                      )
+                    }
+
+                    // Tactile Deck Thickness Pill Badge ("🗂️ 18 Cards")
+                    Surface(
+                      color = palette.nestedCardFill,
+                      shape = CircleShape,
+                      border = palette.nestedBorder,
+                      modifier = Modifier.testTag("deck_thickness_badge_${deck.id}")
+                    ) {
+                      Text(
+                        text = "🗂️ ${deck.cards.size} ${if (deck.cards.size == 1) "Card" else "Cards"}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontFamily = JetBrainsMonoFamily,
+                          fontSize = metrics.scaledSp(11),
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                      )
+                    }
+                  }
+
+                  // Deck Title: 18.sp Bold bound strictly to palette.textPrimary
                   Text(
-                    text = deck.subjectTag,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = metrics.scaledSp(11),
+                    text = deck.title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontSize = 18.sp,
                       fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    color = palette.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                   )
-                }
 
-                Text(
-                  text = deck.title,
-                  style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = metrics.scaledSp(18),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = MaterialTheme.colorScheme.onSurface,
-                  maxLines = 2,
-                  overflow = TextOverflow.Ellipsis
-                )
-
-                Text(
-                  text = "${deck.cards.size} ${if (deck.cards.size == 1) "card" else "cards"} • $masteredCount mastered",
-                  style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.SemiBold
-                  ),
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-
-                if (!hasCards) {
-                  Text(
-                    text = "Add at least 1 card to start review",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = metrics.scaledSp(11),
-                      fontWeight = FontWeight.SemiBold
-                    ),
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("empty_deck_review_hint_${deck.id}")
-                  )
-                }
-              }
-
-              IconButton(
-                onClick = { viewModel.deleteFlashcardDeck(deck.id) },
-                modifier = Modifier
-                  .size(48.dp)
-                  .testTag("delete_deck_button_${deck.id}")
-              ) {
-                Icon(
-                  imageVector = Icons.Default.Delete,
-                  contentDescription = "Delete Deck ${deck.title}",
-                  tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
-                  modifier = Modifier.size(20.dp)
-                )
-              }
-            }
-
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.End,
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              TextButton(
-                onClick = { addCardTargetDeckId = deck.id },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier.testTag("add_card_to_deck_${deck.id}")
-              ) {
-                Text(
-                  text = "+ Add Card",
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold,
-                  maxLines = 1,
-                  softWrap = false
-                )
-              }
-
-              Spacer(modifier = Modifier.width(8.dp))
-
-              Button(
-                onClick = {
-                  if (hasCards) {
-                    onStartReview(deck)
-                  } else {
-                    Toast.makeText(
-                      context,
-                      "Add at least 1 card to start review",
-                      Toast.LENGTH_SHORT
-                    ).show()
+                  if (!hasCards) {
+                    Text(
+                      text = "Add at least 1 card to start review",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = metrics.scaledSp(11),
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = palette.accentIndigo,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.testTag("empty_deck_review_hint_${deck.id}")
+                    )
                   }
-                },
-                enabled = hasCards,
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                colors = ButtonDefaults.buttonColors(
-                  containerColor = MaterialTheme.colorScheme.primary,
-                  contentColor = Color.White,
-                  disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
-                  disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                ),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-                modifier = Modifier.testTag("start_review_button_${deck.id}")
+                }
+
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  // 100% Mastered Green Check Indicator (Themed Frosted Mini-Pill Capsule)
+                  if (isDeckFullyMastered) {
+                    val masteredEmerald = if (palette.isDark) Color(0xFF34D399) else Color(0xFF059669)
+                    Surface(
+                      color = Color(0xFF10B981).copy(alpha = 0.16f),
+                      shape = RoundedCornerShape(12.dp),
+                      border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.45f)),
+                      modifier = Modifier.testTag("deck_mastered_badge_${deck.id}")
+                    ) {
+                      Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        Icon(
+                          imageVector = Icons.Default.CheckCircle,
+                          contentDescription = "Mastered",
+                          tint = masteredEmerald,
+                          modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                          text = "Mastered",
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.SemiBold,
+                          color = masteredEmerald,
+                          maxLines = 1,
+                          softWrap = false
+                        )
+                      }
+                    }
+                  }
+
+                  IconButton(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      viewModel.deleteFlashcardDeck(deck.id)
+                    },
+                    modifier = Modifier
+                      .size(48.dp)
+                      .testTag("delete_deck_button_${deck.id}")
+                  ) {
+                    Icon(
+                      imageVector = Icons.Default.Delete,
+                      contentDescription = "Delete Deck ${deck.title}",
+                      tint = palette.accentRed,
+                      modifier = Modifier.size(20.dp)
+                    )
+                  }
+                }
+              }
+
+              // Dynamic Progress Indicator Beneath Title and Category, Before Action Row
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("deck_mastery_progress_section_${deck.id}"),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
               ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                  Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Start Review",
-                    tint = if (hasCards) {
-                      Color.White
-                    } else {
-                      MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier.size(16.dp)
-                  )
-                  Spacer(Modifier.width(6.dp))
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
                   Text(
-                    text = "Start Review",
-                    color = if (hasCards) {
-                      Color.White
-                    } else {
-                      MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                    },
-                    fontSize = 12.sp,
+                    text = "$masteredCount/$totalCount Mastered",
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
+                    color = palette.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("deck_mastery_count_label_${deck.id}")
+                  )
+
+                  if (masteredCount > 0) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(3.dp),
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                          playCardHapticSound(context, localView)
+                          resetMasteryTargetDeckId = deck.id
+                        }
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("deck_reset_progress_shortcut_${deck.id}")
+                    ) {
+                      Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Reset Progress",
+                        tint = palette.accentIndigo,
+                        modifier = Modifier.size(12.dp)
+                      )
+                      Text(
+                        text = "Reset Progress",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.accentIndigo,
+                        textDecoration = TextDecoration.Underline,
+                        maxLines = 1
+                      )
+                    }
+                  }
+                }
+
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(palette.trackColor)
+                    .testTag("deck_mastery_progress_track_${deck.id}")
+                ) {
+                  if (animatedDeckProgress > 0f) {
+                    Box(
+                      modifier = Modifier
+                        .fillMaxWidth(animatedDeckProgress)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(
+                          Brush.horizontalGradient(
+                            listOf(Color(0xFF34D399), Color(0xFF059669))
+                          )
+                        )
+                        .testTag("deck_mastery_progress_fill_${deck.id}")
+                    )
+                  }
+                }
+              }
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                TextButton(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    addCardTargetDeckId = deck.id
+                  },
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                  modifier = Modifier.testTag("add_card_to_deck_${deck.id}")
+                ) {
+                  Text(
+                    text = "+ Add Card",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.accentIndigo,
                     maxLines = 1,
                     softWrap = false
                   )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Button(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    if (hasCards) {
+                      onStartReview(deck)
+                    } else {
+                      Toast.makeText(
+                        context,
+                        "Add at least 1 card to start review",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                    }
+                  },
+                  enabled = hasCards,
+                  shape = RoundedCornerShape(20.dp),
+                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF4F46E5),
+                    contentColor = Color.White,
+                    disabledContainerColor = palette.trackColor,
+                    disabledContentColor = palette.textSecondary.copy(alpha = 0.6f)
+                  ),
+                  elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+                  modifier = Modifier.testTag("start_review_button_${deck.id}")
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                      imageVector = Icons.Default.PlayArrow,
+                      contentDescription = "Start Review",
+                      tint = if (hasCards) {
+                        Color.White
+                      } else {
+                        palette.textSecondary.copy(alpha = 0.6f)
+                      },
+                      modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                      text = "Start Review",
+                      color = if (hasCards) {
+                        Color.White
+                      } else {
+                        palette.textSecondary.copy(alpha = 0.6f)
+                      },
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      maxLines = 1,
+                      softWrap = false
+                    )
+                  }
                 }
               }
             }
@@ -5957,11 +8277,11 @@ fun FlashcardMainView(
     }
   }
 
-  // Animated Offline Document Extraction Loading Dialog
-  if (importingDocumentName != null) {
-    val infiniteTransition = rememberInfiniteTransition(label = "offline_extraction_pulse")
+  // 4. Live Gizmo-Style Multi-Batch Extraction Progress Modal
+  if (isBatchExtracting) {
+    val infiniteTransition = rememberInfiniteTransition(label = "gizmo_batch_pulse")
     val pulseScale by infiniteTransition.animateFloat(
-      initialValue = 0.90f,
+      initialValue = 0.92f,
       targetValue = 1.08f,
       animationSpec = infiniteRepeatable(
         animation = tween(durationMillis = 650, easing = FastOutSlowInEasing),
@@ -5969,16 +8289,23 @@ fun FlashcardMainView(
       ),
       label = "pulse_scale"
     )
+    val safeTotalBatches = maxOf(1, totalBatchCount)
+    val safeCurrentBatch = currentBatchIndex.coerceIn(1, safeTotalBatches)
+    val animatedProgress by animateFloatAsState(
+      targetValue = (safeCurrentBatch.toFloat() / safeTotalBatches.toFloat()).coerceIn(0.05f, 1f),
+      animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+      label = "batch_progress"
+    )
 
     Dialog(
-      onDismissRequest = { /* non-dismissible during extraction */ },
+      onDismissRequest = { /* non-dismissible except via Save & Stop Here */ },
       properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
     ) {
       Card(
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        colors = CardDefaults.cardColors(containerColor = palette.dialogSurface),
         elevation = CardDefaults.cardElevation(defaultElevation = 14.dp),
-        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+        border = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.55f)),
         modifier = Modifier
           .fillMaxWidth()
           .testTag("ai_extraction_simulator_dialog")
@@ -5986,15 +8313,15 @@ fun FlashcardMainView(
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(metrics.scaledDp(24)),
+            .padding(metrics.scaledDp(22)),
           horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
           Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
+            color = LiquidRoyalPeriwinkle.copy(alpha = 0.18f),
             modifier = Modifier
-              .size(68.dp)
+              .size(60.dp)
               .graphicsLayer {
                 scaleX = pulseScale
                 scaleY = pulseScale
@@ -6003,74 +8330,175 @@ fun FlashcardMainView(
             Box(contentAlignment = Alignment.Center) {
               Icon(
                 imageVector = Icons.Filled.AutoAwesome,
-                contentDescription = "Offline Document Extraction",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(34.dp)
+                contentDescription = "Building Smart Deck",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(30.dp)
               )
             }
           }
 
           Text(
-            text = "Offline Study Deck Extractor",
+            text = "Building Smart Deck...",
             style = MaterialTheme.typography.titleLarge.copy(
               fontSize = metrics.scaledSp(20),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onSurface,
+            color = palette.textPrimary,
             textAlign = TextAlign.Center
           )
 
-          Surface(
-            color = ivoryInnerColor,
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(
-              1.dp,
-              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-            ),
-            modifier = Modifier.fillMaxWidth()
-          ) {
+          if (batchDocumentName.isNotBlank()) {
             Text(
-              text = importingDocumentName.orEmpty(),
-              style = MaterialTheme.typography.bodyMedium.copy(
+              text = batchDocumentName,
+              style = MaterialTheme.typography.labelMedium.copy(
                 fontFamily = JetBrainsMonoFamily,
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
+                fontSize = metrics.scaledSp(11),
+                fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.primary,
+              color = palette.textSecondary,
               textAlign = TextAlign.Center,
-              maxLines = 2,
+              maxLines = 1,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp)
                 .testTag("ai_extraction_filename_text")
             )
           }
 
-          LinearProgressIndicator(
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(8.dp)
-              .clip(CircleShape),
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = WarmCreamTrackColor
-          )
+          // Progress Bar + Batch Counter
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = batchStatusLabel,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .weight(1f)
+                  .testTag("ai_extraction_status_text")
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+              Text(
+                text = "Batch $safeCurrentBatch / $safeTotalBatches",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(11),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo
+              )
+            }
 
-          Crossfade(
-            targetState = currentExtractionStatus,
-            label = "extraction_status_crossfade"
-          ) { statusLabel ->
-            Text(
-              text = statusLabel,
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              textAlign = TextAlign.Center,
+            LinearProgressIndicator(
+              progress = { animatedProgress },
               modifier = Modifier
                 .fillMaxWidth()
-                .testTag("ai_extraction_status_text")
+                .height(9.dp)
+                .clip(CircleShape),
+              color = palette.accentIndigo,
+              trackColor = palette.trackColor
+            )
+          }
+
+          // Live Counter Badge
+          Surface(
+            color = LiquidRoyalPeriwinkle.copy(alpha = 0.18f),
+            shape = CircleShape,
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f))
+          ) {
+            Text(
+              text = "⚡ ${accumulatedBatchCards.size} Flashcards Generated So Far",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = metrics.scaledSp(13),
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.accentIndigo,
+              modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .testTag("gizmo_live_card_counter_badge")
+            )
+          }
+
+          // Live Preview of Most Recently Generated Question
+          Surface(
+            color = palette.nestedCardFill,
+            shape = RoundedCornerShape(16.dp),
+            border = palette.nestedBorder,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Text(
+                text = "LATEST GENERATED QUESTION PREVIEW",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(10),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo
+              )
+              Text(
+                text = if (latestGeneratedQuestion.isNotBlank()) {
+                  latestGeneratedQuestion
+                } else {
+                  "Waiting for first batch response from Gemini 2.5 Flash..."
+                },
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = metrics.scaledSp(13),
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = palette.textPrimary,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("gizmo_latest_question_preview")
+              )
+            }
+          }
+
+          // "Save & Stop Here" Button
+          Button(
+            onClick = {
+              val cardsSnapshot = accumulatedBatchCards.toList()
+              activeBatchJob?.cancel()
+              activeBatchJob = null
+              isBatchExtracting = false
+              saveAccumulatedCardsAsDeck(cardsSnapshot, stoppedEarly = true)
+            },
+            shape = RoundedCornerShape(18.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color(0xFF4F46E5),
+              contentColor = Color.White
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("gizmo_save_and_stop_button")
+          ) {
+            Text(
+              text = if (accumulatedBatchCards.isNotEmpty()) {
+                "Save & Stop Here (${accumulatedBatchCards.size} Cards)"
+              } else {
+                "Save & Stop Here"
+              },
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = metrics.scaledSp(13),
+                fontWeight = FontWeight.Bold
+              )
             )
           }
         }
@@ -6078,7 +8506,128 @@ fun FlashcardMainView(
     }
   }
 
-  // "Paste Text / Notes" One-Tap Offline Deck Generator Dialog
+  // 5. Gemini API Key Quick-Verify & Override Dialog
+  if (isApiKeyDialogOpen) {
+    GeminiApiKeyConfigDialog(
+      metrics = metrics,
+      currentSavedKey = viewModel.savedGeminiApiKey,
+      defaultKey = DEFAULT_GEMINI_API_KEY,
+      onDismiss = { isApiKeyDialogOpen = false },
+      onSaveKey = { newKey ->
+        viewModel.saveGeminiApiKey(newKey)
+        isApiKeyDialogOpen = false
+        Toast.makeText(
+          context,
+          "Gemini API Key saved to SharedPreferences!",
+          Toast.LENGTH_SHORT
+        ).show()
+      }
+    )
+  }
+
+  // 6. Detailed Gemini Extraction Error Reporting Dialog
+  if (extractionErrorDialogMessage != null) {
+    val partialCardsSnapshot = accumulatedBatchCards.toList()
+    AlertDialog(
+      onDismissRequest = { extractionErrorDialogMessage = null },
+      shape = RoundedCornerShape(24.dp),
+      containerColor = palette.dialogSurface,
+      title = {
+        Text(
+          text = "AI Flashcard Extraction Notice",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(19),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.accentRed
+        )
+      },
+      text = {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          Surface(
+            color = palette.accentRed.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, palette.accentRed.copy(alpha = 0.35f))
+          ) {
+            Text(
+              text = extractionErrorDialogMessage.orEmpty(),
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.textPrimary,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .testTag("gemini_error_detail_text")
+            )
+          }
+
+          if (partialCardsSnapshot.isNotEmpty()) {
+            Text(
+              text = "⚡ Good news: ${partialCardsSnapshot.size} flashcards were already generated before this batch stopped. You can save them right now!",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.accentIndigo
+            )
+          } else {
+            Text(
+              text = "Tip: If your API key expired or reached a quota limit, tap 'Update API Key' below to paste your free Google AI Studio key.",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12)
+              ),
+              color = palette.textSecondary
+            )
+          }
+        }
+      },
+      confirmButton = {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          if (partialCardsSnapshot.isNotEmpty()) {
+            Button(
+              onClick = {
+                extractionErrorDialogMessage = null
+                saveAccumulatedCardsAsDeck(partialCardsSnapshot, stoppedEarly = true)
+              },
+              shape = RoundedCornerShape(16.dp)
+            ) {
+              Text(
+                text = "Save ${partialCardsSnapshot.size} Cards",
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+          Button(
+            onClick = {
+              extractionErrorDialogMessage = null
+              isApiKeyDialogOpen = true
+            },
+            shape = RoundedCornerShape(16.dp)
+          ) {
+            Text(
+              text = "Update API Key",
+              fontWeight = FontWeight.Bold
+            )
+          }
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { extractionErrorDialogMessage = null }) {
+          Text("Close", color = palette.textSecondary)
+        }
+      }
+    )
+  }
+
+  // 7. "Paste Text / Notes" Multi-Batch AI Deck Generator Dialog
   if (isPasteTextDialogOpen) {
     PasteTextToDeckDialog(
       metrics = metrics,
@@ -6090,18 +8639,13 @@ fun FlashcardMainView(
         pasteDialogNoticeMessage = null
       },
       onGenerateDeck = { deckTitle, subjectTag, rawText ->
-        val createdDeck = viewModel.createDeckFromOfflineText(
+        isPasteTextDialogOpen = false
+        pasteDialogNoticeMessage = null
+        launchTextBatchExtraction(
           deckTitle = deckTitle,
           subjectTag = subjectTag,
           rawText = rawText
         )
-        isPasteTextDialogOpen = false
-        pasteDialogNoticeMessage = null
-        Toast.makeText(
-          context,
-          "Generated \"${createdDeck.title}\" (${createdDeck.cards.size} cards)",
-          Toast.LENGTH_SHORT
-        ).show()
       }
     )
   }
@@ -6142,6 +8686,242 @@ fun FlashcardMainView(
       }
     )
   }
+
+  // "Reset Mastery Progress?" Confirmation Dialog from Deck List
+  val targetDeckForReset = decks.firstOrNull { it.id == resetMasteryTargetDeckId }
+  if (targetDeckForReset != null) {
+    ResetMasteryConfirmDialog(
+      cardCount = targetDeckForReset.cards.size,
+      metrics = metrics,
+      onDismiss = { resetMasteryTargetDeckId = null },
+      onConfirmReset = {
+        playCardHapticSound(context, localView)
+        viewModel.resetDeckMastery(targetDeckForReset.id)
+        resetMasteryTargetDeckId = null
+        Toast.makeText(context, "Deck progress reset to 0%", Toast.LENGTH_SHORT).show()
+      }
+    )
+  }
+}
+
+@Composable
+private fun ResetMasteryConfirmDialog(
+  cardCount: Int,
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit,
+  onConfirmReset: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = palette.dialogSurface,
+    title = {
+      Text(
+        text = "Reset Mastery Progress?",
+        style = MaterialTheme.typography.headlineSmall.copy(
+          fontSize = metrics.scaledSp(19),
+          fontWeight = FontWeight.Bold
+        ),
+        color = palette.textPrimary,
+        modifier = Modifier.testTag("reset_mastery_dialog_title")
+      )
+    },
+    text = {
+      Text(
+        text = "This will mark all cards as unmastered and restore the full study queue ($cardCount cards). Do you want to restart from scratch?",
+        style = MaterialTheme.typography.bodyMedium.copy(
+          fontSize = metrics.scaledSp(14),
+          lineHeight = metrics.scaledSp(20)
+        ),
+        color = palette.textSecondary,
+        modifier = Modifier.testTag("reset_mastery_dialog_message")
+      )
+    },
+    dismissButton = {
+      TextButton(
+        onClick = onDismiss,
+        shape = CircleShape,
+        modifier = Modifier.testTag("reset_mastery_dialog_cancel_button")
+      ) {
+        Text(
+          text = "Cancel",
+          color = palette.textSecondary,
+          fontWeight = FontWeight.SemiBold
+        )
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = onConfirmReset,
+        shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFFEF4444),
+          contentColor = Color.White
+        ),
+        modifier = Modifier.testTag("reset_mastery_dialog_confirm_button")
+      ) {
+        Text(
+          text = "Reset All",
+          fontWeight = FontWeight.Bold,
+          color = Color.White
+        )
+      }
+    }
+  )
+}
+
+@Composable
+private fun GeminiApiKeyConfigDialog(
+  metrics: ResponsiveMetrics,
+  currentSavedKey: String,
+  defaultKey: String,
+  onDismiss: () -> Unit,
+  onSaveKey: (String) -> Unit
+) {
+  val context = LocalContext.current
+  val palette = currentGlassPalette()
+  var apiKeyInput by rememberSaveable(currentSavedKey) {
+    mutableStateOf(currentSavedKey.ifBlank { defaultKey })
+  }
+  var keyError by rememberSaveable { mutableStateOf(false) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = palette.dialogSurface,
+    title = {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Filled.Key,
+          contentDescription = null,
+          tint = palette.accentIndigo,
+          modifier = Modifier.size(24.dp)
+        )
+        Text(
+          text = "Gemini 2.5 Flash API Key",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(19),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textPrimary
+        )
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        Text(
+          text = "Paste your free Google AI Studio API Key below to power the Gizmo-Style Multi-Batch PDF & DOCX Flashcard Generator. Your key is stored locally in SharedPreferences.",
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = metrics.scaledSp(12)
+          ),
+          color = palette.textSecondary
+        )
+
+        OutlinedTextField(
+          value = apiKeyInput,
+          onValueChange = {
+            apiKeyInput = it
+            keyError = false
+          },
+          label = { Text("Google AI Studio API Key") },
+          placeholder = { Text("AIzaSy...") },
+          isError = keyError,
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("gemini_api_key_input")
+        )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          TextButton(
+            onClick = {
+              val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+              val pasted = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
+              if (!pasted.isNullOrEmpty()) {
+                apiKeyInput = pasted
+                keyError = false
+              } else {
+                Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+              }
+            },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.ContentPaste,
+              contentDescription = "Paste Key",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              "Paste from Clipboard",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = palette.accentIndigo
+            )
+          }
+
+          TextButton(
+            onClick = {
+              apiKeyInput = defaultKey
+              keyError = false
+            },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+          ) {
+            Text("Reset Default", fontSize = 12.sp, color = palette.textSecondary)
+          }
+        }
+
+        if (keyError) {
+          Text(
+            text = "Please enter a valid API key starting with 'AIza'.",
+            style = MaterialTheme.typography.labelSmall,
+            color = palette.accentRed
+          )
+        }
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          val clean = apiKeyInput.trim()
+          if (clean.isEmpty()) {
+            keyError = true
+          } else {
+            onSaveKey(clean)
+          }
+        },
+        shape = RoundedCornerShape(18.dp),
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF4F46E5),
+          contentColor = Color.White
+        ),
+        modifier = Modifier.testTag("save_gemini_api_key_button")
+      ) {
+        Text("Save Key", fontWeight = FontWeight.Bold)
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("Later", color = palette.textSecondary)
+      }
+    }
+  )
 }
 
 @Composable
@@ -6153,6 +8933,7 @@ private fun PasteTextToDeckDialog(
   onDismiss: () -> Unit,
   onGenerateDeck: (deckTitle: String, subjectTag: String, rawText: String) -> Unit
 ) {
+  val palette = currentGlassPalette()
   val defaultTags = remember(availableSubjects) {
     (listOf("PSAD", "MSTE", "HPGE", "General") + availableSubjects)
       .map { it.trim() }
@@ -6171,7 +8952,7 @@ private fun PasteTextToDeckDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     shape = RoundedCornerShape(24.dp),
-    containerColor = dashboardCreamCardColor(),
+    containerColor = palette.dialogSurface,
     title = {
       Text(
         text = "Paste Text / Notes",
@@ -6179,7 +8960,7 @@ private fun PasteTextToDeckDialog(
           fontSize = metrics.scaledSp(20),
           fontWeight = FontWeight.Bold
         ),
-        color = MaterialTheme.colorScheme.onSurface
+        color = palette.textPrimary
       )
     },
     text = {
@@ -6191,8 +8972,9 @@ private fun PasteTextToDeckDialog(
       ) {
         if (!noticeMessage.isNullOrBlank()) {
           Surface(
-            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-            shape = RoundedCornerShape(12.dp)
+            color = LiquidRoyalPeriwinkle.copy(alpha = 0.16f),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f))
           ) {
             Text(
               text = noticeMessage,
@@ -6200,17 +8982,17 @@ private fun PasteTextToDeckDialog(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              color = palette.textPrimary,
               modifier = Modifier.padding(10.dp)
             )
           }
         } else {
           Text(
-            text = "Paste definitions (Term: Definition), formulas (Q = A * V), or key engineering concepts. Sibil extracts 5–12 flashcards 100% offline.",
+            text = "Paste lecture notes, definitions, formulas, or reviewers of ANY length. Sibil splits long notes into 5,000-character batches and extracts comprehensive active-recall flashcards via Gemini 2.5 Flash.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12)
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = palette.textSecondary
           )
         }
 
@@ -6220,6 +9002,7 @@ private fun PasteTextToDeckDialog(
           label = { Text("Deck Title") },
           singleLine = true,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("paste_notes_deck_title_input")
@@ -6237,16 +9020,16 @@ private fun PasteTextToDeckDialog(
               onClick = { subjectTag = tag },
               shape = CircleShape,
               color = if (selected) {
-                MaterialTheme.colorScheme.primary
+                Color(0xFF4F46E5)
               } else {
-                dashboardIvoryInnerColor()
+                palette.nestedCardFill
               },
               border = BorderStroke(
                 1.dp,
                 if (selected) {
-                  MaterialTheme.colorScheme.primary
+                  Color(0xFF4F46E5)
                 } else {
-                  MaterialTheme.colorScheme.outlineVariant
+                  palette.nestedBorderColor
                 }
               )
             ) {
@@ -6255,7 +9038,7 @@ private fun PasteTextToDeckDialog(
                 style = MaterialTheme.typography.labelMedium.copy(
                   fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
                 ),
-                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
+                color = if (selected) Color.White else palette.textPrimary,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
               )
             }
@@ -6271,13 +9054,14 @@ private fun PasteTextToDeckDialog(
           label = { Text("Paste Lecture Notes, Definitions, or Formulas") },
           placeholder = {
             Text(
-              "Example:\nEffective Stress: Total stress minus pore water pressure.\nDarcy's Law: Q = k * i * A\nManning's Equation calculates open-channel flow velocity."
+              "Paste any length of reviewer notes, NSCP provisions, formulas, or Q&As..."
             )
           },
           isError = notesError,
           minLines = 5,
           maxLines = 10,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("paste_notes_raw_text_input")
@@ -6287,7 +9071,7 @@ private fun PasteTextToDeckDialog(
           Text(
             text = "Please paste or type some notes to generate flashcards.",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error
+            color = palette.accentRed
           )
         }
       }
@@ -6306,6 +9090,10 @@ private fun PasteTextToDeckDialog(
           }
         },
         shape = RoundedCornerShape(18.dp),
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF4F46E5),
+          contentColor = Color.White
+        ),
         modifier = Modifier.testTag("confirm_generate_paste_deck_button")
       ) {
         Text(
@@ -6316,7 +9104,7 @@ private fun PasteTextToDeckDialog(
     },
     dismissButton = {
       TextButton(onClick = onDismiss) {
-        Text("Cancel")
+        Text("Cancel", color = palette.textSecondary)
       }
     }
   )
@@ -6329,6 +9117,7 @@ private fun CreateNewFlashcardDeckDialog(
   onDismiss: () -> Unit,
   onCreateDeck: (title: String, subjectTag: String) -> Unit
 ) {
+  val palette = currentGlassPalette()
   val defaultTags = remember(availableSubjects) {
     (listOf("PSAD", "MSTE", "HPGE", "General") + availableSubjects)
       .map { it.trim() }
@@ -6344,7 +9133,7 @@ private fun CreateNewFlashcardDeckDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     shape = RoundedCornerShape(24.dp),
-    containerColor = dashboardCreamCardColor(),
+    containerColor = palette.dialogSurface,
     title = {
       Text(
         text = "Create New Deck",
@@ -6352,7 +9141,7 @@ private fun CreateNewFlashcardDeckDialog(
           fontSize = metrics.scaledSp(20),
           fontWeight = FontWeight.Bold
         ),
-        color = MaterialTheme.colorScheme.onSurface
+        color = palette.textPrimary
       )
     },
     text = {
@@ -6373,6 +9162,7 @@ private fun CreateNewFlashcardDeckDialog(
           isError = titleError,
           singleLine = true,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("new_deck_title_input")
@@ -6385,6 +9175,7 @@ private fun CreateNewFlashcardDeckDialog(
           placeholder = { Text("e.g., PSAD, MSTE, HPGE, General") },
           singleLine = true,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("new_deck_subject_input")
@@ -6402,16 +9193,16 @@ private fun CreateNewFlashcardDeckDialog(
               onClick = { subjectTag = tagOption },
               shape = CircleShape,
               color = if (isSelected) {
-                MaterialTheme.colorScheme.primary
+                Color(0xFF4F46E5)
               } else {
-                dashboardIvoryInnerColor()
+                palette.nestedCardFill
               },
               border = BorderStroke(
                 width = 1.dp,
                 color = if (isSelected) {
-                  MaterialTheme.colorScheme.primary
+                  Color(0xFF4F46E5)
                 } else {
-                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                  palette.nestedBorderColor
                 }
               )
             ) {
@@ -6421,9 +9212,9 @@ private fun CreateNewFlashcardDeckDialog(
                   fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                 ),
                 color = if (isSelected) {
-                  MaterialTheme.colorScheme.onPrimary
+                  Color.White
                 } else {
-                  MaterialTheme.colorScheme.onSurfaceVariant
+                  palette.textPrimary
                 },
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
               )
@@ -6445,6 +9236,10 @@ private fun CreateNewFlashcardDeckDialog(
           }
         },
         shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF4F46E5),
+          contentColor = Color.White
+        ),
         modifier = Modifier.testTag("confirm_create_deck_button")
       ) {
         Text(
@@ -6455,7 +9250,7 @@ private fun CreateNewFlashcardDeckDialog(
     },
     dismissButton = {
       TextButton(onClick = onDismiss) {
-        Text("Cancel")
+        Text("Cancel", color = palette.textSecondary)
       }
     }
   )
@@ -6469,6 +9264,7 @@ private fun AddCardToFlashcardDeckDialog(
   onDismiss: () -> Unit,
   onSaveCard: (question: String, answer: String) -> Unit
 ) {
+  val palette = currentGlassPalette()
   var question by rememberSaveable { mutableStateOf("") }
   var answer by rememberSaveable { mutableStateOf("") }
   var validationError by rememberSaveable { mutableStateOf(false) }
@@ -6476,7 +9272,7 @@ private fun AddCardToFlashcardDeckDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     shape = RoundedCornerShape(24.dp),
-    containerColor = dashboardCreamCardColor(),
+    containerColor = palette.dialogSurface,
     title = {
       Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
@@ -6485,7 +9281,7 @@ private fun AddCardToFlashcardDeckDialog(
             fontSize = metrics.scaledSp(20),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface
+          color = palette.textPrimary
         )
         Text(
           text = "Deck: $deckTitle ($defaultCategory)",
@@ -6493,7 +9289,7 @@ private fun AddCardToFlashcardDeckDialog(
             fontSize = metrics.scaledSp(12),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.primary,
+          color = palette.accentIndigo,
           maxLines = 2,
           overflow = TextOverflow.Ellipsis
         )
@@ -6516,6 +9312,7 @@ private fun AddCardToFlashcardDeckDialog(
           isError = validationError && question.isBlank(),
           minLines = 3,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("add_card_question_input")
@@ -6531,6 +9328,7 @@ private fun AddCardToFlashcardDeckDialog(
           isError = validationError && answer.isBlank(),
           minLines = 3,
           shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("add_card_answer_input")
@@ -6547,6 +9345,10 @@ private fun AddCardToFlashcardDeckDialog(
           }
         },
         shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF4F46E5),
+          contentColor = Color.White
+        ),
         modifier = Modifier.testTag("confirm_add_card_button")
       ) {
         Text(
@@ -6557,7 +9359,7 @@ private fun AddCardToFlashcardDeckDialog(
     },
     dismissButton = {
       TextButton(onClick = onDismiss) {
-        Text("Cancel")
+        Text("Cancel", color = palette.textSecondary)
       }
     }
   )
@@ -6565,25 +9367,25 @@ private fun AddCardToFlashcardDeckDialog(
 
 /**
  * Interactive Study Mode Screen (`FlashcardStudyScreen`):
- * - Top Progress Bar displaying current card index (e.g., "Card 2 of 5") and a `LinearProgressIndicator`.
- * - Large, centered cream flashcard with `12.dp` elevation, rounded corners, and a subtle border:
- *   * Click to Flip (`isFlipped: Boolean`).
- *   * Front Side: Small chip "QUESTION", bold question text, and helper tip "(Tap card to flip)".
- *   * Back Side: Small chip "ANSWER / CODE PROVISION", answer text, and reference notes.
- * - Bottom Spaced-Repetition Rating Controls:
- *   * Row of 3 buttons: "Again" (Red/Salmon accent), "Hard" (Warm Amber accent), "Good" (Sage Green accent).
- *   * Tapping any rating updates `masteryLevel` and advances to the next card with a smooth transition.
- * - Deck Completed State:
- *   * Celebratory card: "Deck Completed!", showing total cards reviewed, "Review Again", and "Back to Decks".
+ * - Queue Immersion HUD with Remaining/Mastered pills, active card interval micro-badge, and progress bar.
+ * - Realistic 3D Card Flip (`rotationY` 0f -> 180f over 320ms with `cameraDistance = 14f * density`
+ *   and inner counter-rotation `rotationY = 180f` when `rotation > 90f` so back text is never mirrored).
+ * - Both Front/Back flip surfaces, Completion Card, and top Immersion HUD use `palette.cardFill`,
+ *   `palette.glassBorder`, `palette.textPrimary`, and `palette.textSecondary`.
  */
 @Composable
 fun FlashcardStudyScreen(
   deck: FlashcardDeck,
   metrics: ResponsiveMetrics,
   onRateCard: (cardId: Int, masteryLevel: String) -> Unit,
+  onResetMastery: () -> Unit = {},
   onBackToDecks: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+  val localView = LocalView.current
+  val palette = currentGlassPalette()
+
   BackHandler {
     onBackToDecks()
   }
@@ -6593,18 +9395,37 @@ fun FlashcardStudyScreen(
     mutableStateListOf<FlashcardItem>().apply { addAll(deck.cards) }
   }
   val masteredCards = remember(deck.id) {
-    mutableStateListOf<FlashcardItem>()
+    mutableStateListOf<FlashcardItem>().apply {
+      addAll(deck.cards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) })
+    }
   }
   var isFlipped by remember(deck.id) { mutableStateOf(false) }
+  var cardAdvanceStep by remember(deck.id) { mutableIntStateOf(0) }
+  var isResetConfirmDialogOpen by rememberSaveable(deck.id) { mutableStateOf(false) }
+
+  val performStudyReset = {
+    playCardHapticSound(context, localView)
+    onResetMastery()
+    masteredCards.clear()
+    studyQueue.clear()
+    studyQueue.addAll(deck.cards.map { it.copy(masteryLevel = "New", isMastered = false) })
+    isFlipped = false
+    cardAdvanceStep++
+    Toast.makeText(context, "Deck progress reset to 0%", Toast.LENGTH_SHORT).show()
+  }
 
   val currentCard = studyQueue.firstOrNull()
 
-  val creamCardColor = dashboardCreamCardColor()
-  val ivoryInnerColor = dashboardIvoryInnerColor()
-
   val againAccentColor = Color(0xFFD9534F)
   val hardAccentColor = Color(0xFFD9822B)
-  val goodAccentColor = Color(0xFF3B8754)
+  val goodAccentColor = if (palette.isDark) Color(0xFF34D399) else Color(0xFF059669)
+
+  val activeIntervalLabel = when {
+    currentCard == null -> "Deck Completed"
+    currentCard.masteryLevel.equals("Again", ignoreCase = true) -> "Repeat in: ~30s"
+    currentCard.masteryLevel.equals("Hard", ignoreCase = true) -> "Repeat in: ~2m"
+    else -> "Current Interval: New Card"
+  }
 
   Column(
     modifier = modifier
@@ -6625,10 +9446,13 @@ fun FlashcardStudyScreen(
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
     ) {
       Surface(
-        onClick = onBackToDecks,
+        onClick = {
+          playCardHapticSound(context, localView)
+          onBackToDecks()
+        },
         shape = CircleShape,
-        color = creamCardColor,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        color = palette.cardFill,
+        border = palette.glassBorder,
         shadowElevation = 4.dp,
         modifier = Modifier
           .size(48.dp)
@@ -6638,7 +9462,7 @@ fun FlashcardStudyScreen(
           Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
             contentDescription = "Back to Decks",
-            tint = MaterialTheme.colorScheme.onSurface,
+            tint = palette.textPrimary,
             modifier = Modifier.size(26.dp)
           )
         }
@@ -6651,7 +9475,7 @@ fun FlashcardStudyScreen(
             fontSize = metrics.scaledSp(17),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onBackground,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis
         )
@@ -6662,17 +9486,41 @@ fun FlashcardStudyScreen(
             fontSize = metrics.scaledSp(12),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.primary,
+          color = palette.accentIndigo,
           modifier = Modifier.testTag("study_progress_label")
         )
+      }
+
+      // Top-Right "Reset Deck" Liquid Glass Icon Button
+      Surface(
+        onClick = {
+          playCardHapticSound(context, localView)
+          isResetConfirmDialogOpen = true
+        },
+        shape = CircleShape,
+        color = palette.nestedCardFill,
+        border = palette.glassBorder,
+        shadowElevation = 2.dp,
+        modifier = Modifier
+          .size(40.dp)
+          .testTag("study_top_bar_reset_deck_button")
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.Default.Refresh,
+            contentDescription = "Reset Deck Progress",
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(20.dp)
+          )
+        }
       }
     }
 
     // Queue Immersion HUD (Head-Up Display)
     Surface(
-      color = creamCardColor,
+      color = palette.cardFill,
       shape = RoundedCornerShape(20.dp),
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+      border = palette.glassBorder,
       shadowElevation = 4.dp,
       modifier = Modifier
         .fillMaxWidth()
@@ -6691,7 +9539,7 @@ fun FlashcardStudyScreen(
         ) {
           // Left pill: "Remaining: ${studyQueue.size}" (with a subtle amber/red dot)
           Surface(
-            color = ivoryInnerColor,
+            color = palette.nestedCardFill,
             shape = CircleShape,
             border = BorderStroke(1.dp, hardAccentColor.copy(alpha = 0.45f)),
             modifier = Modifier.testTag("hud_remaining_pill")
@@ -6714,14 +9562,14 @@ fun FlashcardStudyScreen(
                   fontSize = metrics.scaledSp(12),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface
+                color = palette.textPrimary
               )
             }
           }
 
           // Right pill: "Mastered: ${masteredCards.size}/${deck.cards.size}" (with a green check dot)
           Surface(
-            color = ivoryInnerColor,
+            color = palette.nestedCardFill,
             shape = CircleShape,
             border = BorderStroke(1.dp, goodAccentColor.copy(alpha = 0.45f)),
             modifier = Modifier.testTag("hud_mastered_pill")
@@ -6744,7 +9592,54 @@ fun FlashcardStudyScreen(
                   fontSize = metrics.scaledSp(12),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface
+                color = palette.textPrimary
+              )
+            }
+          }
+        }
+
+        // Active Card Interval Micro-Badge in HUD
+        if (currentCard != null) {
+          Surface(
+            color = palette.nestedCardFill,
+            shape = CircleShape,
+            border = BorderStroke(
+              1.dp,
+              when {
+                currentCard.masteryLevel.equals("Again", ignoreCase = true) -> againAccentColor.copy(alpha = 0.45f)
+                currentCard.masteryLevel.equals("Hard", ignoreCase = true) -> hardAccentColor.copy(alpha = 0.45f)
+                else -> palette.accentIndigo.copy(alpha = 0.45f)
+              }
+            ),
+            modifier = Modifier.testTag("hud_interval_micro_badge")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Schedule,
+                contentDescription = null,
+                tint = when {
+                  currentCard.masteryLevel.equals("Again", ignoreCase = true) -> againAccentColor
+                  currentCard.masteryLevel.equals("Hard", ignoreCase = true) -> hardAccentColor
+                  else -> palette.accentIndigo
+                },
+                modifier = Modifier.size(12.dp)
+              )
+              Text(
+                text = activeIntervalLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = when {
+                  currentCard.masteryLevel.equals("Again", ignoreCase = true) -> againAccentColor
+                  currentCard.masteryLevel.equals("Hard", ignoreCase = true) -> hardAccentColor
+                  else -> palette.accentIndigo
+                }
               )
             }
           }
@@ -6769,7 +9664,7 @@ fun FlashcardStudyScreen(
             .clip(CircleShape)
             .testTag("study_progress_bar"),
           color = goodAccentColor,
-          trackColor = WarmCreamTrackColor
+          trackColor = palette.trackColor
         )
       }
     }
@@ -6778,7 +9673,7 @@ fun FlashcardStudyScreen(
       // Deck Mastered Celebratory Screen
       Card(
         shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = creamCardColor),
+        colors = CardDefaults.cardColors(containerColor = palette.cardFill),
         elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
         border = BorderStroke(1.5.dp, goodAccentColor.copy(alpha = 0.55f)),
         modifier = Modifier
@@ -6830,7 +9725,7 @@ fun FlashcardStudyScreen(
               fontSize = metrics.scaledSp(26),
               fontWeight = FontWeight.ExtraBold
             ),
-            color = MaterialTheme.colorScheme.onSurface,
+            color = palette.textPrimary,
             textAlign = TextAlign.Center
           )
 
@@ -6841,123 +9736,234 @@ fun FlashcardStudyScreen(
               lineHeight = metrics.scaledSp(22),
               fontWeight = FontWeight.Medium
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             textAlign = TextAlign.Center,
             modifier = Modifier.testTag("deck_completed_total_text")
           )
 
           Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
           ) {
             OutlinedButton(
               onClick = {
-                masteredCards.clear()
+                playCardHapticSound(context, localView)
+                // Keep persisted mastered progress intact when tapping "Study Again"
                 studyQueue.clear()
                 studyQueue.addAll(deck.cards)
                 isFlipped = false
+                cardAdvanceStep++
               },
-              shape = CircleShape,
-              border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+              shape = RoundedCornerShape(20.dp),
+              border = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.65f)),
+              colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = palette.nestedCardFill,
+                contentColor = palette.accentIndigo
+              ),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
               modifier = Modifier
                 .weight(1f)
-                .height(48.dp)
+                .height(46.dp)
                 .testTag("restart_deck_button")
             ) {
-              Icon(
-                imageVector = Icons.Filled.Replay,
-                contentDescription = "Restart Deck",
-                modifier = Modifier.size(18.dp)
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              Text(
-                text = "Restart Deck",
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-              )
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Refresh,
+                  contentDescription = "Study Again",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "Study Again",
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 1,
+                  softWrap = false,
+                  color = palette.accentIndigo
+                )
+              }
             }
 
             Button(
-              onClick = onBackToDecks,
-              shape = CircleShape,
+              onClick = {
+                playCardHapticSound(context, localView)
+                onBackToDecks()
+              },
+              shape = RoundedCornerShape(20.dp),
               colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                containerColor = Color.Transparent,
+                contentColor = Color.White
               ),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
               modifier = Modifier
                 .weight(1f)
-                .height(48.dp)
+                .height(46.dp)
+                .background(
+                  brush = Brush.horizontalGradient(
+                    listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                  ),
+                  shape = RoundedCornerShape(20.dp)
+                )
+                .clip(RoundedCornerShape(20.dp))
                 .testTag("back_to_decks_button")
             ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+              ) {
+                Text(
+                  text = "All Decks",
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  maxLines = 1,
+                  softWrap = false,
+                  color = Color.White
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                  imageVector = Icons.Default.ArrowForward,
+                  contentDescription = "All Decks",
+                  tint = Color.White,
+                  modifier = Modifier.size(16.dp)
+                )
+              }
+            }
+          }
+
+          TextButton(
+            onClick = {
+              performStudyReset()
+            },
+            shape = CircleShape,
+            colors = ButtonDefaults.textButtonColors(
+              containerColor = palette.nestedCardFill,
+              contentColor = palette.textSecondary
+            ),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+            modifier = Modifier
+              .border(
+                palette.nestedBorder,
+                CircleShape
+              )
+              .testTag("reset_deck_mastery_button")
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = null,
+                tint = palette.textSecondary,
+                modifier = Modifier.size(14.dp)
+              )
               Text(
-                text = "Back to Decks",
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                text = "Reset Mastery Progress",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = palette.textSecondary
               )
             }
           }
         }
       }
     } else {
-      // Interactive Centered Flashcard (Click to Flip)
-      Card(
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = creamCardColor),
-        elevation = CardDefaults.cardElevation(
-          defaultElevation = 12.dp,
-          pressedElevation = 16.dp
-        ),
-        border = BorderStroke(
-          width = 1.5.dp,
-          color = if (isFlipped) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
-          } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
-          }
-        ),
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(min = metrics.scaledDp(320))
-          .clip(RoundedCornerShape(28.dp))
-          .clickable { isFlipped = !isFlipped }
-          .testTag("interactive_flashcard")
-      ) {
-        Crossfade(
-          targetState = isFlipped,
-          animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
-          label = "flashcard_flip_crossfade"
-        ) { flipped ->
+      // Smooth Card Advance Animation + 3D Card Flip
+      AnimatedContent(
+        targetState = currentCard to cardAdvanceStep,
+        transitionSpec = {
+          (
+            scaleIn(
+              initialScale = 0.95f,
+              animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+            ) + fadeIn(animationSpec = tween(durationMillis = 220))
+          ).togetherWith(
+            slideOutOfContainer(
+              towards = AnimatedContentTransitionScope.SlideDirection.Left,
+              animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+            ) + fadeOut(animationSpec = tween(durationMillis = 220))
+          )
+        },
+        label = "flashcard_advance_transition"
+      ) { (animatedCard, _) ->
+        val rotation by animateFloatAsState(
+          targetValue = if (isFlipped) 180f else 0f,
+          animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+          label = "card_flip_rotation"
+        )
+        val showingBack = rotation > 90f
+        val cardIntervalBadgeText = when {
+          animatedCard.masteryLevel.equals("Again", ignoreCase = true) -> "Repeat in: ~30s"
+          animatedCard.masteryLevel.equals("Hard", ignoreCase = true) -> "Repeat in: ~2m"
+          else -> "Current Interval: New Card"
+        }
+
+        // Interactive Centered Flashcard as a Tactile Frosted Glass Slab with 3D Rotation
+        LiquidGlassCard(
+          onClick = {
+            playCardHapticSound(context, localView)
+            isFlipped = !isFlipped
+          },
+          shape = RoundedCornerShape(28.dp),
+          elevation = 14.dp,
+          fillAlpha = 0.78f,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = metrics.scaledDp(320))
+            .graphicsLayer {
+              rotationY = rotation
+              cameraDistance = 14f * density
+            }
+            .testTag("interactive_flashcard")
+        ) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
               .heightIn(min = metrics.scaledDp(320))
+              .graphicsLayer {
+                if (showingBack) {
+                  rotationY = 180f
+                }
+              }
               .padding(metrics.scaledDp(24)),
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
           ) {
-            // Top Row: Side Chip ("QUESTION" vs "ANSWER / CODE PROVISION") + Category Tag
+            // Top Row: Side Chip ("QUESTION" vs "ANSWER / CODE PROVISION") + Interval Micro-Badge
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
               Surface(
-                color = if (flipped) {
+                color = if (showingBack) {
                   goodAccentColor.copy(alpha = 0.16f)
                 } else {
-                  MaterialTheme.colorScheme.primaryContainer
+                  LiquidRoyalPeriwinkle.copy(alpha = 0.16f)
                 },
-                shape = CircleShape
+                shape = CircleShape,
+                border = BorderStroke(
+                  1.dp,
+                  if (showingBack) goodAccentColor.copy(alpha = 0.4f) else LiquidRoyalPeriwinkle.copy(alpha = 0.35f)
+                )
               ) {
                 Text(
-                  text = if (flipped) "ANSWER / CODE PROVISION" else "QUESTION",
+                  text = if (showingBack) "ANSWER / CODE PROVISION" else "QUESTION",
                   style = MaterialTheme.typography.labelSmall.copy(
                     fontFamily = JetBrainsMonoFamily,
                     fontSize = metrics.scaledSp(11),
                     fontWeight = FontWeight.ExtraBold
                   ),
-                  color = if (flipped) {
+                  color = if (showingBack) {
                     goodAccentColor
                   } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
+                    palette.accentIndigo
                   },
                   modifier = Modifier
                     .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -6965,16 +9971,26 @@ fun FlashcardStudyScreen(
                 )
               }
 
-              Text(
-                text = currentCard.category,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = metrics.scaledSp(11),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
+              // Card Header Micro-Badge ("Current Interval: New Card" / "Repeat in: ~30s" / "Repeat in: ~2m")
+              Surface(
+                color = palette.nestedCardFill,
+                shape = CircleShape,
+                border = palette.nestedBorder,
+                modifier = Modifier.testTag("card_interval_micro_badge")
+              ) {
+                Text(
+                  text = cardIntervalBadgeText,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textSecondary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+              }
             }
 
             // Middle Content: Bold Question Text or Detailed Answer + Provision Reference
@@ -6984,15 +10000,15 @@ fun FlashcardStudyScreen(
                 .padding(vertical = metrics.scaledDp(20)),
               contentAlignment = Alignment.Center
             ) {
-              if (!flipped) {
+              if (!showingBack) {
                 Text(
-                  text = currentCard.question,
+                  text = animatedCard.question,
                   style = MaterialTheme.typography.headlineSmall.copy(
                     fontSize = metrics.scaledSp(21),
                     fontWeight = FontWeight.Bold,
                     lineHeight = metrics.scaledSp(29)
                   ),
-                  color = MaterialTheme.colorScheme.onSurface,
+                  color = palette.textPrimary,
                   textAlign = TextAlign.Center,
                   modifier = Modifier.testTag("flashcard_question_text")
                 )
@@ -7002,33 +10018,30 @@ fun FlashcardStudyScreen(
                   verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
                 ) {
                   Text(
-                    text = currentCard.answer,
+                    text = animatedCard.answer,
                     style = MaterialTheme.typography.titleLarge.copy(
                       fontSize = metrics.scaledSp(19),
                       fontWeight = FontWeight.Bold,
                       lineHeight = metrics.scaledSp(27)
                     ),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = palette.textPrimary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.testTag("flashcard_answer_text")
                   )
 
                   Surface(
-                    color = ivoryInnerColor,
+                    color = palette.nestedCardFill,
                     shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(
-                      1.dp,
-                      MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
+                    border = palette.nestedBorder
                   ) {
                     Text(
-                      text = "Ref: ${currentCard.category} • Mastery: ${currentCard.masteryLevel}",
+                      text = "Ref: ${animatedCard.category} • Mastery: ${animatedCard.masteryLevel}",
                       style = MaterialTheme.typography.labelMedium.copy(
                         fontFamily = JetBrainsMonoFamily,
                         fontSize = metrics.scaledSp(11),
                         fontWeight = FontWeight.SemiBold
                       ),
-                      color = MaterialTheme.colorScheme.primary,
+                      color = palette.accentIndigo,
                       modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
                   }
@@ -7038,19 +10051,19 @@ fun FlashcardStudyScreen(
 
             // Bottom Helper Tip
             Text(
-              text = if (!flipped) "(Tap card to flip)" else "(Tap card to view question)",
+              text = if (!showingBack) "(Tap card to 3D flip)" else "(Tap card to view question)",
               style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               textAlign = TextAlign.Center
             )
           }
         }
       }
 
-      // Bottom Spaced Repetition Rating Controls ("Again", "Hard", "Good")
+      // Bottom Spaced Repetition Glossy Frosted Action Buttons ("Again", "Hard", "Good") with Time Interval Badges
       Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -7062,112 +10075,233 @@ fun FlashcardStudyScreen(
             fontSize = metrics.scaledSp(12),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant
+          color = palette.textSecondary
         )
 
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
         ) {
-          // 1. Again (Needs Immediate Review - re-insert at index 2 if size > 2, else append)
-          Button(
-            onClick = {
-              if (studyQueue.isNotEmpty()) {
-                val activeCard = studyQueue.first()
-                onRateCard(activeCard.id, "Again")
-                val updatedCard = activeCard.copy(masteryLevel = "Again")
-                if (studyQueue.size > 2) {
-                  studyQueue.removeAt(0)
-                  studyQueue.add(2, updatedCard)
-                } else {
-                  studyQueue.removeAt(0)
-                  studyQueue.add(updatedCard)
+          // 1. Again ("Again" + "< 30s" sub-label badge — Soft Coral / Crimson Frost)
+          Box(
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 58.dp)
+              .shadow(
+                elevation = 8.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = againAccentColor.copy(alpha = 0.35f),
+                spotColor = againAccentColor.copy(alpha = 0.35f)
+              )
+              .clip(RoundedCornerShape(20.dp))
+              .background(
+                Brush.linearGradient(
+                  listOf(Color(0xFFEF4444), Color(0xFFDC2626))
+                )
+              )
+              .border(
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.58f)),
+                RoundedCornerShape(20.dp)
+              )
+              .clickable {
+                playCardHapticSound(context, localView)
+                if (studyQueue.isNotEmpty()) {
+                  val activeCard = studyQueue.first()
+                  onRateCard(activeCard.id, "Again")
+                  val updatedCard = activeCard.copy(masteryLevel = "Again")
+                  if (studyQueue.size > 2) {
+                    studyQueue.removeAt(0)
+                    studyQueue.add(2, updatedCard)
+                  } else {
+                    studyQueue.removeAt(0)
+                    studyQueue.add(updatedCard)
+                  }
+                  isFlipped = false
+                  cardAdvanceStep++
                 }
-                isFlipped = false
               }
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = againAccentColor,
-              contentColor = Color.White
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-            modifier = Modifier
-              .weight(1f)
-              .height(52.dp)
-              .testTag("rating_again_button")
+              .padding(vertical = 8.dp, horizontal = 6.dp)
+              .testTag("rating_again_button"),
+            contentAlignment = Alignment.Center
           ) {
-            Text(
-              text = "Again",
-              style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.Bold
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = "Again",
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color.White
               )
-            )
+              Surface(
+                color = Color.White.copy(alpha = 0.22f),
+                shape = CircleShape
+              ) {
+                Text(
+                  text = "< 30s",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = Color.White,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                )
+              }
+            }
           }
 
-          // 2. Hard (Needs Reinforcement - remove from front and push to end of studyQueue)
-          Button(
-            onClick = {
-              if (studyQueue.isNotEmpty()) {
-                val activeCard = studyQueue.removeAt(0)
-                onRateCard(activeCard.id, "Hard")
-                studyQueue.add(activeCard.copy(masteryLevel = "Hard"))
-                isFlipped = false
-              }
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = hardAccentColor,
-              contentColor = Color.White
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+          // 2. Hard ("Hard" + "2 min" sub-label badge — Warm Amber / Honey Frost)
+          Box(
             modifier = Modifier
               .weight(1f)
-              .height(52.dp)
-              .testTag("rating_hard_button")
-          ) {
-            Text(
-              text = "Hard",
-              style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.Bold
+              .heightIn(min = 58.dp)
+              .shadow(
+                elevation = 8.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = hardAccentColor.copy(alpha = 0.35f),
+                spotColor = hardAccentColor.copy(alpha = 0.35f)
               )
-            )
+              .clip(RoundedCornerShape(20.dp))
+              .background(
+                Brush.linearGradient(
+                  listOf(Color(0xFFF59E0B), Color(0xFFD97706))
+                )
+              )
+              .border(
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.58f)),
+                RoundedCornerShape(20.dp)
+              )
+              .clickable {
+                playCardHapticSound(context, localView)
+                if (studyQueue.isNotEmpty()) {
+                  val activeCard = studyQueue.removeAt(0)
+                  onRateCard(activeCard.id, "Hard")
+                  studyQueue.add(activeCard.copy(masteryLevel = "Hard"))
+                  isFlipped = false
+                  cardAdvanceStep++
+                }
+              }
+              .padding(vertical = 8.dp, horizontal = 6.dp)
+              .testTag("rating_hard_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = "Hard",
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color.White
+              )
+              Surface(
+                color = Color.White.copy(alpha = 0.22f),
+                shape = CircleShape
+              ) {
+                Text(
+                  text = "2 min",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = Color.White,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                )
+              }
+            }
           }
 
-          // 3. Good (Mastered - remove from studyQueue and add to masteredCards)
-          Button(
-            onClick = {
-              if (studyQueue.isNotEmpty()) {
-                val activeCard = studyQueue.removeAt(0)
-                onRateCard(activeCard.id, "Good")
-                masteredCards.add(activeCard.copy(masteryLevel = "Good"))
-                isFlipped = false
-              }
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = goodAccentColor,
-              contentColor = Color.White
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+          // 3. Good ("Good" + "Mastered" sub-label badge — Sage / Emerald Frost)
+          Box(
             modifier = Modifier
               .weight(1f)
-              .height(52.dp)
-              .testTag("rating_good_button")
-          ) {
-            Text(
-              text = "Good",
-              style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.Bold
+              .heightIn(min = 58.dp)
+              .shadow(
+                elevation = 8.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = goodAccentColor.copy(alpha = 0.35f),
+                spotColor = goodAccentColor.copy(alpha = 0.35f)
               )
-            )
+              .clip(RoundedCornerShape(20.dp))
+              .background(
+                Brush.linearGradient(
+                  listOf(Color(0xFF10B981), Color(0xFF059669))
+                )
+              )
+              .border(
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.58f)),
+                RoundedCornerShape(20.dp)
+              )
+              .clickable {
+                playCardHapticSound(context, localView)
+                if (studyQueue.isNotEmpty()) {
+                  val activeCard = studyQueue.removeAt(0)
+                  activeCard.isMastered = true
+                  activeCard.masteryLevel = "Good"
+                  onRateCard(activeCard.id, "Good")
+                  if (masteredCards.none { it.id == activeCard.id }) {
+                    masteredCards.add(activeCard.copy(masteryLevel = "Good", isMastered = true))
+                  }
+                  isFlipped = false
+                  cardAdvanceStep++
+                }
+              }
+              .padding(vertical = 8.dp, horizontal = 6.dp)
+              .testTag("rating_good_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = "Good",
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color.White
+              )
+              Surface(
+                color = Color.White.copy(alpha = 0.22f),
+                shape = CircleShape
+              ) {
+                Text(
+                  text = "Mastered",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = Color.White,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                )
+              }
+            }
           }
         }
       }
     }
+  }
+
+  if (isResetConfirmDialogOpen) {
+    ResetMasteryConfirmDialog(
+      cardCount = deck.cards.size,
+      metrics = metrics,
+      onDismiss = { isResetConfirmDialogOpen = false },
+      onConfirmReset = {
+        isResetConfirmDialogOpen = false
+        performStudyReset()
+      }
+    )
   }
 }
 
@@ -7178,22 +10312,15 @@ private fun ExtraToolPlaceholderCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
-  val cardContainerColor = dashboardCreamCardColor()
-
-  Card(
+  val palette = currentGlassPalette()
+  LiquidGlassCard(
+    onClick = onClick,
+    shape = RoundedCornerShape(26.dp),
+    elevation = 10.dp,
+    fillAlpha = 0.72f,
     modifier = modifier
       .height(metrics.scaledDp(168))
-      .clip(RoundedCornerShape(22.dp))
-      .clickable(onClick = onClick)
-      .testTag("extra_tool_card_${tool.id}"),
-    shape = RoundedCornerShape(22.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = cardContainerColor
-    ),
-    elevation = CardDefaults.cardElevation(
-      defaultElevation = 8.dp,
-      pressedElevation = 12.dp
-    )
+      .testTag("extra_tool_card_${tool.id}")
   ) {
     Column(
       modifier = Modifier
@@ -7201,19 +10328,30 @@ private fun ExtraToolPlaceholderCard(
         .padding(metrics.scaledDp(18)),
       verticalArrangement = Arrangement.SpaceBetween
     ) {
-      Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.size(48.dp)
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Icon(
-            imageVector = tool.icon,
-            contentDescription = tool.title,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(26.dp)
+      // Luminous Gradient Icon Badge with Specular Rim
+      Box(
+        modifier = Modifier
+          .size(50.dp)
+          .shadow(
+            elevation = 8.dp,
+            shape = RoundedCornerShape(16.dp),
+            ambientColor = LiquidDeepIndigo.copy(alpha = 0.30f),
+            spotColor = LiquidElectricViolet.copy(alpha = 0.30f)
           )
-        }
+          .clip(RoundedCornerShape(16.dp))
+          .background(brush = LiquidOrbBrush)
+          .border(
+            BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
+            RoundedCornerShape(16.dp)
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = tool.icon,
+          contentDescription = tool.title,
+          tint = Color.White,
+          modifier = Modifier.size(26.dp)
+        )
       }
 
       Column(
@@ -7226,7 +10364,7 @@ private fun ExtraToolPlaceholderCard(
             fontSize = metrics.scaledSp(16),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 2,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.fillMaxWidth()
@@ -7238,7 +10376,7 @@ private fun ExtraToolPlaceholderCard(
             fontSize = metrics.scaledSp(13),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          color = palette.textSecondary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.fillMaxWidth()
@@ -7284,6 +10422,7 @@ fun ClassTimetableScheduleScreen(
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   var isGridView by rememberSaveable { mutableStateOf(false) }
   var focusedClass by remember { mutableStateOf<ClassSchedule?>(null) }
 
@@ -7332,7 +10471,7 @@ fun ClassTimetableScheduleScreen(
               fontSize = metrics.scaledSp(26),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onBackground,
+            color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -7349,11 +10488,11 @@ fun ClassTimetableScheduleScreen(
             color = if (isGridView) {
               MaterialTheme.colorScheme.primaryContainer
             } else {
-              dashboardCreamCardColor()
+              palette.cardFill
             },
             border = BorderStroke(
               width = 1.5.dp,
-              color = MaterialTheme.colorScheme.primary
+              color = palette.accentIndigo
             ),
             shadowElevation = 4.dp,
             modifier = Modifier
@@ -7376,7 +10515,7 @@ fun ClassTimetableScheduleScreen(
                 } else {
                   stringResource(R.string.grid_view_label)
                 },
-                tint = MaterialTheme.colorScheme.primary,
+                tint = palette.accentIndigo,
                 modifier = Modifier.size(18.dp)
               )
               Text(
@@ -7389,7 +10528,7 @@ fun ClassTimetableScheduleScreen(
                   fontSize = metrics.scaledSp(12),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.primary,
+                color = palette.accentIndigo,
                 maxLines = 1
               )
             }
@@ -7431,12 +10570,12 @@ fun ClassTimetableScheduleScreen(
                 color = if (isSelected) {
                   MaterialTheme.colorScheme.primaryContainer
                 } else {
-                  dashboardCreamCardColor()
+                  palette.cardFill
                 },
                 border = if (isSelected) {
-                  BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                  BorderStroke(2.dp, palette.accentIndigo)
                 } else {
-                  BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                  BorderStroke(1.dp, palette.cardBorder)
                 },
                 shadowElevation = if (isSelected) 8.dp else 4.dp,
                 modifier = Modifier
@@ -7458,9 +10597,9 @@ fun ClassTimetableScheduleScreen(
                       fontWeight = FontWeight.Bold
                     ),
                     color = if (isSelected) {
-                      MaterialTheme.colorScheme.primary
+                      palette.accentIndigo
                     } else {
-                      MaterialTheme.colorScheme.onSurface
+                      palette.textPrimary
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -7470,7 +10609,7 @@ fun ClassTimetableScheduleScreen(
                     color = if (isSelected) {
                       MaterialTheme.colorScheme.primary
                     } else {
-                      MaterialTheme.colorScheme.primaryContainer
+                      palette.accentIndigo.copy(alpha = 0.16f)
                     },
                     shape = CircleShape
                   ) {
@@ -7481,9 +10620,9 @@ fun ClassTimetableScheduleScreen(
                         fontWeight = FontWeight.Bold
                       ),
                       color = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimary
+                        Color.White
                       } else {
-                        MaterialTheme.colorScheme.onPrimaryContainer
+                        palette.accentIndigo
                       },
                       maxLines = 1,
                       modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -7508,7 +10647,7 @@ fun ClassTimetableScheduleScreen(
                 fontSize = metrics.scaledSp(18),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onBackground,
+              color = palette.textPrimary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier.weight(1f)
@@ -7520,7 +10659,7 @@ fun ClassTimetableScheduleScreen(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               maxLines = 1
             )
           }
@@ -7529,15 +10668,12 @@ fun ClassTimetableScheduleScreen(
         // 3. Visual Timetable Cards for the Selected Day (chronologically sorted)
         if (filteredSchedules.isEmpty()) {
           item {
-            Card(
+            LiquidGlassCard(
               modifier = Modifier
                 .fillMaxWidth()
                 .testTag("empty_schedule_day_card"),
               shape = RoundedCornerShape(24.dp),
-              colors = CardDefaults.cardColors(
-                containerColor = dashboardCreamCardColor()
-              ),
-              elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+              elevation = 8.dp
             ) {
               Column(
                 modifier = Modifier
@@ -7549,7 +10685,7 @@ fun ClassTimetableScheduleScreen(
                 Icon(
                   imageVector = Icons.Outlined.EventNote,
                   contentDescription = null,
-                  tint = MaterialTheme.colorScheme.primary,
+                  tint = palette.accentIndigo,
                   modifier = Modifier.size(36.dp)
                 )
                 Text(
@@ -7562,7 +10698,7 @@ fun ClassTimetableScheduleScreen(
                     fontSize = metrics.scaledSp(18),
                     fontWeight = FontWeight.Bold
                   ),
-                  color = MaterialTheme.colorScheme.onSurface,
+                  color = palette.textPrimary,
                   textAlign = TextAlign.Center,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis
@@ -7576,7 +10712,7 @@ fun ClassTimetableScheduleScreen(
                   style = MaterialTheme.typography.bodyMedium.copy(
                     fontSize = metrics.scaledSp(14)
                   ),
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  color = palette.textSecondary,
                   textAlign = TextAlign.Center,
                   maxLines = 3,
                   overflow = TextOverflow.Ellipsis
@@ -7600,7 +10736,7 @@ fun ClassTimetableScheduleScreen(
       }
     }
 
-    // Full-screen Long-Press Details Overlay with performant 0.6f Black Scrim & large Cream Card
+    // Full-screen Long-Press Details Overlay with performant 0.6f Black Scrim & Glass Dialog Surface Card
     focusedClass?.let { detailedClass ->
       val accentColor = Color(detailedClass.colorHex)
       Box(
@@ -7621,7 +10757,7 @@ fun ClassTimetableScheduleScreen(
             .testTag("schedule_long_press_detail_card"),
           shape = RoundedCornerShape(28.dp),
           colors = CardDefaults.cardColors(
-            containerColor = CreamCardColor
+            containerColor = palette.dialogSurface
           ),
           elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
           border = BorderStroke(2.dp, accentColor)
@@ -7657,7 +10793,7 @@ fun ClassTimetableScheduleScreen(
                 lineHeight = metrics.scaledSp(30),
                 fontWeight = FontWeight.Bold
               ),
-              color = Color(0xFF1C1B1F),
+              color = palette.textPrimary,
               textAlign = TextAlign.Center,
               modifier = Modifier
                 .fillMaxWidth()
@@ -7665,7 +10801,7 @@ fun ClassTimetableScheduleScreen(
             )
 
             HorizontalDivider(
-              color = WarmCreamTrackColor,
+              color = palette.dividerColor,
               thickness = 1.dp
             )
 
@@ -7689,7 +10825,7 @@ fun ClassTimetableScheduleScreen(
                   lineHeight = metrics.scaledSp(26),
                   fontWeight = FontWeight.Bold
                 ),
-                color = Color(0xFF1C1B1F),
+                color = palette.textPrimary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.testTag("focused_class_room_text")
               )
@@ -7715,7 +10851,7 @@ fun ClassTimetableScheduleScreen(
                   lineHeight = metrics.scaledSp(25),
                   fontWeight = FontWeight.SemiBold
                 ),
-                color = Color(0xFF3E3B32),
+                color = palette.textSecondary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.testTag("focused_class_time_text")
               )
@@ -7744,6 +10880,7 @@ private fun ScheduleTimetableGridView(
   onLongPressClass: (ClassSchedule) -> Unit = {},
   metrics: ResponsiveMetrics
 ) {
+  val palette = currentGlassPalette()
   val amHourLabels = remember { listOf("7:00", "8:00", "9:00", "10:00", "11:00") }
   val pmHourLabels = remember { listOf("12:00", "1:00", "2:00", "3:00", "4:00", "5:00") }
   val allHourLabels = remember { amHourLabels + pmHourLabels }
@@ -7758,10 +10895,10 @@ private fun ScheduleTimetableGridView(
   val hourLabelColumnWidth = metrics.scaledDp(42)
   val leftAxisTotalWidth = meridiemStripWidth + hourLabelColumnWidth
 
-  val gridLineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+  val gridLineColor = palette.dividerColor
   val lunchPurpleColor = MaterialTheme.colorScheme.primary
-  val creamSurface = dashboardCreamCardColor()
-  val ivoryCellSurface = dashboardIvoryInnerColor()
+  val creamSurface = palette.cardFill
+  val ivoryCellSurface = palette.nestedCardFill
 
   // Memoize all time-to-float calculations and layout positioning keyed to the schedule list
   // so low-end devices do not recalculate math on every frame.
@@ -7820,7 +10957,7 @@ private fun ScheduleTimetableGridView(
     shape = RoundedCornerShape(22.dp),
     colors = CardDefaults.cardColors(containerColor = creamSurface),
     elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f))
+    border = BorderStroke(1.5.dp, palette.cardBorder)
   ) {
     Column(
       modifier = Modifier.fillMaxWidth()
@@ -7848,7 +10985,7 @@ private fun ScheduleTimetableGridView(
               fontSize = metrics.scaledSp(9),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             maxLines = 1
           )
         }
@@ -7862,14 +10999,14 @@ private fun ScheduleTimetableGridView(
               .fillMaxHeight()
               .background(
                 if (isSelectedDay) {
-                  MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                  palette.accentIndigo.copy(alpha = 0.16f)
                 } else {
                   Color.Transparent
                 }
               )
               .border(
                 width = if (isSelectedDay) 1.5.dp else 0.5.dp,
-                color = if (isSelectedDay) MaterialTheme.colorScheme.primary else gridLineColor
+                color = if (isSelectedDay) palette.accentIndigo else gridLineColor
               )
               .clickable { onSelectWeekDay(day) }
               .testTag("grid_header_day_${day.shortLabel.uppercase(Locale.US)}"),
@@ -7882,9 +11019,9 @@ private fun ScheduleTimetableGridView(
                 fontWeight = FontWeight.Bold
               ),
               color = if (isSelectedDay) {
-                MaterialTheme.colorScheme.primary
+                palette.accentIndigo
               } else {
-                MaterialTheme.colorScheme.onSurface
+                palette.textPrimary
               },
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
@@ -7893,7 +11030,7 @@ private fun ScheduleTimetableGridView(
         }
       }
 
-      HorizontalDivider(thickness = 1.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+      HorizontalDivider(thickness = 1.5.dp, color = gridLineColor)
 
       // 2. Main Timetable Body: Left Y-Axis (AM/PM + 7:00..5:00) + 6 Day Columns + Custom 12:00 LUNCH Divider
       Box(
@@ -7909,7 +11046,7 @@ private fun ScheduleTimetableGridView(
             modifier = Modifier
               .width(meridiemStripWidth)
               .fillMaxHeight()
-              .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+              .background(palette.nestedCardFill)
           ) {
             // AM Group Box (7:00 to 11:00 rows)
             Box(
@@ -7926,7 +11063,7 @@ private fun ScheduleTimetableGridView(
                   fontSize = metrics.scaledSp(10),
                   fontWeight = FontWeight.ExtraBold
                 ),
-                color = MaterialTheme.colorScheme.primary
+                color = palette.accentIndigo
               )
             }
 
@@ -7985,9 +11122,9 @@ private fun ScheduleTimetableGridView(
                     fontWeight = if (isLunchRow) FontWeight.ExtraBold else FontWeight.Bold
                   ),
                   color = if (isLunchRow) {
-                    lunchPurpleColor
+                    palette.accentIndigo
                   } else {
-                    MaterialTheme.colorScheme.onSurface
+                    palette.textPrimary
                   },
                   maxLines = 1
                 )
@@ -8034,10 +11171,10 @@ private fun ScheduleTimetableGridView(
                     val currentOnLongPress by rememberUpdatedState(onLongPressClass)
 
                     Surface(
-                      shape = RoundedCornerShape(8.dp),
-                      color = positioned.blockColor,
-                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
-                      shadowElevation = 4.dp,
+                      shape = RoundedCornerShape(10.dp),
+                      color = positioned.blockColor.copy(alpha = 0.88f),
+                      border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.78f)),
+                      shadowElevation = 6.dp,
                       modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 2.dp, vertical = 1.dp)
@@ -8344,13 +11481,6 @@ private fun ColoredClassScheduleCard(
 
 /**
  * Polished Manual Entry `Dialog` opened by the Schedule screen's "+" Floating Action Button (FAB).
- * Styled with the warm cream card palette (`#FFFBF0` in light mode) and includes:
- * - Title: "Add Class Schedule"
- * - `OutlinedTextField` for "Subject Name" (e.g., "Reinforced Concrete Design")
- * - `OutlinedTextField` for "Room" (e.g., "ENG. 307")
- * - Structured "Start Time" + AM/PM toggle buttons and "End Time" + AM/PM toggle buttons
- * - A row of selectable circular Day toggles (`M`, `T`, `W`, `Th`, `F`, `S`)
- * - "Cancel" and "Save" buttons
  */
 @Composable
 private fun AddClassScheduleDialog(
@@ -8360,6 +11490,7 @@ private fun AddClassScheduleDialog(
   onSaveSchedule: (String, String, List<String>, String, Long) -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   val isEditMode = editingSchedule != null
   val prefilledTimeInputs = remember(editingSchedule) {
     editingSchedule?.let { parseTimeRangeToStructuredInputs(it.timeRange) }
@@ -8419,8 +11550,8 @@ private fun AddClassScheduleDialog(
     mutableLongStateOf(editingSchedule?.colorHex ?: availableColors.first())
   }
 
-  val dialogSurfaceColor = dashboardCreamCardColor()
-  val chipUnselectedColor = dashboardIvoryInnerColor()
+  val dialogSurfaceColor = palette.dialogSurface
+  val chipUnselectedColor = palette.chipUnselectedFill
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -8436,6 +11567,7 @@ private fun AddClassScheduleDialog(
       colors = CardDefaults.cardColors(
         containerColor = dialogSurfaceColor
       ),
+      border = BorderStroke(1.2.dp, palette.cardBorder),
       elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
     ) {
       Column(
@@ -8456,7 +11588,7 @@ private fun AddClassScheduleDialog(
             fontSize = metrics.scaledSp(22),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onSurface,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.testTag("schedule_dialog_title")
@@ -8478,22 +11610,18 @@ private fun AddClassScheduleDialog(
             Text(
               text = stringResource(R.string.subject_name_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+              color = palette.textMuted,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-            cursorColor = MaterialTheme.colorScheme.primary
-          ),
+          colors = sibilOutlinedTextFieldColors(),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Next
@@ -8519,7 +11647,7 @@ private fun AddClassScheduleDialog(
             Text(
               text = stringResource(R.string.schedule_room_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+              color = palette.textMuted,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -8528,21 +11656,17 @@ private fun AddClassScheduleDialog(
             Icon(
               imageVector = Icons.Outlined.LocationOn,
               contentDescription = null,
-              tint = MaterialTheme.colorScheme.primary,
+              tint = palette.accentIndigo,
               modifier = Modifier.size(20.dp)
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-            cursorColor = MaterialTheme.colorScheme.primary
-          ),
+          colors = sibilOutlinedTextFieldColors(),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Characters,
             imeAction = ImeAction.Next
@@ -8576,7 +11700,7 @@ private fun AddClassScheduleDialog(
               Text(
                 text = stringResource(R.string.start_time_placeholder),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                color = palette.textMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
@@ -8585,21 +11709,17 @@ private fun AddClassScheduleDialog(
               Icon(
                 imageVector = Icons.Outlined.Schedule,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = palette.accentIndigo,
                 modifier = Modifier.size(20.dp)
               )
             },
             textStyle = MaterialTheme.typography.bodyLarge.copy(
               fontSize = metrics.scaledSp(15),
-              color = MaterialTheme.colorScheme.onSurface
+              color = palette.textPrimary
             ),
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-              cursorColor = MaterialTheme.colorScheme.primary
-            ),
+            colors = sibilOutlinedTextFieldColors(),
             keyboardOptions = KeyboardOptions(
               keyboardType = KeyboardType.Text,
               imeAction = ImeAction.Next
@@ -8642,7 +11762,7 @@ private fun AddClassScheduleDialog(
               Text(
                 text = stringResource(R.string.end_time_placeholder),
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                color = palette.textMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
@@ -8651,21 +11771,17 @@ private fun AddClassScheduleDialog(
               Icon(
                 imageVector = Icons.Outlined.Schedule,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = palette.accentIndigo,
                 modifier = Modifier.size(20.dp)
               )
             },
             textStyle = MaterialTheme.typography.bodyLarge.copy(
               fontSize = metrics.scaledSp(15),
-              color = MaterialTheme.colorScheme.onSurface
+              color = palette.textPrimary
             ),
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-              cursorColor = MaterialTheme.colorScheme.primary
-            ),
+            colors = sibilOutlinedTextFieldColors(),
             keyboardOptions = KeyboardOptions(
               keyboardType = KeyboardType.Text,
               imeAction = ImeAction.Done
@@ -8695,7 +11811,7 @@ private fun AddClassScheduleDialog(
               fontSize = metrics.scaledSp(14),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           )
 
           Row(
@@ -8733,7 +11849,7 @@ private fun AddClassScheduleDialog(
                       color = if (isSelected) {
                         Color.Transparent
                       } else {
-                        MaterialTheme.colorScheme.surfaceVariant
+                        palette.chipUnselectedBorder
                       },
                       shape = CircleShape
                     )
@@ -8750,9 +11866,9 @@ private fun AddClassScheduleDialog(
                         fontWeight = FontWeight.Bold
                       ),
                       color = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimary
+                        Color.White
                       } else {
-                        MaterialTheme.colorScheme.onSurface
+                        palette.textPrimary
                       },
                       maxLines = 1
                     )
@@ -8782,7 +11898,7 @@ private fun AddClassScheduleDialog(
                 .border(
                   width = if (isColorSelected) 3.dp else 0.dp,
                   color = if (isColorSelected) {
-                    MaterialTheme.colorScheme.onSurface
+                    palette.textPrimary
                   } else {
                     Color.Transparent
                   },
@@ -8824,7 +11940,7 @@ private fun AddClassScheduleDialog(
                 fontSize = metrics.scaledSp(15),
                 fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -8886,10 +12002,11 @@ private fun AmPmSegmentedToggle(
   pmTestTag: String,
   metrics: ResponsiveMetrics
 ) {
+  val palette = currentGlassPalette()
   Surface(
     shape = RoundedCornerShape(14.dp),
-    color = dashboardIvoryInnerColor(),
-    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant),
+    color = palette.inputFill,
+    border = BorderStroke(1.dp, palette.inputUnfocusedBorder),
     modifier = Modifier.height(52.dp)
   ) {
     Row(
@@ -8923,9 +12040,9 @@ private fun AmPmSegmentedToggle(
                 fontWeight = FontWeight.Bold
               ),
               color = if (isSelected) {
-                MaterialTheme.colorScheme.onPrimary
+                Color.White
               } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+                palette.textSecondary
               },
               maxLines = 1
             )
@@ -8938,8 +12055,8 @@ private fun AmPmSegmentedToggle(
 
 /**
  * Cleanly styled popup `Dialog` opened by clicking the Profile Icon in the upper right
- * corner of the Dashboard. Houses the Canva-inspired Account, Display (Dark Mode switch),
- * and About cards with floating elevation (`8.dp`).
+ * corner of the Dashboard. Houses the Account, Display (Dark Mode switch),
+ * Data Management, and About cards with floating elevation (`8.dp`).
  */
 @Composable
 private fun ProfileAndSettingsDialog(
@@ -8948,6 +12065,7 @@ private fun ProfileAndSettingsDialog(
   onSwitchAccount: () -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   val isGuest = viewModel.isGuestMode
 
   Dialog(
@@ -8961,7 +12079,8 @@ private fun ProfileAndSettingsDialog(
         .heightIn(max = 720.dp)
         .testTag("profile_settings_dialog"),
       shape = RoundedCornerShape(28.dp),
-      color = MaterialTheme.colorScheme.background,
+      color = palette.dialogSurface,
+      border = BorderStroke(1.2.dp, palette.cardBorder),
       tonalElevation = 6.dp,
       shadowElevation = 16.dp
     ) {
@@ -8984,7 +12103,7 @@ private fun ProfileAndSettingsDialog(
               fontSize = metrics.scaledSp(22),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onBackground,
+            color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
@@ -9002,7 +12121,7 @@ private fun ProfileAndSettingsDialog(
             Icon(
               imageVector = Icons.Filled.Close,
               contentDescription = "Close Settings",
-              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              tint = palette.textSecondary,
               modifier = Modifier.size(24.dp)
             )
           }
@@ -9015,9 +12134,10 @@ private fun ProfileAndSettingsDialog(
             .testTag("extras_account_card"),
           shape = RoundedCornerShape(24.dp),
           colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = palette.nestedCardFill
           ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+          border = BorderStroke(1.dp, palette.nestedCardBorder),
+          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
           Column(
             modifier = Modifier
@@ -9031,7 +12151,7 @@ private fun ProfileAndSettingsDialog(
                 fontSize = metrics.scaledSp(18),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
+              color = palette.textPrimary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -9042,7 +12162,7 @@ private fun ProfileAndSettingsDialog(
               horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
             ) {
               Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = palette.accentIndigo.copy(alpha = 0.16f),
                 shape = CircleShape,
                 modifier = Modifier.size(54.dp)
               ) {
@@ -9050,7 +12170,7 @@ private fun ProfileAndSettingsDialog(
                   Icon(
                     imageVector = Icons.Default.AccountCircle,
                     contentDescription = "Account Profile Icon",
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = palette.accentIndigo,
                     modifier = Modifier.size(34.dp)
                   )
                 }
@@ -9063,7 +12183,7 @@ private fun ProfileAndSettingsDialog(
                     fontSize = metrics.scaledSp(18),
                     fontWeight = FontWeight.Bold
                   ),
-                  color = MaterialTheme.colorScheme.onSurface,
+                  color = palette.textPrimary,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                   modifier = Modifier
@@ -9081,7 +12201,7 @@ private fun ProfileAndSettingsDialog(
                       fontSize = metrics.scaledSp(16),
                       fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = palette.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -9093,7 +12213,7 @@ private fun ProfileAndSettingsDialog(
                     style = MaterialTheme.typography.bodyMedium.copy(
                       fontSize = metrics.scaledSp(14)
                     ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = palette.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -9107,6 +12227,7 @@ private fun ProfileAndSettingsDialog(
             OutlinedButton(
               onClick = onSwitchAccount,
               shape = CircleShape,
+              border = BorderStroke(1.2.dp, palette.accentIndigo),
               modifier = Modifier
                 .fillMaxWidth()
                 .height(metrics.scaledDp(46))
@@ -9118,7 +12239,7 @@ private fun ProfileAndSettingsDialog(
                   fontSize = metrics.scaledSp(15),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.primary,
+                color = palette.accentIndigo,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
@@ -9133,9 +12254,10 @@ private fun ProfileAndSettingsDialog(
             .testTag("extras_display_card"),
           shape = RoundedCornerShape(24.dp),
           colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = palette.nestedCardFill
           ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+          border = BorderStroke(1.dp, palette.nestedCardBorder),
+          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
           Column(
             modifier = Modifier
@@ -9149,7 +12271,7 @@ private fun ProfileAndSettingsDialog(
                 fontSize = metrics.scaledSp(18),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
+              color = palette.textPrimary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -9169,7 +12291,7 @@ private fun ProfileAndSettingsDialog(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
               ) {
                 Surface(
-                  color = MaterialTheme.colorScheme.primaryContainer,
+                  color = palette.accentIndigo.copy(alpha = 0.16f),
                   shape = RoundedCornerShape(12.dp),
                   modifier = Modifier.size(40.dp)
                 ) {
@@ -9177,7 +12299,7 @@ private fun ProfileAndSettingsDialog(
                     Icon(
                       imageVector = Icons.Filled.DarkMode,
                       contentDescription = null,
-                      tint = MaterialTheme.colorScheme.primary,
+                      tint = palette.accentIndigo,
                       modifier = Modifier.size(22.dp)
                     )
                   }
@@ -9189,7 +12311,7 @@ private fun ProfileAndSettingsDialog(
                     fontSize = metrics.scaledSp(16),
                     fontWeight = FontWeight.SemiBold
                   ),
-                  color = MaterialTheme.colorScheme.onSurface,
+                  color = palette.textPrimary,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                   modifier = Modifier.weight(1f)
@@ -9200,10 +12322,10 @@ private fun ProfileAndSettingsDialog(
                 checked = viewModel.isDarkMode,
                 onCheckedChange = { isChecked -> viewModel.updateDarkMode(isChecked) },
                 colors = SwitchDefaults.colors(
-                  checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                  checkedThumbColor = Color.White,
                   checkedTrackColor = MaterialTheme.colorScheme.primary,
-                  uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                  uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                  uncheckedThumbColor = palette.textSecondary,
+                  uncheckedTrackColor = palette.progressTrack
                 ),
                 modifier = Modifier.testTag("dark_mode_switch")
               )
@@ -9223,9 +12345,10 @@ private fun ProfileAndSettingsDialog(
             .testTag("extras_data_management_card"),
           shape = RoundedCornerShape(24.dp),
           colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = palette.nestedCardFill
           ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+          border = BorderStroke(1.dp, palette.nestedCardBorder),
+          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
           Column(
             modifier = Modifier
@@ -9239,7 +12362,7 @@ private fun ProfileAndSettingsDialog(
                 fontSize = metrics.scaledSp(18),
                 fontWeight = FontWeight.Bold
               ),
-              color = MaterialTheme.colorScheme.onSurface,
+              color = palette.textPrimary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -9249,7 +12372,7 @@ private fun ProfileAndSettingsDialog(
               style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = metrics.scaledSp(13)
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant
+              color = palette.textSecondary
             )
 
             Row(
@@ -9292,7 +12415,7 @@ private fun ProfileAndSettingsDialog(
                   isRestoreDialogOpen = true
                 },
                 shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                border = BorderStroke(1.5.dp, palette.accentIndigo),
                 modifier = Modifier
                   .weight(1f)
                   .heightIn(min = 48.dp)
@@ -9304,7 +12427,7 @@ private fun ProfileAndSettingsDialog(
                     fontSize = metrics.scaledSp(13),
                     fontWeight = FontWeight.Bold
                   ),
-                  color = MaterialTheme.colorScheme.primary,
+                  color = palette.accentIndigo,
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis
                 )
@@ -9317,7 +12440,7 @@ private fun ProfileAndSettingsDialog(
           AlertDialog(
             onDismissRequest = { isRestoreDialogOpen = false },
             shape = RoundedCornerShape(24.dp),
-            containerColor = dashboardCreamCardColor(),
+            containerColor = palette.dialogSurface,
             title = {
               Text(
                 text = "Restore Sibil Data",
@@ -9325,7 +12448,7 @@ private fun ProfileAndSettingsDialog(
                   fontSize = metrics.scaledSp(19),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface
+                color = palette.textPrimary
               )
             },
             text = {
@@ -9340,7 +12463,7 @@ private fun ProfileAndSettingsDialog(
                   style = MaterialTheme.typography.bodySmall.copy(
                     fontSize = metrics.scaledSp(13)
                   ),
-                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                  color = palette.textSecondary
                 )
 
                 OutlinedTextField(
@@ -9355,6 +12478,7 @@ private fun ProfileAndSettingsDialog(
                   minLines = 5,
                   maxLines = 10,
                   shape = RoundedCornerShape(14.dp),
+                  colors = sibilOutlinedTextFieldColors(),
                   modifier = Modifier
                     .fillMaxWidth()
                     .testTag("restore_backup_json_input")
@@ -9366,7 +12490,7 @@ private fun ProfileAndSettingsDialog(
                     style = MaterialTheme.typography.labelSmall.copy(
                       fontWeight = FontWeight.SemiBold
                     ),
-                    color = MaterialTheme.colorScheme.error
+                    color = palette.accentRed
                   )
                 }
               }
@@ -9399,7 +12523,7 @@ private fun ProfileAndSettingsDialog(
             },
             dismissButton = {
               TextButton(onClick = { isRestoreDialogOpen = false }) {
-                Text("Cancel")
+                Text("Cancel", color = palette.textSecondary)
               }
             }
           )
@@ -9412,9 +12536,10 @@ private fun ProfileAndSettingsDialog(
             .testTag("extras_about_card"),
           shape = RoundedCornerShape(24.dp),
           colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = palette.nestedCardFill
           ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+          border = BorderStroke(1.dp, palette.nestedCardBorder),
+          elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
           Column(
             modifier = Modifier
@@ -9430,7 +12555,7 @@ private fun ProfileAndSettingsDialog(
               Icon(
                 imageVector = Icons.Filled.Info,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = palette.accentIndigo,
                 modifier = Modifier.size(22.dp)
               )
               Text(
@@ -9439,7 +12564,7 @@ private fun ProfileAndSettingsDialog(
                   fontSize = metrics.scaledSp(18),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface,
+                color = palette.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
@@ -9457,7 +12582,7 @@ private fun ProfileAndSettingsDialog(
                   fontSize = metrics.scaledSp(18),
                   fontWeight = FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onSurface,
+                color = palette.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
@@ -9466,7 +12591,7 @@ private fun ProfileAndSettingsDialog(
               )
 
               Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = palette.accentIndigo.copy(alpha = 0.16f),
                 shape = CircleShape
               ) {
                 Text(
@@ -9475,7 +12600,7 @@ private fun ProfileAndSettingsDialog(
                     fontSize = metrics.scaledSp(12),
                     fontWeight = FontWeight.Bold
                   ),
-                  color = MaterialTheme.colorScheme.onPrimaryContainer,
+                  color = palette.accentIndigo,
                   maxLines = 1,
                   modifier = Modifier
                     .padding(horizontal = 12.dp, vertical = 5.dp)
@@ -9484,7 +12609,7 @@ private fun ProfileAndSettingsDialog(
               }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+            HorizontalDivider(color = palette.dividerColor)
 
             Text(
               text = stringResource(R.string.developed_by_text),
@@ -9492,7 +12617,7 @@ private fun ProfileAndSettingsDialog(
                 fontSize = metrics.scaledSp(14),
                 fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               maxLines = 2,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier
@@ -9511,11 +12636,11 @@ private fun ProfileAndSettingsDialog(
  * 1. Top horizontal scrollable row (`LazyRow`) of selectable Subject "Folder" chips:
  *    - Starts with a permanent `"General"` folder, followed by unique `subjectName`s extracted
  *      directly from the `ViewModel`'s `ClassSchedule` list.
- *    - Highlights the currently selected folder using `MaterialTheme.colorScheme.primary`, while
- *      unselected folders use the cream background (`#FFFBF0`).
+ *    - Highlights the currently selected folder using `LiquidVioletChipGradient`, while
+ *      unselected folders use the adaptive `GlassPalette` chip styling.
  * 2. Main `LazyColumn` below the folders displaying ONLY tasks that match the currently selected
  *    folder's `subjectCategory`.
- * 3. Task cards styled with the warm cream color palette (`#FFFBF0`) and `elevation = 8.dp`.
+ * 3. Task cards styled with `LiquidGlassCard` and high-contrast Light/Dark `GlassPalette` tokens.
  */
 @Composable
 fun CourseworkTaskManagerScreen(
@@ -9523,6 +12648,7 @@ fun CourseworkTaskManagerScreen(
   modifier: Modifier = Modifier
 ) {
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   val allTasksSnapshot = viewModel.tasks.toList()
   val schedulesSnapshot = viewModel.classSchedules.toList()
 
@@ -9597,7 +12723,7 @@ fun CourseworkTaskManagerScreen(
             fontSize = metrics.scaledSp(26),
             fontWeight = FontWeight.Bold
           ),
-          color = MaterialTheme.colorScheme.onBackground,
+          color = palette.textPrimary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier
@@ -9606,8 +12732,9 @@ fun CourseworkTaskManagerScreen(
         )
 
         Surface(
-          color = MaterialTheme.colorScheme.primaryContainer,
-          shape = CircleShape
+          color = palette.accentIndigo.copy(alpha = 0.16f),
+          shape = CircleShape,
+          border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f))
         ) {
           Text(
             text = "$remainingInFolderCount Active",
@@ -9615,7 +12742,7 @@ fun CourseworkTaskManagerScreen(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.Bold
             ),
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = palette.accentIndigo,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(
@@ -9627,7 +12754,7 @@ fun CourseworkTaskManagerScreen(
       }
     }
 
-    // 2. Dynamic Subject Folders Horizontal Scrollable Row (LazyRow)
+    // 2. Dynamic Subject Folders Horizontal Scrollable Row (Floating Glass Chips -> Vibrant Violet when selected)
     item {
       LazyRow(
         modifier = Modifier
@@ -9643,33 +12770,48 @@ fun CourseworkTaskManagerScreen(
         ) { folderName ->
           val isSelected = folderName.equals(activeFolder, ignoreCase = true)
           val activeCount = folderCountsMap[folderName] ?: 0
-          val chipBgColor = if (isSelected) {
-            MaterialTheme.colorScheme.primary
-          } else {
-            CreamCardColor
-          }
           val chipTextColor = if (isSelected) {
-            MaterialTheme.colorScheme.onPrimary
+            Color.White
           } else {
-            Color(0xFF1E293B)
+            palette.textPrimary
           }
 
-          Surface(
-            onClick = { viewModel.selectTaskFolder(folderName) },
-            shape = RoundedCornerShape(18.dp),
-            color = chipBgColor,
-            border = if (isSelected) {
-              null
-            } else {
-              BorderStroke(1.5.dp, Color(0xFFE6DFCF))
-            },
-            shadowElevation = if (isSelected) 8.dp else 4.dp,
+          Box(
             modifier = Modifier
               .height(metrics.scaledDp(44))
+              .shadow(
+                elevation = if (isSelected) 10.dp else 4.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = if (isSelected) LiquidDeepIndigo.copy(alpha = 0.35f) else palette.cardAmbientShadow,
+                spotColor = if (isSelected) LiquidElectricViolet.copy(alpha = 0.35f) else palette.cardSpotShadow
+              )
+              .clip(RoundedCornerShape(20.dp))
+              .background(
+                brush = if (isSelected) {
+                  LiquidVioletChipGradient
+                } else {
+                  Brush.linearGradient(
+                    listOf(
+                      palette.chipUnselectedFill,
+                      palette.nestedCardFill
+                    )
+                  )
+                }
+              )
+              .border(
+                border = if (isSelected) {
+                  BorderStroke(1.2.dp, Color.White.copy(alpha = 0.70f))
+                } else {
+                  BorderStroke(1.1.dp, palette.chipUnselectedBorder)
+                },
+                shape = RoundedCornerShape(20.dp)
+              )
+              .clickable { viewModel.selectTaskFolder(folderName) }
               .testTag("task_folder_chip_${folderName.lowercase(Locale.US).replace(" ", "_")}")
           ) {
             Row(
               modifier = Modifier
+                .fillMaxHeight()
                 .padding(
                   horizontal = metrics.scaledDp(14),
                   vertical = metrics.scaledDp(8)
@@ -9681,9 +12823,9 @@ fun CourseworkTaskManagerScreen(
                 imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
                 contentDescription = null,
                 tint = if (isSelected) {
-                  MaterialTheme.colorScheme.onPrimary
+                  Color.White
                 } else {
-                  Color(0xFF4F46E5)
+                  palette.accentIndigo
                 },
                 modifier = Modifier.size(18.dp)
               )
@@ -9705,7 +12847,7 @@ fun CourseworkTaskManagerScreen(
                   color = if (isSelected) {
                     Color.White.copy(alpha = 0.24f)
                   } else {
-                    Color(0xFFEEF2FF)
+                    palette.accentIndigo.copy(alpha = 0.16f)
                   },
                   shape = CircleShape
                 ) {
@@ -9716,9 +12858,9 @@ fun CourseworkTaskManagerScreen(
                       fontWeight = FontWeight.Bold
                     ),
                     color = if (isSelected) {
-                      MaterialTheme.colorScheme.onPrimary
+                      Color.White
                     } else {
-                      Color(0xFF4F46E5)
+                      palette.accentIndigo
                     },
                     maxLines = 1,
                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -9734,14 +12876,13 @@ fun CourseworkTaskManagerScreen(
     // 3. Filtered Task Cards List for Selected Subject Folder
     if (filteredTasks.isEmpty()) {
       item {
-        Card(
+        LiquidGlassCard(
           modifier = Modifier
             .fillMaxWidth()
             .padding(top = 8.dp)
             .testTag("empty_tasks_card"),
-          shape = RoundedCornerShape(22.dp),
-          colors = CardDefaults.cardColors(containerColor = CreamCardColor),
-          elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+          shape = RoundedCornerShape(26.dp),
+          elevation = 8.dp
         ) {
           Column(
             modifier = Modifier
@@ -9753,7 +12894,7 @@ fun CourseworkTaskManagerScreen(
             Icon(
               imageVector = Icons.Outlined.Folder,
               contentDescription = null,
-              tint = Color(0xFF4F46E5),
+              tint = palette.accentIndigo,
               modifier = Modifier.size(36.dp)
             )
             Text(
@@ -9762,7 +12903,7 @@ fun CourseworkTaskManagerScreen(
                 fontSize = metrics.scaledSp(19),
                 fontWeight = FontWeight.Bold
               ),
-              color = Color(0xFF1E293B),
+              color = palette.textPrimary,
               textAlign = TextAlign.Center,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
@@ -9772,7 +12913,7 @@ fun CourseworkTaskManagerScreen(
               style = MaterialTheme.typography.bodyLarge.copy(
                 fontSize = metrics.scaledSp(15)
               ),
-              color = Color(0xFF57534E),
+              color = palette.textSecondary,
               textAlign = TextAlign.Center,
               maxLines = 2,
               overflow = TextOverflow.Ellipsis
@@ -9797,8 +12938,8 @@ fun CourseworkTaskManagerScreen(
 }
 
 /**
- * Cream-themed Task row card (`#FFFBF0`) with `elevation = 8.dp`, high-contrast charcoal/indigo
- * typography and checkbox colors, and `maxLines` + `TextOverflow.Ellipsis` on all text elements.
+ * Frosted Glass Task row card (`LiquidGlassCard`) with custom rounded gradient checkbox,
+ * specular highlight border, and high-contrast typography bound to `GlassPalette`.
  */
 @Composable
 private fun TaskItemRowCard(
@@ -9807,33 +12948,26 @@ private fun TaskItemRowCard(
   onToggle: () -> Unit,
   onDelete: () -> Unit
 ) {
-  val creamBackground = CreamCardColor
+  val palette = currentGlassPalette()
   val titleTextColor = if (task.isCompleted) {
-    Color(0xFF64748B)
+    palette.textSecondary
   } else {
-    Color(0xFF1E293B)
+    palette.textPrimary
   }
-  val accentColor = if (task.isCompleted) {
-    Color(0xFF64748B)
+  val calendarAccentColor = if (task.isCompleted) {
+    palette.textSecondary
   } else {
-    Color(0xFF4F46E5)
+    palette.accentIndigo
   }
-  val subtextColor = Color(0xFF57534E)
 
-  Card(
+  LiquidGlassCard(
+    onClick = onToggle,
+    shape = RoundedCornerShape(24.dp),
+    elevation = 8.dp,
+    fillAlpha = if (palette.isDark) 0.78f else 0.90f,
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(20.dp))
-      .clickable(onClick = onToggle)
-      .testTag("task_item_card_${task.id}"),
-    shape = RoundedCornerShape(20.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = creamBackground
-    ),
-    elevation = CardDefaults.cardElevation(
-      defaultElevation = 8.dp,
-      pressedElevation = 10.dp
-    )
+      .testTag("task_item_card_${task.id}")
   ) {
     Row(
       modifier = Modifier
@@ -9845,24 +12979,52 @@ private fun TaskItemRowCard(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
     ) {
+      // Custom Rounded Checkbox: 1.5.dp border of #818CF8 (Dark) / #4F46E5 (Light) and translucent fill when unchecked,
+      // filling with a vibrant indigo/violet gradient when checked.
       Box(
         modifier = Modifier
-          .size(32.dp)
-          .minimumInteractiveComponentSize(),
+          .size(34.dp)
+          .minimumInteractiveComponentSize()
+          .clip(RoundedCornerShape(10.dp))
+          .clickable(onClick = onToggle)
+          .testTag("task_checkbox_${task.id}"),
         contentAlignment = Alignment.Center
       ) {
-        Checkbox(
-          checked = task.isCompleted,
-          onCheckedChange = { onToggle() },
-          colors = CheckboxDefaults.colors(
-            checkedColor = Color(0xFF4F46E5),
-            checkmarkColor = Color.White,
-            uncheckedColor = Color(0xFF475569)
-          ),
+        Box(
           modifier = Modifier
-            .size(24.dp)
-            .testTag("task_checkbox_${task.id}")
-        )
+            .size(25.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+              brush = if (task.isCompleted) {
+                LiquidVioletChipGradient
+              } else {
+                Brush.linearGradient(
+                  listOf(
+                    palette.checkboxUncheckedFill,
+                    palette.checkboxUncheckedFill
+                  )
+                )
+              }
+            )
+            .border(
+              border = if (task.isCompleted) {
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.70f))
+              } else {
+                BorderStroke(1.5.dp, palette.checkboxUncheckedBorder)
+              },
+              shape = RoundedCornerShape(8.dp)
+            ),
+          contentAlignment = Alignment.Center
+        ) {
+          if (task.isCompleted) {
+            Icon(
+              imageVector = Icons.Filled.CheckCircle,
+              contentDescription = "Completed",
+              tint = Color.White,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+        }
       }
 
       Column(
@@ -9901,7 +13063,7 @@ private fun TaskItemRowCard(
             Icon(
               imageVector = Icons.Outlined.CalendarToday,
               contentDescription = null,
-              tint = accentColor,
+              tint = calendarAccentColor,
               modifier = Modifier.size(15.dp)
             )
             Text(
@@ -9910,7 +13072,7 @@ private fun TaskItemRowCard(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.SemiBold
               ),
-              color = accentColor,
+              color = palette.textSecondary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier.weight(1f)
@@ -9919,11 +13081,12 @@ private fun TaskItemRowCard(
 
           Surface(
             color = if (task.isCompleted) {
-              Color(0xFFE6DFCF)
+              palette.nestedCardFill
             } else {
-              Color(0xFFEEF2FF)
+              palette.accentIndigo.copy(alpha = 0.15f)
             },
-            shape = CircleShape
+            shape = CircleShape,
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.30f))
           ) {
             Text(
               text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
@@ -9931,7 +13094,7 @@ private fun TaskItemRowCard(
                 fontSize = metrics.scaledSp(11),
                 fontWeight = FontWeight.Bold
               ),
-              color = if (task.isCompleted) subtextColor else Color(0xFF3730A3),
+              color = if (task.isCompleted) palette.textSecondary else palette.accentIndigo,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
               modifier = Modifier
@@ -9953,7 +13116,7 @@ private fun TaskItemRowCard(
         Icon(
           imageVector = Icons.Outlined.DeleteOutline,
           contentDescription = "Delete ${task.title}",
-          tint = subtextColor,
+          tint = palette.accentRed,
           modifier = Modifier.size(24.dp)
         )
       }
@@ -9962,7 +13125,7 @@ private fun TaskItemRowCard(
 }
 
 /**
- * Cream-styled Dialog for adding a new coursework task:
+ * Glass-styled Dialog for adding a new coursework task:
  * 1. Task Title (`OutlinedTextField`)
  * 2. Due Date (`OutlinedTextField`)
  * 3. Subject Category horizontal scrollable row of chips (`LazyRow`) showing `"General"` +
@@ -9976,6 +13139,7 @@ private fun AddTaskDialog(
   onAddTask: (String, String, String) -> Unit
 ) {
   val metrics = rememberResponsiveMetrics()
+  val palette = currentGlassPalette()
   var taskTitle by rememberSaveable { mutableStateOf("") }
   var taskDueDate by rememberSaveable { mutableStateOf("") }
   val categories = remember(availableCategories) {
@@ -9992,7 +13156,7 @@ private fun AddTaskDialog(
     onDismissRequest = onDismiss,
     modifier = Modifier.testTag("add_task_dialog"),
     shape = RoundedCornerShape(24.dp),
-    containerColor = CreamCardColor,
+    containerColor = palette.dialogSurface,
     title = {
       Text(
         text = stringResource(R.string.add_task_dialog_title),
@@ -10000,7 +13164,7 @@ private fun AddTaskDialog(
           fontSize = metrics.scaledSp(21),
           fontWeight = FontWeight.Bold
         ),
-        color = Color(0xFF1E293B),
+        color = palette.textPrimary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis
       )
@@ -10019,7 +13183,6 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.task_title_label),
               style = MaterialTheme.typography.bodyMedium,
-              color = Color(0xFF57534E),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -10028,24 +13191,18 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.add_task_input_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = Color(0xFF57534E).copy(alpha = 0.65f),
+              color = palette.textMuted,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = Color(0xFF1E293B)
+            color = palette.textPrimary
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = Color(0xFFD6CFC0),
-            cursorColor = MaterialTheme.colorScheme.primary,
-            focusedTextColor = Color(0xFF1E293B),
-            unfocusedTextColor = Color(0xFF1E293B)
-          ),
+          colors = sibilOutlinedTextFieldColors(),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Sentences,
             imeAction = ImeAction.Next
@@ -10062,7 +13219,6 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.due_date_label),
               style = MaterialTheme.typography.bodyMedium,
-              color = Color(0xFF57534E),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -10071,7 +13227,7 @@ private fun AddTaskDialog(
             Text(
               text = stringResource(R.string.due_date_placeholder),
               style = MaterialTheme.typography.bodyMedium,
-              color = Color(0xFF57534E).copy(alpha = 0.65f),
+              color = palette.textMuted,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
@@ -10080,23 +13236,17 @@ private fun AddTaskDialog(
             Icon(
               imageVector = Icons.Outlined.CalendarToday,
               contentDescription = null,
-              tint = Color(0xFF4F46E5),
+              tint = palette.accentIndigo,
               modifier = Modifier.size(22.dp)
             )
           },
           textStyle = MaterialTheme.typography.bodyLarge.copy(
             fontSize = metrics.scaledSp(15),
-            color = Color(0xFF1E293B)
+            color = palette.textPrimary
           ),
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = Color(0xFFD6CFC0),
-            cursorColor = MaterialTheme.colorScheme.primary,
-            focusedTextColor = Color(0xFF1E293B),
-            unfocusedTextColor = Color(0xFF1E293B)
-          ),
+          colors = sibilOutlinedTextFieldColors(),
           keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Done
@@ -10124,7 +13274,7 @@ private fun AddTaskDialog(
               fontSize = metrics.scaledSp(14),
               fontWeight = FontWeight.Bold
             ),
-            color = Color(0xFF1E293B),
+            color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
@@ -10147,12 +13297,12 @@ private fun AddTaskDialog(
                 color = if (isSelected) {
                   MaterialTheme.colorScheme.primary
                 } else {
-                  IvoryInnerCardColor
+                  palette.chipUnselectedFill
                 },
                 border = if (isSelected) {
                   null
                 } else {
-                  BorderStroke(1.dp, Color(0xFFD6CFC0))
+                  BorderStroke(1.dp, palette.chipUnselectedBorder)
                 },
                 shadowElevation = if (isSelected) 4.dp else 1.dp,
                 modifier = Modifier.testTag(
@@ -10168,9 +13318,9 @@ private fun AddTaskDialog(
                     imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
                     contentDescription = null,
                     tint = if (isSelected) {
-                      MaterialTheme.colorScheme.onPrimary
+                      Color.White
                     } else {
-                      Color(0xFF4F46E5)
+                      palette.accentIndigo
                     },
                     modifier = Modifier.size(16.dp)
                   )
@@ -10181,9 +13331,9 @@ private fun AddTaskDialog(
                       fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                     ),
                     color = if (isSelected) {
-                      MaterialTheme.colorScheme.onPrimary
+                      Color.White
                     } else {
-                      Color(0xFF1E293B)
+                      palette.textPrimary
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -10235,7 +13385,7 @@ private fun AddTaskDialog(
             fontSize = metrics.scaledSp(15),
             fontWeight = FontWeight.SemiBold
           ),
-          color = Color(0xFF57534E),
+          color = palette.textSecondary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis
         )
@@ -10552,6 +13702,7 @@ fun RingingAlertDialog(
   onStop: () -> Unit,
   onSnoozeFiveMinutes: () -> Unit
 ) {
+  val palette = currentGlassPalette()
   val infiniteTransition = rememberInfiniteTransition(label = "ringing_alarm_pulse")
   val iconScale by infiniteTransition.animateFloat(
     initialValue = 0.88f,
@@ -10570,12 +13721,12 @@ fun RingingAlertDialog(
       dismissOnClickOutside = false
     ),
     shape = RoundedCornerShape(28.dp),
-    containerColor = dashboardCreamCardColor(),
+    containerColor = palette.dialogSurface,
     icon = {
       Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.primaryContainer,
-        border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+        color = palette.accentIndigo.copy(alpha = 0.16f),
+        border = BorderStroke(2.dp, palette.accentIndigo),
         modifier = Modifier
           .size(72.dp)
           .graphicsLayer {
@@ -10587,7 +13738,7 @@ fun RingingAlertDialog(
           Icon(
             imageVector = Icons.Filled.NotificationsActive,
             contentDescription = "Ringing Alarm Icon",
-            tint = MaterialTheme.colorScheme.primary,
+            tint = palette.accentIndigo,
             modifier = Modifier.size(36.dp)
           )
         }
@@ -10600,7 +13751,7 @@ fun RingingAlertDialog(
           fontSize = metrics.scaledSp(21),
           fontWeight = FontWeight.ExtraBold
         ),
-        color = MaterialTheme.colorScheme.onSurface,
+        color = palette.textPrimary,
         textAlign = TextAlign.Center,
         modifier = Modifier
           .fillMaxWidth()
@@ -10619,7 +13770,7 @@ fun RingingAlertDialog(
             fontSize = metrics.scaledSp(14),
             fontWeight = FontWeight.SemiBold
           ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          color = palette.textSecondary,
           textAlign = TextAlign.Center
         )
         Text(
@@ -10627,7 +13778,7 @@ fun RingingAlertDialog(
           style = MaterialTheme.typography.labelSmall.copy(
             fontSize = metrics.scaledSp(11)
           ),
-          color = MaterialTheme.colorScheme.primary,
+          color = palette.accentIndigo,
           textAlign = TextAlign.Center
         )
       }
@@ -10641,10 +13792,10 @@ fun RingingAlertDialog(
         OutlinedButton(
           onClick = onSnoozeFiveMinutes,
           shape = RoundedCornerShape(50),
-          border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+          border = BorderStroke(1.5.dp, palette.accentIndigo),
           colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = dashboardIvoryInnerColor(),
-            contentColor = MaterialTheme.colorScheme.primary
+            containerColor = palette.nestedCardFill,
+            contentColor = palette.accentIndigo
           ),
           modifier = Modifier
             .weight(1f)
@@ -10774,12 +13925,9 @@ fun ClockScreen(
   val context = LocalContext.current
   val localStorageManager = remember(context) { LocalStorageManager(context) }
   val metrics = rememberResponsiveMetrics()
-  val creamCardColor = dashboardCreamCardColor()
-  val ivoryInnerColor = if (MaterialTheme.colorScheme.background == CanvaLightColorScheme.background) {
-    IvoryInnerCardColor
-  } else {
-    MaterialTheme.colorScheme.surfaceVariant
-  }
+  val palette = currentGlassPalette()
+  val creamCardColor = palette.cardFill
+  val ivoryInnerColor = palette.nestedCardFill
 
   var selectedSubTab by rememberSaveable { mutableStateOf(ClockSubTab.ALARM) }
 
@@ -10945,109 +14093,209 @@ fun ClockScreen(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .background(MaterialTheme.colorScheme.background)
+      .background(Color.Transparent)
       .testTag("clock_screen")
   ) {
-    // Top Google Clock-style TabRow (Alarm, Timer, Stopwatch)
-    Surface(
-      color = creamCardColor,
-      shadowElevation = 2.dp,
-      modifier = Modifier.fillMaxWidth()
+    // Floating Liquid Glass Header ("Clock" & "CE Time Suite")
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 20.dp, vertical = 12.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween
     ) {
-      Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.weight(1f, fill = false)
+      ) {
+        Box(
           modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-              horizontal = metrics.scaledDp(20),
-              vertical = metrics.scaledDp(12)
+            .size(38.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+              brush = Brush.linearGradient(
+                colors = listOf(
+                  Color(0xFF6366F1).copy(alpha = 0.2f),
+                  Color(0xFF4F46E5).copy(alpha = 0.1f)
+                )
+              ),
+              shape = RoundedCornerShape(12.dp)
+            )
+            .border(
+              border = BorderStroke(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                  colors = listOf(
+                    Color.White.copy(alpha = 0.55f),
+                    Color(0xFF6366F1).copy(alpha = 0.35f)
+                  )
+                )
+              ),
+              shape = RoundedCornerShape(12.dp)
             ),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween
+          contentAlignment = Alignment.Center
         ) {
-          Text(
-            text = "Clock",
-            style = MaterialTheme.typography.headlineSmall.copy(
-              fontWeight = FontWeight.ExtraBold,
-              fontSize = metrics.scaledSp(22)
-            ),
-            color = MaterialTheme.colorScheme.onSurface
-          )
-          Text(
-            text = "CE Time Suite",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontWeight = FontWeight.SemiBold
-            ),
-            color = MaterialTheme.colorScheme.primary
+          Icon(
+            imageVector = Icons.Filled.Schedule,
+            contentDescription = "Clock header icon",
+            tint = Color(0xFF6366F1),
+            modifier = Modifier.size(20.dp)
           )
         }
 
-        TabRow(
-          selectedTabIndex = selectedSubTab.ordinal,
-          containerColor = creamCardColor,
-          contentColor = MaterialTheme.colorScheme.primary,
-          indicator = { tabPositions ->
-            if (selectedSubTab.ordinal < tabPositions.size) {
-              TabRowDefaults.SecondaryIndicator(
-                modifier = Modifier
-                  .tabIndicatorOffset(tabPositions[selectedSubTab.ordinal])
-                  .height(3.dp)
-                  .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)),
-                color = MaterialTheme.colorScheme.primary
-              )
-            }
-          },
-          divider = {
-            HorizontalDivider(
-              thickness = 1.dp,
-              color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        Column {
+          Text(
+            text = "Clock",
+            fontSize = 26.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = palette.textPrimary
+          )
+          Text(
+            text = "Board Exam & Study Timekeeper",
+            fontSize = 11.sp,
+            color = palette.textSecondary
+          )
+        }
+      }
+
+      Surface(
+        shape = RoundedCornerShape(50),
+        color = palette.nestedCardFill,
+        border = BorderStroke(
+          width = 1.dp,
+          brush = Brush.horizontalGradient(
+            colors = listOf(
+              Color(0xFF6366F1).copy(alpha = 0.45f),
+              Color.White.copy(alpha = 0.6f)
             )
-          },
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("clock_top_tab_row")
+          )
+        ),
+        shadowElevation = 4.dp
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-          ClockSubTab.entries.forEach { tab ->
-            val selected = selectedSubTab == tab
-            Tab(
-              selected = selected,
-              onClick = { selectedSubTab = tab },
-              modifier = Modifier
-                .height(metrics.scaledDp(52))
-                .testTag(tab.testTag),
-              text = {
-                Row(
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                  Icon(
-                    imageVector = tab.icon,
-                    contentDescription = tab.title,
-                    modifier = Modifier.size(18.dp),
-                    tint = if (selected) {
-                      MaterialTheme.colorScheme.primary
-                    } else {
-                      MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+          Icon(
+            imageVector = Icons.Filled.Timer,
+            contentDescription = null,
+            tint = Color(0xFF6366F1),
+            modifier = Modifier.size(12.dp)
+          )
+          Text(
+            text = "CE Time Suite",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+          )
+        }
+      }
+    }
+
+    // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch)
+    val trackShape = RoundedCornerShape(26.dp)
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 20.dp, vertical = 6.dp)
+        .height(52.dp)
+        .shadow(
+          elevation = 8.dp,
+          shape = trackShape,
+          spotColor = Color(0x223730A3)
+        )
+        .clip(trackShape)
+        .background(
+          color = if (palette.isDark) {
+            Color(0xFF0F172A).copy(alpha = 0.75f)
+          } else {
+            Color.White.copy(alpha = 0.65f)
+          },
+          shape = trackShape
+        )
+        .border(border = palette.glassBorder, shape = trackShape)
+        .padding(4.dp)
+        .testTag("clock_top_tab_row")
+    ) {
+      Row(
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        ClockSubTab.entries.forEach { tab ->
+          val selected = selectedSubTab == tab
+          val pillShape = RoundedCornerShape(22.dp)
+          val pillModifier = if (selected) {
+            Modifier
+              .weight(1f)
+              .fillMaxHeight()
+              .shadow(
+                elevation = 6.dp,
+                shape = pillShape,
+                spotColor = Color(0x554F46E5)
+              )
+              .clip(pillShape)
+              .background(
+                brush = Brush.linearGradient(
+                  colors = listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                ),
+                shape = pillShape
+              )
+              .border(
+                border = BorderStroke(
+                  width = 1.dp,
+                  brush = Brush.verticalGradient(
+                    colors = listOf(
+                      Color.White.copy(alpha = 0.65f),
+                      Color.Transparent
+                    )
                   )
-                  Text(
-                    text = tab.title,
-                    style = MaterialTheme.typography.labelLarge.copy(
-                      fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                      fontSize = metrics.scaledSp(13)
-                    ),
-                    color = if (selected) {
-                      MaterialTheme.colorScheme.primary
-                    } else {
-                      MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
+                ),
+                shape = pillShape
+              )
+          } else {
+            Modifier
+              .weight(1f)
+              .fillMaxHeight()
+              .clip(pillShape)
+              .background(Color.Transparent, shape = pillShape)
+          }
+
+          Box(
+            modifier = pillModifier
+              .clickable {
+                if (selectedSubTab != tab) {
+                  playCardHapticSound(context)
+                  selectedSubTab = tab
+                } else {
+                  playCardHapticSound(context)
                 }
               }
-            )
+              .testTag(tab.testTag),
+            contentAlignment = Alignment.Center
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              modifier = Modifier.padding(horizontal = 8.dp)
+            ) {
+              Icon(
+                imageVector = tab.icon,
+                contentDescription = tab.title,
+                modifier = Modifier.size(16.dp),
+                tint = if (selected) Color.White else palette.textSecondary
+              )
+              Text(
+                text = tab.title,
+                color = if (selected) Color.White else palette.textSecondary,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
           }
         }
       }
@@ -11058,7 +14306,7 @@ fun ClockScreen(
       Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = creamCardColor),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+        border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.4f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = Modifier
           .fillMaxWidth()
@@ -11077,14 +14325,14 @@ fun ClockScreen(
         ) {
           Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            color = palette.accentIndigo.copy(alpha = 0.14f),
             modifier = Modifier.size(40.dp)
           ) {
             Box(contentAlignment = Alignment.Center) {
               Icon(
                 imageVector = Icons.Filled.NotificationsActive,
                 contentDescription = "Notification permission required",
-                tint = MaterialTheme.colorScheme.primary,
+                tint = palette.accentIndigo,
                 modifier = Modifier.size(20.dp)
               )
             }
@@ -11097,7 +14345,7 @@ fun ClockScreen(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = metrics.scaledSp(13)
               ),
-              color = MaterialTheme.colorScheme.onSurface
+              color = palette.textPrimary
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
               if (!hasNotificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -11111,7 +14359,7 @@ fun ClockScreen(
                   Text(
                     text = "Grant Permission",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary
+                    color = palette.accentIndigo
                   )
                 }
               }
@@ -11132,7 +14380,7 @@ fun ClockScreen(
                   Text(
                     text = "Allow Exact Alarms",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary
+                    color = palette.accentIndigo
                   )
                 }
               }
@@ -11148,7 +14396,7 @@ fun ClockScreen(
             Icon(
               imageVector = Icons.Filled.Close,
               contentDescription = "Dismiss notification rationale",
-              tint = MaterialTheme.colorScheme.onSurfaceVariant
+              tint = palette.textSecondary
             )
           }
         }
@@ -11165,9 +14413,9 @@ fun ClockScreen(
       Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-          containerColor = MaterialTheme.colorScheme.primaryContainer
+          containerColor = palette.nestedCardFill
         ),
-        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+        border = BorderStroke(1.5.dp, palette.accentIndigo),
         modifier = Modifier
           .fillMaxWidth()
           .padding(
@@ -11191,12 +14439,12 @@ fun ClockScreen(
             Icon(
               imageVector = Icons.Filled.NotificationsActive,
               contentDescription = "Ringing",
-              tint = MaterialTheme.colorScheme.primary
+              tint = palette.accentIndigo
             )
             Text(
               text = resolvedRingingMessage ?: "Alarm Ringing!",
               style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-              color = MaterialTheme.colorScheme.onPrimaryContainer
+              color = palette.textPrimary
             )
           }
           Button(
@@ -11429,8 +14677,8 @@ fun ClockScreen(
 
   if (isAddAlarmDialogOpen) {
     AddAlarmDialog(
-      creamCardColor = creamCardColor,
-      ivoryInnerColor = ivoryInnerColor,
+      creamCardColor = palette.dialogSurface,
+      ivoryInnerColor = palette.inputFill,
       metrics = metrics,
       onDismiss = { isAddAlarmDialogOpen = false },
       onSaveAlarm = { name, hour, minute, amPm, activeDays ->
@@ -11516,6 +14764,7 @@ private fun AlarmSubScreen(
   onOpenAddAlarmDialog: () -> Unit,
   onTestRingNow: (AlarmItem) -> Unit
 ) {
+  val palette = currentGlassPalette()
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -11535,7 +14784,7 @@ private fun AlarmSubScreen(
           Icon(
             imageVector = Icons.Filled.Alarm,
             contentDescription = "No alarms set",
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            tint = palette.accentIndigo.copy(alpha = 0.65f),
             modifier = Modifier.size(metrics.scaledDp(48))
           )
           Text(
@@ -11544,14 +14793,14 @@ private fun AlarmSubScreen(
               fontWeight = FontWeight.Bold,
               fontSize = metrics.scaledSp(18)
             ),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           )
           Text(
             text = "Tap the + button below to create an alarm.",
             style = MaterialTheme.typography.bodyMedium.copy(
               fontSize = metrics.scaledSp(13)
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = palette.textSecondary,
             textAlign = TextAlign.Center
           )
         }
@@ -11571,18 +14820,10 @@ private fun AlarmSubScreen(
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
     ) {
       items(alarms, key = { it.id }) { alarm ->
-        Card(
-          shape = RoundedCornerShape(24.dp),
-          colors = CardDefaults.cardColors(containerColor = creamCardColor),
-          border = BorderStroke(
-            width = 1.dp,
-            color = if (alarm.isActive) {
-              MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-            } else {
-              MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-            }
-          ),
-          elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        LiquidGlassCard(
+          shape = RoundedCornerShape(26.dp),
+          elevation = 8.dp,
+          fillAlpha = if (palette.isDark) 0.78f else 0.90f,
           modifier = Modifier
             .fillMaxWidth()
             .testTag("alarm_card_${alarm.id}")
@@ -11605,7 +14846,7 @@ private fun AlarmSubScreen(
                   fontWeight = FontWeight.SemiBold,
                   fontSize = metrics.scaledSp(14)
                 ),
-                color = MaterialTheme.colorScheme.primary,
+                color = palette.accentIndigo,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
@@ -11620,18 +14861,18 @@ private fun AlarmSubScreen(
                   imageVector = Icons.Filled.NotificationsActive,
                   contentDescription = "Test alarm sound",
                   modifier = Modifier.size(15.dp),
-                  tint = MaterialTheme.colorScheme.primary
+                  tint = palette.accentIndigo
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                   text = "Test Ring",
                   style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                  color = MaterialTheme.colorScheme.primary
+                  color = palette.accentIndigo
                 )
               }
             }
 
-            // Middle Row: Massive digital font for the time, baseline-aligned AM/PM, and Switch toggle pushed to the far right
+            // Middle Row: Sleek, high-contrast digital time readout and Switch toggle pushed to the far right
             Row(
               modifier = Modifier.fillMaxWidth(),
               verticalAlignment = Alignment.CenterVertically,
@@ -11649,9 +14890,9 @@ private fun AlarmSubScreen(
                     lineHeight = metrics.scaledSp(50)
                   ),
                   color = if (alarm.isActive) {
-                    MaterialTheme.colorScheme.onSurface
+                    palette.textPrimary
                   } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    palette.textMuted
                   },
                   modifier = Modifier.alignByBaseline()
                 )
@@ -11662,9 +14903,9 @@ private fun AlarmSubScreen(
                     fontSize = metrics.scaledSp(18)
                   ),
                   color = if (alarm.isActive) {
-                    MaterialTheme.colorScheme.primary
+                    palette.accentIndigo
                   } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    palette.textMuted
                   },
                   modifier = Modifier.alignByBaseline()
                 )
@@ -11674,16 +14915,16 @@ private fun AlarmSubScreen(
                 checked = alarm.isActive,
                 onCheckedChange = { checked -> onToggleAlarm(alarm.id, checked) },
                 colors = SwitchDefaults.colors(
-                  checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                  checkedTrackColor = MaterialTheme.colorScheme.primary,
-                  uncheckedThumbColor = MaterialTheme.colorScheme.outline,
-                  uncheckedTrackColor = ivoryInnerColor
+                  checkedThumbColor = Color.White,
+                  checkedTrackColor = LiquidDeepIndigo,
+                  uncheckedThumbColor = palette.textSecondary,
+                  uncheckedTrackColor = palette.progressTrack
                 ),
                 modifier = Modifier.testTag("alarm_switch_${alarm.id}")
               )
             }
 
-            // Bottom Row: 7 circular indicators for the days of the week (S, M, T, W, T, F, S)
+            // Bottom Row: 7 miniature liquid bubbles for the days of the week (S, M, T, W, T, F, S)
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -11691,40 +14932,53 @@ private fun AlarmSubScreen(
             ) {
               ALARM_WEEK_DAY_LABELS.forEachIndexed { dayIndex, dayLetter ->
                 val isDayActive = alarm.activeDays.contains(dayIndex)
-                Surface(
-                  onClick = { onToggleAlarmDay(alarm.id, dayIndex) },
-                  shape = CircleShape,
-                  color = if (isDayActive) {
-                    MaterialTheme.colorScheme.primary
-                  } else {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                  },
-                  border = BorderStroke(
-                    width = 1.dp,
-                    color = if (isDayActive) {
-                      MaterialTheme.colorScheme.primary
-                    } else {
-                      MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-                    }
-                  ),
+                Box(
                   modifier = Modifier
                     .size(metrics.scaledDp(34))
-                    .testTag("alarm_${alarm.id}_day_$dayIndex")
-                ) {
-                  Box(contentAlignment = Alignment.Center) {
-                    Text(
-                      text = dayLetter,
-                      style = MaterialTheme.typography.labelMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = metrics.scaledSp(12)
-                      ),
-                      color = if (isDayActive) {
-                        Color.White
+                    .shadow(
+                      elevation = if (isDayActive) 6.dp else 1.dp,
+                      shape = CircleShape,
+                      ambientColor = if (isDayActive) LiquidDeepIndigo.copy(alpha = 0.35f) else Color.Transparent,
+                      spotColor = if (isDayActive) LiquidElectricViolet.copy(alpha = 0.35f) else Color.Transparent
+                    )
+                    .clip(CircleShape)
+                    .background(
+                      brush = if (isDayActive) {
+                        LiquidVioletChipGradient
                       } else {
-                        MaterialTheme.colorScheme.primary
+                        Brush.linearGradient(
+                          listOf(
+                            palette.chipUnselectedFill,
+                            palette.nestedCardFill
+                          )
+                        )
                       }
                     )
-                  }
+                    .border(
+                      width = 1.dp,
+                      color = if (isDayActive) {
+                        Color.White.copy(alpha = 0.72f)
+                      } else {
+                        palette.chipUnselectedBorder
+                      },
+                      shape = CircleShape
+                    )
+                    .clickable { onToggleAlarmDay(alarm.id, dayIndex) }
+                    .testTag("alarm_${alarm.id}_day_$dayIndex"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Text(
+                    text = dayLetter,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontWeight = FontWeight.Bold,
+                      fontSize = metrics.scaledSp(12)
+                    ),
+                    color = if (isDayActive) {
+                      Color.White
+                    } else {
+                      palette.accentIndigo
+                    }
+                  )
                 }
               }
             }
@@ -11733,17 +14987,18 @@ private fun AlarmSubScreen(
       }
     }
 
-    // Large circular Google Clock-style FAB (+) at the bottom center
+    // Large circular Liquid Orb FAB (+) at the bottom center
     FloatingActionButton(
       onClick = onOpenAddAlarmDialog,
       shape = CircleShape,
-      containerColor = MaterialTheme.colorScheme.primary,
-      contentColor = MaterialTheme.colorScheme.onPrimary,
-      elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+      containerColor = LiquidDeepIndigo,
+      contentColor = Color.White,
+      elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
       modifier = Modifier
         .align(Alignment.BottomCenter)
         .padding(bottom = metrics.scaledDp(20))
         .size(metrics.scaledDp(68))
+        .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
         .testTag("add_alarm_fab")
     ) {
       Icon(
@@ -11763,6 +15018,7 @@ private fun AddAlarmDialog(
   onDismiss: () -> Unit,
   onSaveAlarm: (name: String, hour: String, minute: String, amPm: String, activeDays: List<Int>) -> Unit
 ) {
+  val palette = currentGlassPalette()
   var alarmName by rememberSaveable { mutableStateOf("") }
   var hourInput by rememberSaveable { mutableStateOf("07") }
   var minuteInput by rememberSaveable { mutableStateOf("00") }
@@ -11772,7 +15028,7 @@ private fun AddAlarmDialog(
   AlertDialog(
     onDismissRequest = onDismiss,
     shape = RoundedCornerShape(24.dp),
-    containerColor = creamCardColor,
+    containerColor = palette.dialogSurface,
     title = {
       Text(
         text = "Add Alarm",
@@ -11780,7 +15036,7 @@ private fun AddAlarmDialog(
           fontWeight = FontWeight.ExtraBold,
           fontSize = metrics.scaledSp(20)
         ),
-        color = MaterialTheme.colorScheme.onSurface
+        color = palette.textPrimary
       )
     },
     text = {
@@ -11812,15 +15068,11 @@ private fun AddAlarmDialog(
             textStyle = MaterialTheme.typography.titleLarge.copy(
               fontFamily = JetBrainsMonoFamily,
               fontWeight = FontWeight.Bold,
-              textAlign = TextAlign.Center
+              textAlign = TextAlign.Center,
+              color = palette.textPrimary
             ),
             shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedContainerColor = ivoryInnerColor,
-              unfocusedContainerColor = ivoryInnerColor,
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-            ),
+            colors = sibilOutlinedTextFieldColors(),
             modifier = Modifier
               .weight(1f)
               .testTag("add_alarm_hour_input")
@@ -11832,7 +15084,7 @@ private fun AddAlarmDialog(
               fontFamily = JetBrainsMonoFamily,
               fontWeight = FontWeight.ExtraBold
             ),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           )
 
           OutlinedTextField(
@@ -11851,15 +15103,11 @@ private fun AddAlarmDialog(
             textStyle = MaterialTheme.typography.titleLarge.copy(
               fontFamily = JetBrainsMonoFamily,
               fontWeight = FontWeight.Bold,
-              textAlign = TextAlign.Center
+              textAlign = TextAlign.Center,
+              color = palette.textPrimary
             ),
             shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedContainerColor = ivoryInnerColor,
-              unfocusedContainerColor = ivoryInnerColor,
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-            ),
+            colors = sibilOutlinedTextFieldColors(),
             modifier = Modifier
               .weight(1f)
               .testTag("add_alarm_minute_input")
@@ -11877,14 +15125,14 @@ private fun AddAlarmDialog(
                 color = if (isSelected) {
                   MaterialTheme.colorScheme.primary
                 } else {
-                  ivoryInnerColor
+                  palette.chipUnselectedFill
                 },
                 border = BorderStroke(
                   width = 1.dp,
                   color = if (isSelected) {
                     MaterialTheme.colorScheme.primary
                   } else {
-                    MaterialTheme.colorScheme.outlineVariant
+                    palette.chipUnselectedBorder
                   }
                 ),
                 modifier = Modifier
@@ -11901,7 +15149,7 @@ private fun AddAlarmDialog(
                     color = if (isSelected) {
                       Color.White
                     } else {
-                      MaterialTheme.colorScheme.primary
+                      palette.accentIndigo
                     }
                   )
                 }
@@ -11921,13 +15169,11 @@ private fun AddAlarmDialog(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Done
           ),
-          shape = RoundedCornerShape(14.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = ivoryInnerColor,
-            unfocusedContainerColor = ivoryInnerColor,
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+          textStyle = MaterialTheme.typography.bodyLarge.copy(
+            color = palette.textPrimary
           ),
+          shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("add_alarm_name_input")
@@ -11943,7 +15189,7 @@ private fun AddAlarmDialog(
               fontWeight = FontWeight.SemiBold,
               fontSize = metrics.scaledSp(13)
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = palette.textSecondary
           )
 
           Row(
@@ -11965,14 +15211,14 @@ private fun AddAlarmDialog(
                 color = if (isSelected) {
                   MaterialTheme.colorScheme.primary
                 } else {
-                  MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                  palette.chipUnselectedFill
                 },
                 border = BorderStroke(
                   width = 1.dp,
                   color = if (isSelected) {
                     MaterialTheme.colorScheme.primary
                   } else {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    palette.chipUnselectedBorder
                   }
                 ),
                 modifier = Modifier
@@ -11989,7 +15235,7 @@ private fun AddAlarmDialog(
                     color = if (isSelected) {
                       Color.White
                     } else {
-                      MaterialTheme.colorScheme.primary
+                      palette.accentIndigo
                     }
                   )
                 }
@@ -12035,7 +15281,7 @@ private fun AddAlarmDialog(
       ) {
         Text(
           text = "Cancel",
-          color = MaterialTheme.colorScheme.onSurfaceVariant
+          color = palette.textSecondary
         )
       }
     },
@@ -12064,6 +15310,7 @@ private fun TimerSubScreen(
   onResetTimer: () -> Unit,
   onSelectPreset: (CeFocusPreset) -> Unit
 ) {
+  val palette = currentGlassPalette()
   val isCountdownActive = remainingSeconds > 0L || totalDurationSeconds > 0L
   val (hhPreview, mmPreview, ssPreview) = remember(digitInput) {
     formatKeypadDigitsPreview(digitInput)
@@ -12081,12 +15328,11 @@ private fun TimerSubScreen(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
   ) {
-    // Massive Digital Timer Display Card
-    Card(
+    // Massive Digital Timer Display Card with Luminous Gradient Circular Ring
+    LiquidGlassCard(
       shape = RoundedCornerShape(28.dp),
-      colors = CardDefaults.cardColors(containerColor = creamCardColor),
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+      elevation = 10.dp,
+      fillAlpha = if (palette.isDark) 0.78f else 0.90f,
       modifier = Modifier.fillMaxWidth()
     ) {
       Column(
@@ -12097,12 +15343,13 @@ private fun TimerSubScreen(
             vertical = metrics.scaledDp(20)
           ),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
       ) {
         if (activePresetLabel != null) {
           Surface(
             shape = RoundedCornerShape(50),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+            color = palette.accentIndigo.copy(alpha = 0.16f),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f))
           ) {
             Text(
               text = activePresetLabel,
@@ -12110,35 +15357,68 @@ private fun TimerSubScreen(
                 fontWeight = FontWeight.Bold,
                 fontSize = metrics.scaledSp(12)
               ),
-              color = MaterialTheme.colorScheme.primary,
+              color = palette.accentIndigo,
               modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
           }
         }
 
         if (isCountdownActive) {
-          Text(
-            text = formatDurationSecondsHms(remainingSeconds),
-            style = MaterialTheme.typography.displayLarge.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontWeight = FontWeight.ExtraBold,
-              fontSize = metrics.scaledSp(50),
-              lineHeight = metrics.scaledSp(54)
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.testTag("timer_countdown_display")
-          )
-
           val progress = if (totalDurationSeconds > 0L) {
             (remainingSeconds.toFloat() / totalDurationSeconds.toFloat()).coerceIn(0f, 1f)
           } else {
             0f
           }
+          val animatedTimerArc by animateFloatAsState(
+            targetValue = progress,
+            animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+            label = "timer_luminous_ring"
+          )
+
+          Box(
+            modifier = Modifier
+              .size(metrics.scaledDp(208))
+              .padding(4.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+              val strokePx = 11.dp.toPx()
+              drawArc(
+                color = palette.progressTrack,
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
+              )
+              if (animatedTimerArc > 0f) {
+                drawArc(
+                  brush = LiquidCyanVioletGradient,
+                  startAngle = -90f,
+                  sweepAngle = 360f * animatedTimerArc,
+                  useCenter = false,
+                  style = Stroke(width = strokePx, cap = StrokeCap.Round)
+                )
+              }
+            }
+
+            Text(
+              text = formatDurationSecondsHms(remainingSeconds),
+              style = MaterialTheme.typography.displayLarge.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = metrics.scaledSp(34),
+                lineHeight = metrics.scaledSp(38)
+              ),
+              color = palette.textPrimary,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.testTag("timer_countdown_display")
+            )
+          }
+
           LinearProgressIndicator(
             progress = { progress },
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = WarmCreamTrackColor,
+            color = palette.accentIndigo,
+            trackColor = palette.progressTrack,
             strokeCap = StrokeCap.Round,
             modifier = Modifier
               .fillMaxWidth()
@@ -12169,7 +15449,7 @@ private fun TimerSubScreen(
               Icon(
                 imageVector = Icons.AutoMirrored.Filled.Backspace,
                 contentDescription = "Delete digit",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                tint = palette.textSecondary
               )
             }
           }
@@ -12178,10 +15458,9 @@ private fun TimerSubScreen(
     }
 
     // CE Focus Presets Section
-    Card(
-      shape = RoundedCornerShape(22.dp),
-      colors = CardDefaults.cardColors(containerColor = creamCardColor),
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+    LiquidGlassCard(
+      shape = RoundedCornerShape(24.dp),
+      elevation = 6.dp,
       modifier = Modifier
         .fillMaxWidth()
         .testTag("ce_focus_presets_section")
@@ -12198,7 +15477,7 @@ private fun TimerSubScreen(
             fontWeight = FontWeight.ExtraBold,
             fontSize = metrics.scaledSp(14)
           ),
-          color = MaterialTheme.colorScheme.onSurface
+          color = palette.textPrimary
         )
 
         LazyRow(
@@ -12207,23 +15486,30 @@ private fun TimerSubScreen(
         ) {
           items(CE_FOCUS_PRESETS, key = { it.label }) { preset ->
             val isSelected = activePresetLabel == preset.label && isCountdownActive
-            Surface(
-              shape = RoundedCornerShape(50),
-              color = if (isSelected) {
-                MaterialTheme.colorScheme.primary
-              } else {
-                ivoryInnerColor
-              },
-              border = BorderStroke(
-                width = 1.dp,
-                color = if (isSelected) {
-                  MaterialTheme.colorScheme.primary
-                } else {
-                  MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                }
-              ),
+            Box(
               modifier = Modifier
                 .clip(RoundedCornerShape(50))
+                .background(
+                  brush = if (isSelected) {
+                    LiquidVioletChipGradient
+                  } else {
+                    Brush.linearGradient(
+                      listOf(
+                        palette.chipUnselectedFill,
+                        palette.nestedCardFill
+                      )
+                    )
+                  }
+                )
+                .border(
+                  width = 1.dp,
+                  color = if (isSelected) {
+                    Color.White.copy(alpha = 0.7f)
+                  } else {
+                    palette.chipUnselectedBorder
+                  },
+                  shape = RoundedCornerShape(50)
+                )
                 .clickable { onSelectPreset(preset) }
                 .testTag(preset.testTag)
             ) {
@@ -12240,9 +15526,9 @@ private fun TimerSubScreen(
                   contentDescription = preset.label,
                   modifier = Modifier.size(16.dp),
                   tint = if (isSelected) {
-                    MaterialTheme.colorScheme.onPrimary
+                    Color.White
                   } else {
-                    MaterialTheme.colorScheme.primary
+                    palette.accentIndigo
                   }
                 )
                 Text(
@@ -12252,9 +15538,9 @@ private fun TimerSubScreen(
                     fontSize = metrics.scaledSp(13)
                   ),
                   color = if (isSelected) {
-                    MaterialTheme.colorScheme.onPrimary
+                    Color.White
                   } else {
-                    MaterialTheme.colorScheme.onSurface
+                    palette.textPrimary
                   }
                 )
               }
@@ -12290,11 +15576,9 @@ private fun TimerSubScreen(
             rowDigits.forEach { keyLabel ->
               Surface(
                 shape = CircleShape,
-                color = creamCardColor,
-                border = BorderStroke(
-                  1.dp,
-                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-                ),
+                color = palette.cardFill,
+                border = BorderStroke(1.1.dp, palette.cardBorder),
+                shadowElevation = 4.dp,
                 modifier = Modifier
                   .size(metrics.scaledDp(62))
                   .clip(CircleShape)
@@ -12316,9 +15600,9 @@ private fun TimerSubScreen(
                       fontSize = metrics.scaledSp(22)
                     ),
                     color = if (keyLabel == "C") {
-                      MaterialTheme.colorScheme.error
+                      palette.accentRed
                     } else {
-                      MaterialTheme.colorScheme.onSurface
+                      palette.textPrimary
                     }
                   )
                 }
@@ -12329,7 +15613,7 @@ private fun TimerSubScreen(
       }
     }
 
-    // Circular Play/Pause and Reset FAB Controls
+    // Liquid Floating Play/Pause and Reset Controls
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -12340,8 +15624,9 @@ private fun TimerSubScreen(
       if (isCountdownActive || digitInput.isNotEmpty()) {
         Surface(
           shape = CircleShape,
-          color = creamCardColor,
-          border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+          color = palette.cardFill,
+          border = BorderStroke(1.2.dp, palette.cardBorder),
+          shadowElevation = 6.dp,
           modifier = Modifier
             .size(metrics.scaledDp(58))
             .clip(CircleShape)
@@ -12352,7 +15637,7 @@ private fun TimerSubScreen(
             Icon(
               imageVector = Icons.Filled.Replay,
               contentDescription = "Reset timer",
-              tint = MaterialTheme.colorScheme.onSurface,
+              tint = palette.accentIndigo,
               modifier = Modifier.size(26.dp)
             )
           }
@@ -12362,11 +15647,12 @@ private fun TimerSubScreen(
       FloatingActionButton(
         onClick = onStartOrPause,
         shape = CircleShape,
-        containerColor = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+        containerColor = LiquidDeepIndigo,
+        contentColor = Color.White,
+        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
         modifier = Modifier
           .size(metrics.scaledDp(72))
+          .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
           .testTag("timer_play_pause_fab")
       ) {
         Icon(
@@ -12386,6 +15672,7 @@ private fun TimerUnitSegment(
   isHighlighted: Boolean,
   metrics: ResponsiveMetrics
 ) {
+  val palette = currentGlassPalette()
   Row(verticalAlignment = Alignment.Bottom) {
     Text(
       text = value,
@@ -12395,9 +15682,9 @@ private fun TimerUnitSegment(
         fontSize = metrics.scaledSp(40)
       ),
       color = if (isHighlighted) {
-        MaterialTheme.colorScheme.primary
+        palette.accentIndigo
       } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+        palette.textMuted
       }
     )
     Text(
@@ -12407,9 +15694,9 @@ private fun TimerUnitSegment(
         fontSize = metrics.scaledSp(18)
       ),
       color = if (isHighlighted) {
-        MaterialTheme.colorScheme.primary
+        palette.accentIndigo
       } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+        palette.textMuted
       },
       modifier = Modifier.padding(bottom = 5.dp, start = 2.dp)
     )
@@ -12431,6 +15718,11 @@ private fun StopwatchSubScreen(
   onToggleStartStop: () -> Unit,
   onLapOrReset: () -> Unit
 ) {
+  val palette = currentGlassPalette()
+  val minuteFraction = remember(elapsedMillis) {
+    ((elapsedMillis % 60_000L).toFloat() / 60_000f).coerceIn(0f, 1f)
+  }
+
   Column(
     modifier = Modifier
       .fillMaxSize()
@@ -12441,19 +15733,11 @@ private fun StopwatchSubScreen(
       .testTag("stopwatch_sub_screen"),
     horizontalAlignment = Alignment.CenterHorizontally
   ) {
-    // Massive circular-inspired digital stopwatch header
-    Card(
-      shape = RoundedCornerShape(32.dp),
-      colors = CardDefaults.cardColors(containerColor = creamCardColor),
-      border = BorderStroke(
-        width = 1.5.dp,
-        color = if (isRunning) {
-          MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-        } else {
-          MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-        }
-      ),
-      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    // Luminous Circular Progress Ring + Frosted Glass Stopwatch Header
+    LiquidGlassCard(
+      shape = RoundedCornerShape(30.dp),
+      elevation = 10.dp,
+      fillAlpha = if (palette.isDark) 0.78f else 0.90f,
       modifier = Modifier
         .fillMaxWidth()
         .padding(vertical = metrics.scaledDp(6))
@@ -12463,61 +15747,86 @@ private fun StopwatchSubScreen(
           .fillMaxWidth()
           .padding(
             horizontal = metrics.scaledDp(20),
-            vertical = metrics.scaledDp(28)
+            vertical = metrics.scaledDp(20)
           ),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
       ) {
-        Text(
-          text = if (isRunning) "RUNNING" else if (elapsedMillis > 0L) "PAUSED" else "READY",
-          style = MaterialTheme.typography.labelMedium.copy(
-            fontFamily = JetBrainsMonoFamily,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp
-          ),
-          color = if (isRunning) {
-            MaterialTheme.colorScheme.primary
-          } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
+        Box(
+          modifier = Modifier
+            .size(metrics.scaledDp(200))
+            .padding(4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+          Canvas(modifier = Modifier.fillMaxSize()) {
+            val strokePx = 10.dp.toPx()
+            drawArc(
+              color = palette.progressTrack,
+              startAngle = 0f,
+              sweepAngle = 360f,
+              useCenter = false,
+              style = Stroke(width = strokePx, cap = StrokeCap.Round)
+            )
+            if (minuteFraction > 0f || isRunning) {
+              drawArc(
+                brush = LiquidCyanVioletGradient,
+                startAngle = -90f,
+                sweepAngle = (360f * minuteFraction).coerceAtLeast(if (isRunning) 8f else 0f),
+                useCenter = false,
+                style = Stroke(width = strokePx, cap = StrokeCap.Round)
+              )
+            }
           }
-        )
 
-        Text(
-          text = formatStopwatchMillis(elapsedMillis),
-          style = MaterialTheme.typography.displayLarge.copy(
-            fontFamily = JetBrainsMonoFamily,
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = metrics.scaledSp(54),
-            lineHeight = metrics.scaledSp(58)
-          ),
-          color = MaterialTheme.colorScheme.onSurface,
-          textAlign = TextAlign.Center,
-          modifier = Modifier.testTag("stopwatch_digital_counter")
-        )
+          Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            Text(
+              text = if (isRunning) "RUNNING" else if (elapsedMillis > 0L) "PAUSED" else "READY",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp
+              ),
+              color = if (isRunning) {
+                palette.accentIndigo
+              } else {
+                palette.textSecondary
+              }
+            )
+
+            Text(
+              text = formatStopwatchMillis(elapsedMillis),
+              style = MaterialTheme.typography.displayLarge.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = metrics.scaledSp(34),
+                lineHeight = metrics.scaledSp(38)
+              ),
+              color = palette.textPrimary,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.testTag("stopwatch_digital_counter")
+            )
+          }
+        }
       }
     }
 
-    Spacer(modifier = Modifier.height(metrics.scaledDp(16)))
+    Spacer(modifier = Modifier.height(metrics.scaledDp(14)))
 
-    // Two circular buttons: Lap/Reset and Start/Stop
+    // Two liquid floating control buttons: Lap/Reset and Start/Stop
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // Secondary circular button: Lap (when running) or Reset (when stopped and > 0)
       val canLapOrReset = isRunning || elapsedMillis > 0L
       Surface(
         shape = CircleShape,
-        color = if (canLapOrReset) creamCardColor else creamCardColor.copy(alpha = 0.5f),
-        border = BorderStroke(
-          width = 1.5.dp,
-          color = if (canLapOrReset) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-          } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-          }
-        ),
+        color = if (canLapOrReset) palette.cardFill else palette.cardFill.copy(alpha = 0.45f),
+        border = BorderStroke(1.2.dp, palette.cardBorder),
+        shadowElevation = if (canLapOrReset) 6.dp else 0.dp,
         modifier = Modifier
           .size(metrics.scaledDp(62))
           .clip(CircleShape)
@@ -12532,9 +15841,9 @@ private fun StopwatchSubScreen(
             imageVector = if (isRunning) Icons.Filled.Flag else Icons.Filled.Replay,
             contentDescription = if (isRunning) "Record lap" else "Reset stopwatch",
             tint = if (canLapOrReset) {
-              MaterialTheme.colorScheme.primary
+              palette.accentIndigo
             } else {
-              MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+              palette.textMuted
             },
             modifier = Modifier.size(22.dp)
           )
@@ -12545,23 +15854,24 @@ private fun StopwatchSubScreen(
               fontSize = metrics.scaledSp(10)
             ),
             color = if (canLapOrReset) {
-              MaterialTheme.colorScheme.primary
+              palette.accentIndigo
             } else {
-              MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+              palette.textMuted
             }
           )
         }
       }
 
-      // Primary circular FAB: Start / Stop
+      // Primary circular Liquid Orb FAB: Start / Stop
       FloatingActionButton(
         onClick = onToggleStartStop,
         shape = CircleShape,
-        containerColor = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 8.dp),
+        containerColor = LiquidDeepIndigo,
+        contentColor = Color.White,
+        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
         modifier = Modifier
           .size(metrics.scaledDp(74))
+          .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
           .testTag("stopwatch_start_stop_button")
       ) {
         Icon(
@@ -12572,13 +15882,12 @@ private fun StopwatchSubScreen(
       }
     }
 
-    Spacer(modifier = Modifier.height(metrics.scaledDp(16)))
+    Spacer(modifier = Modifier.height(metrics.scaledDp(14)))
 
     // Scrollable list of Lap Times below the buttons
-    Card(
-      shape = RoundedCornerShape(22.dp),
-      colors = CardDefaults.cardColors(containerColor = creamCardColor),
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+    LiquidGlassCard(
+      shape = RoundedCornerShape(24.dp),
+      elevation = 8.dp,
       modifier = Modifier
         .weight(1f)
         .fillMaxWidth()
@@ -12601,20 +15910,20 @@ private fun StopwatchSubScreen(
               fontWeight = FontWeight.ExtraBold,
               fontSize = metrics.scaledSp(14)
             ),
-            color = MaterialTheme.colorScheme.onSurface
+            color = palette.textPrimary
           )
           Text(
             text = "${laps.size} recorded",
             style = MaterialTheme.typography.labelMedium.copy(
               fontFamily = JetBrainsMonoFamily
             ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = palette.textSecondary
           )
         }
 
         HorizontalDivider(
           thickness = 1.dp,
-          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+          color = palette.dividerColor
         )
 
         if (laps.isEmpty()) {
@@ -12625,7 +15934,7 @@ private fun StopwatchSubScreen(
             Text(
               text = "Start the stopwatch and tap Lap to record split intervals.",
               style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              color = palette.textSecondary,
               textAlign = TextAlign.Center
             )
           }
@@ -12640,10 +15949,10 @@ private fun StopwatchSubScreen(
             items(laps, key = { it.lapNumber }) { lap ->
               Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = ivoryInnerColor,
+                color = palette.nestedCardFill,
                 border = BorderStroke(
                   1.dp,
-                  MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                  palette.nestedCardBorder
                 ),
                 modifier = Modifier
                   .fillMaxWidth()
@@ -12665,7 +15974,7 @@ private fun StopwatchSubScreen(
                       fontFamily = JetBrainsMonoFamily,
                       fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.primary
+                    color = palette.accentIndigo
                   )
                   Text(
                     text = "+${formatStopwatchMillis(lap.lapSplitMillis)}",
@@ -12673,7 +15982,7 @@ private fun StopwatchSubScreen(
                       fontFamily = JetBrainsMonoFamily,
                       fontWeight = FontWeight.Medium
                     ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = palette.textSecondary
                   )
                   Text(
                     text = formatStopwatchMillis(lap.totalElapsedMillis),
@@ -12681,7 +15990,7 @@ private fun StopwatchSubScreen(
                       fontFamily = JetBrainsMonoFamily,
                       fontWeight = FontWeight.ExtraBold
                     ),
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = palette.textPrimary
                   )
                 }
               }
