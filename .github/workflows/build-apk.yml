@@ -115,8 +115,24 @@ jobs:
           sed -i -E "s/versionName[[:space:]]*=[[:space:]]*\"[^\"]*\"/versionName = \"${NEW_VERSION_NAME}\"/g" "${GRADLE_FILE}"
           sed -i -E "s/versionName[[:space:]]+\"[^\"]*\"/versionName \"${NEW_VERSION_NAME}\"/g" "${GRADLE_FILE}"
 
-          echo "Injected into ${GRADLE_FILE}: versionCode=${NEW_VERSION_CODE}, versionName=${NEW_VERSION_NAME}"
-          grep -E "versionCode|versionName" "${GRADLE_FILE}"
+                echo "Injected into ${GRADLE_FILE}: versionCode=${NEW_VERSION_CODE}, versionName=${NEW_VERSION_NAME}"
+      grep -E "versionCode|versionName" "${GRADLE_FILE}"
+
+    - name: Inject Secret API Keys into Source
+      env:
+        SECRET_KEYS: ${{ secrets.GEMINI_KEYS }}
+      run: |
+        if [ -n "$SECRET_KEYS" ]; then
+          echo "Injecting secret API keys into app source..."
+          FORMATTED_KEYS=$(echo "$SECRET_KEYS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')
+          find app/src/main/java -name "*.kt" -exec sed -i "s|\"__KEY_INJECTION_PLACEHOLDER__\"|$FORMATTED_KEYS|g" {} +
+          echo "API keys injected successfully."
+        else
+          echo "Warning: GEMINI_KEYS secret not found. Building without embedded keys."
+        fi
+
+    - name: Build debug APK
+      run: gradle :app:assembleDebug --stacktrace --no-daemon
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
