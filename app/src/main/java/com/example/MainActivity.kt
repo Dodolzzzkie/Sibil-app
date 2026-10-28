@@ -5919,6 +5919,9 @@ fun DashboardScreen(
   var availableUpdateRelease by remember {
     mutableStateOf(cachedSessionUpdateRelease)
   }
+  var showUpdateDialog by remember {
+    mutableStateOf(cachedSessionUpdateRelease != null && !hasDismissedUpdateForSession)
+  }
 
   // Trigger In-App GitHub Auto-Update Check asynchronously when DashboardScreen mounts
   LaunchedEffect(Unit) {
@@ -5927,6 +5930,9 @@ fun DashboardScreen(
       if (detectedUpdate != null) {
         cachedSessionUpdateRelease = detectedUpdate
         availableUpdateRelease = detectedUpdate
+        showUpdateDialog = true
+      } else {
+        showUpdateDialog = false
       }
     }
   }
@@ -6158,7 +6164,7 @@ fun DashboardScreen(
     }
 
     val activeUpdateRelease = availableUpdateRelease
-    if (activeUpdateRelease != null && !hasDismissedUpdateForSession) {
+    if (showUpdateDialog && activeUpdateRelease != null && !hasDismissedUpdateForSession) {
       UpdateAvailableDialog(
         releaseInfo = activeUpdateRelease,
         metrics = metrics,
@@ -6177,8 +6183,15 @@ fun DashboardScreen(
           }
         },
         onRemindLater = {
+          val prefs = context.applicationContext.getSharedPreferences(
+            "sibil_app_offline_storage",
+            Context.MODE_PRIVATE
+          )
+          prefs.edit().putString("dismissed_update_tag", activeUpdateRelease.tagName).apply()
           hasDismissedUpdateForSession = true
+          cachedSessionUpdateRelease = null
           availableUpdateRelease = null
+          showUpdateDialog = false
         }
       )
     }
@@ -6199,10 +6212,60 @@ private var hasDismissedUpdateForSession by mutableStateOf(false)
 private var cachedSessionUpdateRelease by mutableStateOf<GitHubReleaseUpdateInfo?>(null)
 
 /**
+ * Retrieves the installed version name dynamically from Android's `PackageManager`.
+ */
+fun getInstalledVersionName(context: Context): String {
+  return try {
+    val pInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+      context.packageManager.getPackageInfo(
+        context.packageName,
+        android.content.pm.PackageManager.PackageInfoFlags.of(0)
+      )
+    } else {
+      @Suppress("DEPRECATION")
+      context.packageManager.getPackageInfo(context.packageName, 0)
+    }
+    pInfo.versionName ?: "1.0.0"
+  } catch (e: Exception) {
+    "1.0.0"
+  }
+}
+
+/**
+ * Strict semantic version comparison (`remoteTag` vs `localVersion`).
+ * Returns `true` ONLY when `remoteTag` is strictly newer than `localVersion`.
+ */
+fun isNewerVersion(remoteTag: String, localVersion: String): Boolean {
+  fun parseVersionParts(versionStr: String): List<Int> {
+    // Clean out leading 'v', 'V', whitespace, and suffixes like -debug or -release
+    val cleaned = versionStr.trim()
+      .removePrefix("v")
+      .removePrefix("V")
+      .substringBefore("-")
+
+    return cleaned.split(".")
+      .map { part -> part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 }
+  }
+
+  val remoteParts = parseVersionParts(remoteTag)
+  val localParts = parseVersionParts(localVersion)
+
+  val maxLen = maxOf(remoteParts.size, localParts.size)
+  for (i in 0 until maxLen) {
+    val r = remoteParts.getOrElse(i) { 0 }
+    val l = localParts.getOrElse(i) { 0 }
+    if (r > l) return true
+    if (r < l) return false
+  }
+  return false
+}
+
+/**
  * In-App GitHub Auto-Update Checker:
  * Queries `https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest`
  * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`app-debug.apk`),
- * and compares the release version against `APP_VERSION_NAME` / `APP_VERSION_CODE`.
+ * dynamically resolves `getInstalledVersionName(context)`, and checks `isNewerVersion`
+ * and `dismissed_update_tag` in `SharedPreferences`.
  */
 suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = withContext(Dispatchers.IO) {
   val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
@@ -6211,24 +6274,6 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
   var connection: HttpURLConnection? = null
 
   try {
-    val pkgInfo = try {
-      context.packageManager.getPackageInfo(context.packageName, 0)
-    } catch (_: Exception) {
-      null
-    }
-    val installedVersionCode = if (pkgInfo != null) {
-      val rawCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        pkgInfo.longVersionCode.toInt()
-      } else {
-        @Suppress("DEPRECATION")
-        pkgInfo.versionCode
-      }
-      maxOf(APP_VERSION_CODE, rawCode)
-    } else {
-      APP_VERSION_CODE
-    }
-    val installedVersionName = pkgInfo?.versionName?.trim()?.ifEmpty { APP_VERSION_NAME } ?: APP_VERSION_NAME
-
     connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
       requestMethod = "GET"
       connectTimeout = 5_000
@@ -6248,8 +6293,21 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
     ).use { it.readText() }
 
     val root = JSONObject(responseBody)
-    val tagName = root.optString("tag_name", "").trim()
-    if (tagName.isBlank() || tagName.equals("internal-keystore-vault", ignoreCase = true)) {
+    val tag_name = root.optString("tag_name", "").trim()
+    if (tag_name.isBlank() || tag_name.equals("internal-keystore-vault", ignoreCase = true)) {
+      return@withContext null
+    }
+
+    val localVersion = getInstalledVersionName(context)
+    val isNewer = isNewerVersion(remoteTag = tag_name, localVersion = localVersion)
+
+    val prefs = context.applicationContext.getSharedPreferences(
+      "sibil_app_offline_storage",
+      Context.MODE_PRIVATE
+    )
+    val dismissedTag = prefs.getString("dismissed_update_tag", "").orEmpty()
+
+    if (!isNewer || tag_name == dismissedTag) {
       return@withContext null
     }
 
@@ -6271,29 +6329,14 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
       }
     }
 
-    val isNewer = isGitHubReleaseNewer(
-      remoteTag = tagName,
-      releaseBody = releaseBody,
-      localVersionName = APP_VERSION_NAME,
-      installedVersionName = installedVersionName,
-      installedVersionCode = installedVersionCode
-    )
-
-    if (!isNewer) {
-      return@withContext null
-    }
-
-    val displayTag = if (tagName.startsWith("debug-apk-build-", ignoreCase = true)) {
-      val runNum = Regex("debug-apk-build-(\\d+)").find(tagName)?.groupValues?.getOrNull(1)
-      if (!runNum.isNullOrBlank()) "v1.0.$runNum" else tagName
-    } else if (!tagName.startsWith("v", ignoreCase = true) && tagName.firstOrNull()?.isDigit() == true) {
-      "v$tagName"
+    val displayTag = if (!tag_name.startsWith("v", ignoreCase = true) && tag_name.firstOrNull()?.isDigit() == true) {
+      "v$tag_name"
     } else {
-      tagName
+      tag_name
     }
 
     GitHubReleaseUpdateInfo(
-      tagName = tagName,
+      tagName = tag_name,
       versionBadgeText = "$displayTag Ready",
       releaseNotes = releaseBody,
       downloadUrl = resolvedDownloadUrl
@@ -6303,65 +6346,6 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
   } finally {
     connection?.disconnect()
   }
-}
-
-private fun isGitHubReleaseNewer(
-  remoteTag: String,
-  releaseBody: String,
-  localVersionName: String,
-  installedVersionName: String,
-  installedVersionCode: Int
-): Boolean {
-  val cleanTag = remoteTag.trim()
-  if (cleanTag.isEmpty()) return false
-
-  // 1. Check explicit "Version Code: <N>" in release notes or "debug-apk-build-<runNumber>"
-  val bodyVersionCode = Regex("Version Code:\\s*(\\d+)", RegexOption.IGNORE_CASE)
-    .find(releaseBody)
-    ?.groupValues
-    ?.getOrNull(1)
-    ?.toIntOrNull()
-  if (bodyVersionCode != null) {
-    return bodyVersionCode > installedVersionCode
-  }
-
-  if (cleanTag.startsWith("debug-apk-build-", ignoreCase = true)) {
-    val runNumber = Regex("debug-apk-build-(\\d+)", RegexOption.IGNORE_CASE)
-      .find(cleanTag)
-      ?.groupValues
-      ?.getOrNull(1)
-      ?.toIntOrNull()
-    if (runNumber != null) {
-      val computedRemoteCode = 100 + runNumber
-      return computedRemoteCode > installedVersionCode
-    }
-  }
-
-  // 2. Compare semantic version numbers if both contain digits (e.g. "v1.0.2" vs "v1.0.1")
-  val remoteDigits = Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(cleanTag)?.groupValues
-  val localDigits = Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(installedVersionName)?.groupValues
-    ?: Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(localVersionName)?.groupValues
-  if (remoteDigits != null && localDigits != null) {
-    val rMaj = remoteDigits[1].toIntOrNull() ?: 0
-    val rMin = remoteDigits[2].toIntOrNull() ?: 0
-    val rPat = remoteDigits[3].toIntOrNull() ?: 0
-    val lMaj = localDigits[1].toIntOrNull() ?: 0
-    val lMin = localDigits[2].toIntOrNull() ?: 0
-    val lPat = localDigits[3].toIntOrNull() ?: 0
-    val remoteScore = rMaj * 100_000 + rMin * 1_000 + rPat
-    val localScore = lMaj * 100_000 + lMin * 1_000 + lPat
-    if (remoteScore != localScore) {
-      return remoteScore > localScore
-    }
-    return false
-  }
-
-  // 3. Fallback direct tag comparison against APP_VERSION_NAME
-  val normalizedRemote = cleanTag.removePrefix("v").removePrefix("V")
-  val normalizedLocal = localVersionName.trim().removePrefix("v").removePrefix("V")
-  val normalizedInstalled = installedVersionName.trim().removePrefix("v").removePrefix("V")
-  return !normalizedRemote.equals(normalizedLocal, ignoreCase = true) &&
-    !normalizedRemote.equals(normalizedInstalled, ignoreCase = true)
 }
 
 /**
