@@ -93,6 +93,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -131,6 +132,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
@@ -165,6 +167,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.RequestQuote
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Snooze
@@ -233,6 +236,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -311,10 +315,12 @@ import kotlin.coroutines.coroutineContext
 import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -324,16 +330,23 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-// Gizmo-style Multi-Batch AI Flashcard Generator & Sibil Release Configuration
-private val EMBEDDED_API_KEYS = listOf(
-  "AQ.Ab8RN6Ia2Rly95l54ks_QUPy10VdlpDGIJULcZtQlDuEeo22rw",
-  "AQ.Ab8RN6IlkYztF3OYLD5yPCbpAPR5W5S506w_qPbNrbC_0VxHKA",
-  "AQ.Ab8RN6KklCymJljMd9Wi3bQpmbaoaycUWgAm_UGugy1KaOm-Fg",
-  "AQ.Ab8RN6L3lQrfGG58COizOgsRc3_ox8zDVPRMa2eGmGWfHWBzxA",
-  "AQ.Ab8RN6IiildWfw-2Acfq_B1B3uvdnj0dy47ftJ3juAWyHFjf0w"
+// KEYS ARE INJECTED DURING CI/CD BUILD FROM GITHUB SECRETS.
+// DO NOT HARDCODE RAW "AIzaSy..." STRINGS HERE IN THE PUBLIC SOURCE.
+private val COMPILED_DEVELOPER_KEY_POOL = listOf(
+    "__KEY_INJECTION_PLACEHOLDER__"
 )
-private val DEFAULT_GEMINI_API_KEY = EMBEDDED_API_KEYS.first()
-const val SIBIL_APP_VERSION_TAG = "Sibil v1.0.0 (Official Release)"
+
+private val DEFAULT_GEMINI_API_KEY: String
+  get() = COMPILED_DEVELOPER_KEY_POOL
+    .map { it.trim() }
+    .firstOrNull { !it.startsWith("__KEY_") && it.isNotBlank() }
+    .orEmpty()
+
+const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
+const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
+const val APP_VERSION_CODE = 101            // Incremented with builds
+const val APP_VERSION_NAME = "v1.0.1"
+const val SIBIL_APP_VERSION_TAG = "Sibil $APP_VERSION_NAME (Official Release)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.51
 private const val DEFAULT_FALLBACK_LONGITUDE = 124.03
@@ -409,6 +422,9 @@ data class GlassPalette(
 ) {
   val glassBorder: BorderStroke
     get() = BorderStroke(glassBorderWidth, glassBorderBrush)
+
+  val cardSurface: Color
+    get() = cardFill
 
   val nestedBorder: BorderStroke
     get() = BorderStroke(1.dp, nestedBorderColor)
@@ -1058,19 +1074,25 @@ object GizmoBatchFlashcardEngine {
   private var fallbackStepIndex: Int = 0
 
   @Volatile
-  private var activeClassroomKeyIndex: Int = Random.nextInt(EMBEDDED_API_KEYS.size)
+  private var activeClassroomKeyIndex: Int = 0
 
   /**
    * Builds the valid multi-key pool for classroom load-balancing.
-   * Includes any user-supplied keys alongside `EMBEDDED_API_KEYS`.
+   * Filters out un-injected placeholders (`!it.startsWith("__KEY_") && it.isNotBlank()`)
+   * from `COMPILED_DEVELOPER_KEY_POOL` and combines them with any custom user keys saved in SharedPreferences.
    */
   fun buildValidKeyPool(userConfiguredKey: String = ""): List<String> {
+    val compiledValidKeys = COMPILED_DEVELOPER_KEY_POOL
+      .flatMap { it.split(',', '\n', ';', ' ') }
+      .map { it.trim() }
+      .filter { !it.startsWith("__KEY_") && it.isNotBlank() }
+
     val customKeys = userConfiguredKey
       .split(',', '\n', ';', ' ')
       .map { it.trim() }
-      .filter { it.isNotEmpty() && !EMBEDDED_API_KEYS.contains(it) }
-    val combined = (customKeys + EMBEDDED_API_KEYS).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-    return combined.ifEmpty { EMBEDDED_API_KEYS }
+      .filter { !it.startsWith("__KEY_") && it.isNotBlank() }
+
+    return (customKeys + compiledValidKeys).distinct()
   }
 
   /**
@@ -1180,23 +1202,25 @@ object GizmoBatchFlashcardEngine {
   }
 
   val SYSTEM_PROMPT_INSTRUCTION = """
-You are an expert academic flashcard generator for university students and engineering board exam examinees.
-Analyze the provided document material and generate high-yield, comprehensive active-recall flashcards.
+You are an expert board examination reviewer and academic question creator specialized in the Philippine collegiate and licensure examination style (e.g., PRC board exams, midterm/final departmental exams).
 
-STRICT EXCLUSION RULES (DO NOT CREATE FLASHCARDS FOR ANY OF THE FOLLOWING):
-1. Administrative & Metadata: Ignore school/university names, department headers, instructor/professor names, course codes, semester/academic year, student names, and dates.
-2. Classroom Policies: Ignore grading rubrics, attendance rules, assignment deadlines, syllabus outlines, honor codes, or submission instructions.
-3. Structural Fillers: Ignore tables of contents, page numbers, document titles, copyright notices, and generic chapter headings.
-
-ACADEMIC FOCUS (ONLY EXTRACT HIGH-YIELD CONTENT):
-- Engineering & Technical Definitions: Specific terms, principles, hypotheses, and physical meanings.
-- Formulas & Equations: Standard engineering equations with variable designations (e.g., NSCP provisions, structural mechanics, fluid dynamics).
-- Explicit Review Questions: Numbered questions, multiple-choice items, and review problem sets with their correct answers.
-- Enumerations & Criteria: Design steps, classifications, and code limitations.
-
-FORMATTING REQUIREMENT:
-Respond strictly with a valid JSON array matching the schema: [{"question": "...", "answer": "..."}].
-Never output garbled ASCII or non-academic metadata.
+Convert the document into high-yield active-recall flashcards using these strict patterns:
+1. IDENTIFICATION STYLE (PRIMARY FORMAT):
+   - Question (Front): Write the exact definition, description, function, or principle as a formal inquiry. Use prompt forms such as:
+     * "What term refers to [clear definition/description]?"
+     * "Identify the [structural member / concept / law / phenomenon] that [descriptive function]."
+     * "[Formal technical definition] is known as what?"
+   - Answer (Back): Provide the exact technical term, law, or concept (capitalized, concise, with standard abbreviation/acronym if applicable).
+2. CODE SPECIFICATION & STANDARD PROVISION:
+   - Question: State the design standard, criterion, or code provision requirement (e.g., NSCP, AASHTO, ASTM, or subject-specific standard).
+   - Answer: Provide the exact value, formula, limitation, or requirement.
+3. PROBLEM-SOLVING FORMULA RECALL:
+   - Question: "State the equation / formula used to calculate [target variable] given [parameters]."
+   - Answer: Provide the clean formula with labeled variables.
+4. NEGATIVE FILTER:
+   - Skip school names, professor names, grading criteria, syllabus outlines, course codes, table of contents, and decorative headers.
+5. OUTPUT SCHEMA:
+   - Return strictly a valid JSON array: [{"question": "...", "answer": "..."}].
   """.trimIndent()
 
   private const val PAGES_PER_PDF_BATCH = 2
@@ -1401,6 +1425,12 @@ Never output garbled ASCII or non-academic metadata.
     ) -> Unit
   ): List<FlashcardItem> = withContext(Dispatchers.IO) {
     val validPool = buildValidKeyPool(activeApiKey)
+    if (validPool.isEmpty()) {
+      throw GeminiBatchExtractionException(
+        statusCode = 401,
+        message = "No Gemini API key configured. Please tap 'Update API Key' or the Key icon to enter your Google AI Studio key."
+      )
+    }
     val startIdx = selectRandomizedKeyIndex(validPool)
     val initialKey = validPool[startIdx]
     val mimeType = try {
@@ -1648,6 +1678,12 @@ Never output garbled ASCII or non-academic metadata.
     }
 
     val validPool = buildValidKeyPool(activeApiKey)
+    if (validPool.isEmpty()) {
+      throw GeminiBatchExtractionException(
+        statusCode = 401,
+        message = "No Gemini API key configured. Please tap 'Update API Key' or the Key icon to enter your Google AI Studio key."
+      )
+    }
     selectRandomizedKeyIndex(validPool)
     val totalBatches = chunks.size
     val accumulatedCards = mutableListOf<FlashcardItem>()
@@ -1906,6 +1942,12 @@ Never output garbled ASCII or non-academic metadata.
     }.toString()
 
     val validPool = buildValidKeyPool(activeApiKey)
+    if (validPool.isEmpty()) {
+      throw GeminiBatchExtractionException(
+        statusCode = 401,
+        message = "No Gemini API key configured. Please tap 'Update API Key' or the Key icon to enter your Google AI Studio key."
+      )
+    }
     var keyIndex = activeClassroomKeyIndex.coerceIn(0, maxOf(0, validPool.size - 1))
     var lastException: GeminiBatchExtractionException? = null
 
@@ -3693,7 +3735,7 @@ class TaskViewModel(
       val isRatedGood = newMasteryLevel.equals("Good", ignoreCase = true)
       val updatedCards = currentDeck.cards.map { card ->
         if (card.id == cardId) {
-          val updatedIsMastered = if (isRatedGood) true else card.isMastered
+          val updatedIsMastered = isRatedGood
           card.masteryLevel = newMasteryLevel
           card.isMastered = updatedIsMastered
           card.copy(
@@ -5866,13 +5908,27 @@ fun DashboardScreen(
         @Suppress("DEPRECATION")
         pkgInfo.versionCode
       }
-      maxOf(100, rawCode)
+      maxOf(APP_VERSION_CODE, rawCode)
     } catch (_: Exception) {
-      100
+      APP_VERSION_CODE
     }
   }
   var showWhatsNewModal by rememberSaveable {
     mutableStateOf(LocalStorageManager.shouldShowWhatsNew(context, currentVersionCode))
+  }
+  var availableUpdateRelease by remember {
+    mutableStateOf(cachedSessionUpdateRelease)
+  }
+
+  // Trigger In-App GitHub Auto-Update Check asynchronously when DashboardScreen mounts
+  LaunchedEffect(Unit) {
+    if (!hasDismissedUpdateForSession && availableUpdateRelease == null) {
+      val detectedUpdate = checkForAppUpdate(context)
+      if (detectedUpdate != null) {
+        cachedSessionUpdateRelease = detectedUpdate
+        availableUpdateRelease = detectedUpdate
+      }
+    }
   }
 
   Box(
@@ -6100,6 +6156,422 @@ fun DashboardScreen(
         }
       )
     }
+
+    val activeUpdateRelease = availableUpdateRelease
+    if (activeUpdateRelease != null && !hasDismissedUpdateForSession) {
+      UpdateAvailableDialog(
+        releaseInfo = activeUpdateRelease,
+        metrics = metrics,
+        onUpdateNow = {
+          try {
+            val downloadIntent = Intent(Intent.ACTION_VIEW, Uri.parse(activeUpdateRelease.downloadUrl)).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(downloadIntent)
+          } catch (_: Exception) {
+            Toast.makeText(
+              context,
+              "Unable to open browser for APK download.",
+              Toast.LENGTH_SHORT
+            ).show()
+          }
+        },
+        onRemindLater = {
+          hasDismissedUpdateForSession = true
+          availableUpdateRelease = null
+        }
+      )
+    }
+  }
+}
+
+/**
+ * Metadata for an available GitHub Release update discovered by `checkForAppUpdate`.
+ */
+data class GitHubReleaseUpdateInfo(
+  val tagName: String,
+  val versionBadgeText: String,
+  val releaseNotes: String,
+  val downloadUrl: String
+)
+
+private var hasDismissedUpdateForSession by mutableStateOf(false)
+private var cachedSessionUpdateRelease by mutableStateOf<GitHubReleaseUpdateInfo?>(null)
+
+/**
+ * In-App GitHub Auto-Update Checker:
+ * Queries `https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest`
+ * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`app-debug.apk`),
+ * and compares the release version against `APP_VERSION_NAME` / `APP_VERSION_CODE`.
+ */
+suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = withContext(Dispatchers.IO) {
+  val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
+  val defaultDownloadUrl =
+    "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest/download/app-debug.apk"
+  var connection: HttpURLConnection? = null
+
+  try {
+    val pkgInfo = try {
+      context.packageManager.getPackageInfo(context.packageName, 0)
+    } catch (_: Exception) {
+      null
+    }
+    val installedVersionCode = if (pkgInfo != null) {
+      val rawCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        pkgInfo.longVersionCode.toInt()
+      } else {
+        @Suppress("DEPRECATION")
+        pkgInfo.versionCode
+      }
+      maxOf(APP_VERSION_CODE, rawCode)
+    } else {
+      APP_VERSION_CODE
+    }
+    val installedVersionName = pkgInfo?.versionName?.trim()?.ifEmpty { APP_VERSION_NAME } ?: APP_VERSION_NAME
+
+    connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+      requestMethod = "GET"
+      connectTimeout = 5_000
+      readTimeout = 5_000
+      doInput = true
+      setRequestProperty("User-Agent", "Sibil-App-Android")
+      setRequestProperty("Accept", "application/vnd.github.v3+json")
+    }
+
+    val responseCode = connection.responseCode
+    if (responseCode !in 200..299) {
+      return@withContext null
+    }
+
+    val responseBody = BufferedReader(
+      InputStreamReader(connection.inputStream, Charsets.UTF_8)
+    ).use { it.readText() }
+
+    val root = JSONObject(responseBody)
+    val tagName = root.optString("tag_name", "").trim()
+    if (tagName.isBlank() || tagName.equals("internal-keystore-vault", ignoreCase = true)) {
+      return@withContext null
+    }
+
+    val releaseBody = root.optString("body", "").trim().ifEmpty {
+      "A new Sibil update is available with the latest improvements and fixes."
+    }
+
+    var resolvedDownloadUrl = defaultDownloadUrl
+    val assetsArray = root.optJSONArray("assets")
+    if (assetsArray != null) {
+      for (i in 0 until assetsArray.length()) {
+        val assetObj = assetsArray.optJSONObject(i) ?: continue
+        val assetName = assetObj.optString("name", "").trim()
+        val assetUrl = assetObj.optString("browser_download_url", "").trim()
+        if (assetName.equals("app-debug.apk", ignoreCase = true) && assetUrl.isNotBlank()) {
+          resolvedDownloadUrl = assetUrl
+          break
+        }
+      }
+    }
+
+    val isNewer = isGitHubReleaseNewer(
+      remoteTag = tagName,
+      releaseBody = releaseBody,
+      localVersionName = APP_VERSION_NAME,
+      installedVersionName = installedVersionName,
+      installedVersionCode = installedVersionCode
+    )
+
+    if (!isNewer) {
+      return@withContext null
+    }
+
+    val displayTag = if (tagName.startsWith("debug-apk-build-", ignoreCase = true)) {
+      val runNum = Regex("debug-apk-build-(\\d+)").find(tagName)?.groupValues?.getOrNull(1)
+      if (!runNum.isNullOrBlank()) "v1.0.$runNum" else tagName
+    } else if (!tagName.startsWith("v", ignoreCase = true) && tagName.firstOrNull()?.isDigit() == true) {
+      "v$tagName"
+    } else {
+      tagName
+    }
+
+    GitHubReleaseUpdateInfo(
+      tagName = tagName,
+      versionBadgeText = "$displayTag Ready",
+      releaseNotes = releaseBody,
+      downloadUrl = resolvedDownloadUrl
+    )
+  } catch (_: Exception) {
+    null
+  } finally {
+    connection?.disconnect()
+  }
+}
+
+private fun isGitHubReleaseNewer(
+  remoteTag: String,
+  releaseBody: String,
+  localVersionName: String,
+  installedVersionName: String,
+  installedVersionCode: Int
+): Boolean {
+  val cleanTag = remoteTag.trim()
+  if (cleanTag.isEmpty()) return false
+
+  // 1. Check explicit "Version Code: <N>" in release notes or "debug-apk-build-<runNumber>"
+  val bodyVersionCode = Regex("Version Code:\\s*(\\d+)", RegexOption.IGNORE_CASE)
+    .find(releaseBody)
+    ?.groupValues
+    ?.getOrNull(1)
+    ?.toIntOrNull()
+  if (bodyVersionCode != null) {
+    return bodyVersionCode > installedVersionCode
+  }
+
+  if (cleanTag.startsWith("debug-apk-build-", ignoreCase = true)) {
+    val runNumber = Regex("debug-apk-build-(\\d+)", RegexOption.IGNORE_CASE)
+      .find(cleanTag)
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.toIntOrNull()
+    if (runNumber != null) {
+      val computedRemoteCode = 100 + runNumber
+      return computedRemoteCode > installedVersionCode
+    }
+  }
+
+  // 2. Compare semantic version numbers if both contain digits (e.g. "v1.0.2" vs "v1.0.1")
+  val remoteDigits = Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(cleanTag)?.groupValues
+  val localDigits = Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(installedVersionName)?.groupValues
+    ?: Regex("(\\d+)\\.(\\d+)\\.(\\d+)").find(localVersionName)?.groupValues
+  if (remoteDigits != null && localDigits != null) {
+    val rMaj = remoteDigits[1].toIntOrNull() ?: 0
+    val rMin = remoteDigits[2].toIntOrNull() ?: 0
+    val rPat = remoteDigits[3].toIntOrNull() ?: 0
+    val lMaj = localDigits[1].toIntOrNull() ?: 0
+    val lMin = localDigits[2].toIntOrNull() ?: 0
+    val lPat = localDigits[3].toIntOrNull() ?: 0
+    val remoteScore = rMaj * 100_000 + rMin * 1_000 + rPat
+    val localScore = lMaj * 100_000 + lMin * 1_000 + lPat
+    if (remoteScore != localScore) {
+      return remoteScore > localScore
+    }
+    return false
+  }
+
+  // 3. Fallback direct tag comparison against APP_VERSION_NAME
+  val normalizedRemote = cleanTag.removePrefix("v").removePrefix("V")
+  val normalizedLocal = localVersionName.trim().removePrefix("v").removePrefix("V")
+  val normalizedInstalled = installedVersionName.trim().removePrefix("v").removePrefix("V")
+  return !normalizedRemote.equals(normalizedLocal, ignoreCase = true) &&
+    !normalizedRemote.equals(normalizedInstalled, ignoreCase = true)
+}
+
+/**
+ * "Update Ready" Liquid Glass Modal (`UpdateAvailableDialog`):
+ * - Backdrop: Frosted modal scrim.
+ * - Container: Opaque gradient glass card (`palette.cardSurface`) with specular rim border (`palette.glassBorder`) and elevation shadow.
+ * - Header: Glowing rocket/download badge icon (`36.dp` rounded squircle, indigo gradient),
+ *   "New Update Available!" (`fontSize = 20.sp`, bold, `palette.textPrimary`), and frosted version badge capsule.
+ * - Changelog Container: Scrollable box (`Modifier.heightIn(max = 200.dp).verticalScroll(...)`) displaying GitHub release notes.
+ * - Action Buttons: "Update Now" (Full-width vibrant indigo gradient button) and "Remind Me Later" (subtle text button).
+ */
+@Composable
+fun UpdateAvailableDialog(
+  releaseInfo: GitHubReleaseUpdateInfo,
+  metrics: ResponsiveMetrics,
+  onUpdateNow: () -> Unit,
+  onRemindLater: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  val cardShape = RoundedCornerShape(28.dp)
+  val cardGradientBrush = remember(palette.isDark, palette.cardSurface, palette.cardBottomSheen) {
+    Brush.verticalGradient(
+      colors = listOf(
+        palette.cardSurface,
+        palette.cardBottomSheen
+      )
+    )
+  }
+
+  Dialog(
+    onDismissRequest = onRemindLater,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = if (palette.isDark) 0.62f else 0.38f))
+        .clickable(onClick = onRemindLater),
+      contentAlignment = Alignment.Center
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth(0.92f)
+          .widthIn(max = 460.dp)
+          .shadow(
+            elevation = 16.dp,
+            shape = cardShape,
+            ambientColor = palette.shadowAmbient,
+            spotColor = palette.shadowSpot
+          )
+          .clip(cardShape)
+          .background(brush = cardGradientBrush, shape = cardShape)
+          .border(border = palette.glassBorder, shape = cardShape)
+          .clickable(enabled = false) {}
+          .testTag("update_available_dialog")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(22)),
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+        ) {
+          // Header: Glowing rocket/download badge icon (36.dp squircle) + Title + Version Badge
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .size(36.dp)
+                .shadow(
+                  elevation = 8.dp,
+                  shape = RoundedCornerShape(12.dp),
+                  ambientColor = Color(0x334338CA),
+                  spotColor = Color(0x554F46E5)
+                )
+                .clip(RoundedCornerShape(12.dp))
+                .background(brush = LiquidOrbBrush)
+                .border(
+                  BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)),
+                  RoundedCornerShape(12.dp)
+                ),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.RocketLaunch,
+                contentDescription = "Update Available",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+              )
+            }
+
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Text(
+                text = "New Update Available!",
+                style = MaterialTheme.typography.headlineSmall.copy(
+                  fontSize = 20.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary,
+                modifier = Modifier.testTag("update_dialog_title")
+              )
+
+              Surface(
+                shape = CircleShape,
+                color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
+              ) {
+                Text(
+                  text = releaseInfo.versionBadgeText,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.accentIndigo,
+                  modifier = Modifier
+                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                    .testTag("update_dialog_version_badge")
+                )
+              }
+            }
+          }
+
+          // Scrollable Changelog Container
+          Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = palette.nestedCardFill,
+            border = palette.nestedBorder,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 200.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .testTag("update_dialog_changelog_scroll")
+            ) {
+              Text(
+                text = releaseInfo.releaseNotes,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = metrics.scaledSp(13),
+                  lineHeight = metrics.scaledSp(19),
+                  fontWeight = FontWeight.Medium
+                ),
+                color = palette.textPrimary
+              )
+            }
+          }
+
+          // Action Buttons: "Update Now" (Full-width vibrant indigo gradient button) + "Remind Me Later"
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .shadow(
+                  elevation = 8.dp,
+                  shape = RoundedCornerShape(18.dp),
+                  ambientColor = Color(0x334338CA),
+                  spotColor = Color(0x554F46E5)
+                )
+                .clip(RoundedCornerShape(18.dp))
+                .background(brush = LiquidOrbBrush, shape = RoundedCornerShape(18.dp))
+                .border(
+                  BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
+                  RoundedCornerShape(18.dp)
+                )
+                .clickable(onClick = onUpdateNow)
+                .padding(vertical = 14.dp)
+                .testTag("update_dialog_update_now_button"),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = "Update Now",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = 14.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = Color.White
+              )
+            }
+
+            TextButton(
+              onClick = onRemindLater,
+              shape = CircleShape,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("update_dialog_remind_later_button")
+            ) {
+              Text(
+                text = "Remind Me Later",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = palette.textSecondary
+              )
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -6137,7 +6609,7 @@ fun WhatsNewDialog(
           .padding(metrics.scaledDp(22)),
         verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
       ) {
-        // Header: Sparkle icon + "What's New in Sibil" + "v1.0.0 (Official Launch)" badge
+        // Header: Sparkle icon + "What's New in Sibil" + version badge
         Row(
           modifier = Modifier.fillMaxWidth(),
           verticalAlignment = Alignment.CenterVertically,
@@ -6177,7 +6649,7 @@ fun WhatsNewDialog(
               border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
             ) {
               Text(
-                text = "v1.0.0 (Official Launch)",
+                text = "$APP_VERSION_NAME (Official Release)",
                 style = MaterialTheme.typography.labelSmall.copy(
                   fontSize = 11.sp,
                   fontWeight = FontWeight.Bold
@@ -7965,6 +8437,17 @@ fun FlashcardMainView(
   }
 
   fun launchTextBatchExtraction(deckTitle: String, subjectTag: String, rawText: String) {
+    val activeKey = viewModel.getActiveGeminiApiKey()
+    if (GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey).isEmpty()) {
+      isApiKeyDialogOpen = true
+      Toast.makeText(
+        context,
+        "Please enter a Gemini API Key in the Key Manager to generate flashcards.",
+        Toast.LENGTH_LONG
+      ).show()
+      return
+    }
+
     activeBatchJob?.cancel()
     batchDocumentName = "$deckTitle (${rawText.length} chars)"
     batchDeckTitle = deckTitle.ifBlank { "Lecture Notes Study Deck" }
@@ -7978,7 +8461,6 @@ fun FlashcardMainView(
     extractionErrorDialogMessage = null
     isBatchExtracting = true
 
-    val activeKey = viewModel.getActiveGeminiApiKey()
     activeBatchJob = coroutineScope.launch {
       try {
         val finalCards = GizmoBatchFlashcardEngine.processTextInChunks(
@@ -8032,6 +8514,17 @@ fun FlashcardMainView(
     contract = ActivityResultContracts.OpenDocument()
   ) { uri: Uri? ->
     if (uri != null) {
+      val activeKey = viewModel.getActiveGeminiApiKey()
+      if (GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey).isEmpty()) {
+        isApiKeyDialogOpen = true
+        Toast.makeText(
+          context,
+          "Please enter a Gemini API Key in the Key Manager to analyze documents.",
+          Toast.LENGTH_LONG
+        ).show()
+        return@rememberLauncherForActivityResult
+      }
+
       val resolvedName = resolveDocumentFileName(context, uri)
       val cleanTitle = resolvedName
         .substringBeforeLast(".")
@@ -8051,8 +8544,6 @@ fun FlashcardMainView(
       latestGeneratedAnswer = ""
       extractionErrorDialogMessage = null
       isBatchExtracting = true
-
-      val activeKey = viewModel.getActiveGeminiApiKey()
       activeBatchJob = coroutineScope.launch {
         try {
           val generatedCards = GizmoBatchFlashcardEngine.processDocumentUriInBatches(
@@ -10089,12 +10580,163 @@ private fun AddCardToFlashcardDeckDialog(
 }
 
 /**
+ * Zero-asset procedural audio synthesis utility using Android's native `ToneGenerator`
+ * so flashcards and mastery celebrations require no external MP3 assets.
+ */
+object SoundEffectsManager {
+  fun playGoodButtonBeep() {
+    try {
+      val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+      toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 60)
+      Handler(Looper.getMainLooper()).postDelayed({
+        try {
+          toneGen.release()
+        } catch (_: Exception) {
+        }
+      }, 90L)
+    } catch (_: Exception) {
+    }
+  }
+
+  fun playMasteryFanfare(coroutineScope: CoroutineScope) {
+    coroutineScope.launch(Dispatchers.Default) {
+      var toneGen: ToneGenerator? = null
+      try {
+        toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 78)
+        // Triumphant rising 4-note celebratory sequence (C6 -> E6 -> G6 -> C7) over ~600ms
+        val notes = listOf(
+          ToneGenerator.TONE_DTMF_1 to 110,
+          ToneGenerator.TONE_DTMF_3 to 110,
+          ToneGenerator.TONE_DTMF_6 to 120,
+          ToneGenerator.TONE_PROP_BEEP2 to 180
+        )
+        for ((toneType, durationMs) in notes) {
+          toneGen.startTone(toneType, durationMs)
+          delay(150L)
+        }
+      } catch (_: Exception) {
+      } finally {
+        try {
+          toneGen?.release()
+        } catch (_: Exception) {
+        }
+      }
+    }
+  }
+}
+
+data class StudyCardHistoryEntry(
+  val card: FlashcardItem,
+  val wasMarkedMastered: Boolean
+)
+
+data class ConfettiParticle(
+  var x: Float,
+  var y: Float,
+  val vx: Float,
+  val vy: Float,
+  val color: Color,
+  val size: Float,
+  var rotation: Float,
+  val vRot: Float
+)
+
+/**
+ * Pure Jetpack Compose Canvas particle effect (`ConfettiOverlay`) for the "All Cards Mastered!"
+ * completion screen. Spawns 50 colorful confetti particles and animates them downward with gravity,
+ * horizontal wind sine drift, and 2D rotation without blocking buttons underneath.
+ */
+@Composable
+fun ConfettiOverlay(
+  modifier: Modifier = Modifier
+) {
+  val confettiColors = remember {
+    listOf(
+      Color(0xFF6366F1), // Indigo
+      Color(0xFF10B981), // Emerald
+      Color(0xFFF59E0B), // Amber
+      Color(0xFFF43F5E), // Coral
+      Color(0xFF8B5CF6), // Violet
+      Color(0xFF06B6D4)  // Cyan
+    )
+  }
+
+  val particles = remember {
+    List(50) { index ->
+      ConfettiParticle(
+        x = (index * 37 % 100) / 100f,
+        y = -Random.nextFloat() * 0.45f,
+        vx = (Random.nextFloat() - 0.5f) * 0.18f,
+        vy = 0.22f + Random.nextFloat() * 0.32f,
+        color = confettiColors[index % confettiColors.size],
+        size = 7f + Random.nextFloat() * 7f,
+        rotation = Random.nextFloat() * 360f,
+        vRot = (Random.nextFloat() - 0.5f) * 240f
+      )
+    }
+  }
+
+  var frameTick by remember { mutableLongStateOf(0L) }
+  var elapsedSeconds by remember { mutableStateOf(0f) }
+
+  LaunchedEffect(Unit) {
+    var lastFrameNanos = 0L
+    while (true) {
+      withFrameNanos { nowNanos ->
+        if (lastFrameNanos == 0L) {
+          lastFrameNanos = nowNanos
+        }
+        val dt = ((nowNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
+        lastFrameNanos = nowNanos
+        elapsedSeconds += dt
+        for ((idx, p) in particles.withIndex()) {
+          val windDrift = sin(elapsedSeconds * 2.5f + idx * 0.4f) * 0.08f
+          p.x += (p.vx + windDrift) * dt
+          p.y += p.vy * dt
+          p.rotation = (p.rotation + p.vRot * dt) % 360f
+          if (p.y > 1.15f) {
+            p.y = -0.08f
+            p.x = Random.nextFloat()
+          }
+          if (p.x < -0.05f) p.x = 1.05f
+          if (p.x > 1.05f) p.x = -0.05f
+        }
+        frameTick = nowNanos
+      }
+    }
+  }
+
+  Canvas(
+    modifier = modifier.testTag("mastery_confetti_overlay")
+  ) {
+    // Read frameTick so Canvas redraws on each animation frame
+    if (frameTick >= 0L) {
+      val canvasW = size.width
+      val canvasH = size.height
+      for (p in particles) {
+        val px = p.x * canvasW
+        val py = p.y * canvasH
+        if (py in -30f..(canvasH + 30f)) {
+          rotate(degrees = p.rotation, pivot = Offset(px, py)) {
+            drawRoundRect(
+              color = p.color,
+              topLeft = Offset(px - p.size / 2f, py - p.size * 0.3f),
+              size = Size(p.size, p.size * 0.6f),
+              cornerRadius = CornerRadius(2f, 2f)
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Interactive Study Mode Screen (`FlashcardStudyScreen`):
  * - Queue Immersion HUD with Remaining/Mastered pills, active card interval micro-badge, and progress bar.
- * - Realistic 3D Card Flip (`rotationY` 0f -> 180f over 320ms with `cameraDistance = 14f * density`
- *   and inner counter-rotation `rotationY = 180f` when `rotation > 90f` so back text is never mirrored).
- * - Both Front/Back flip surfaces, Completion Card, and top Immersion HUD use `palette.cardFill`,
- *   `palette.glassBorder`, `palette.textPrimary`, and `palette.textSecondary`.
+ * - Undo / Previous Card Review System via top HUD button (`Icons.AutoMirrored.Filled.Undo`) and swipe-right gesture.
+ * - Zero-asset audio synthesis (`SoundEffectsManager.playGoodButtonBeep()` and `playMasteryFanfare()`).
+ * - Custom Jetpack Compose `ConfettiOverlay` when all cards are mastered.
  */
 @Composable
 fun FlashcardStudyScreen(
@@ -10107,6 +10749,7 @@ fun FlashcardStudyScreen(
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
+  val coroutineScope = rememberCoroutineScope()
   val palette = currentGlassPalette()
 
   BackHandler {
@@ -10122,14 +10765,50 @@ fun FlashcardStudyScreen(
       addAll(deck.cards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) })
     }
   }
+  val studyHistory = remember(deck.id) {
+    mutableStateListOf<StudyCardHistoryEntry>()
+  }
   var isFlipped by remember(deck.id) { mutableStateOf(false) }
   var cardAdvanceStep by remember(deck.id) { mutableIntStateOf(0) }
   var isResetConfirmDialogOpen by rememberSaveable(deck.id) { mutableStateOf(false) }
+
+  val recordCardHistory = { cardSnapshot: FlashcardItem, markedMastered: Boolean ->
+    studyHistory.add(
+      StudyCardHistoryEntry(
+        card = cardSnapshot.copy(),
+        wasMarkedMastered = markedMastered
+      )
+    )
+    if (studyHistory.size > 20) {
+      studyHistory.removeAt(0)
+    }
+  }
+
+  val performUndoPreviousCard = {
+    if (studyHistory.isNotEmpty()) {
+      playCardHapticSound(context, localView)
+      val lastEntry = studyHistory.removeAt(studyHistory.lastIndex)
+      val restoredCard = lastEntry.card.copy(
+        isMastered = if (lastEntry.wasMarkedMastered) false else lastEntry.card.isMastered,
+        masteryLevel = lastEntry.card.masteryLevel.ifBlank { "New" }
+      )
+      if (lastEntry.wasMarkedMastered) {
+        masteredCards.removeAll { it.id == restoredCard.id }
+        restoredCard.isMastered = false
+      }
+      onRateCard(restoredCard.id, restoredCard.masteryLevel)
+      studyQueue.removeAll { it.id == restoredCard.id }
+      studyQueue.add(0, restoredCard)
+      isFlipped = false
+      cardAdvanceStep++
+    }
+  }
 
   val performStudyReset = {
     playCardHapticSound(context, localView)
     onResetMastery()
     masteredCards.clear()
+    studyHistory.clear()
     studyQueue.clear()
     studyQueue.addAll(deck.cards.map { it.copy(masteryLevel = "New", isMastered = false) })
     isFlipped = false
@@ -10212,6 +10891,33 @@ fun FlashcardStudyScreen(
           color = palette.accentIndigo,
           modifier = Modifier.testTag("study_progress_label")
         )
+      }
+
+      // Top HUD "Undo / Previous Card" Icon Button
+      val canUndo = studyHistory.isNotEmpty()
+      Surface(
+        onClick = {
+          if (canUndo) {
+            performUndoPreviousCard()
+          }
+        },
+        enabled = canUndo,
+        shape = CircleShape,
+        color = if (canUndo) palette.nestedCardFill else palette.trackColor.copy(alpha = 0.45f),
+        border = palette.glassBorder,
+        shadowElevation = if (canUndo) 2.dp else 0.dp,
+        modifier = Modifier
+          .size(40.dp)
+          .testTag("study_top_bar_undo_button")
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.Undo,
+            contentDescription = "Undo Previous Card",
+            tint = if (canUndo) palette.accentIndigo else palette.textSecondary.copy(alpha = 0.45f),
+            modifier = Modifier.size(18.dp)
+          )
+        }
       }
 
       // Top-Right "Reset Deck" Liquid Glass Icon Button
@@ -10393,211 +11099,228 @@ fun FlashcardStudyScreen(
     }
 
     if (studyQueue.isEmpty() || currentCard == null) {
-      // Deck Mastered Celebratory Screen
-      Card(
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = palette.cardFill),
-        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
-        border = BorderStroke(1.5.dp, goodAccentColor.copy(alpha = 0.55f)),
+      LaunchedEffect(Unit) {
+        SoundEffectsManager.playMasteryFanfare(coroutineScope)
+      }
+
+      // Deck Mastered Celebratory Screen + Custom Confetti Celebration Overlay
+      Box(
         modifier = Modifier
           .fillMaxWidth()
           .padding(vertical = metrics.scaledDp(12))
-          .testTag("deck_completed_card")
       ) {
-        Column(
+        Card(
+          shape = RoundedCornerShape(28.dp),
+          colors = CardDefaults.cardColors(containerColor = palette.cardFill),
+          elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+          border = BorderStroke(1.5.dp, goodAccentColor.copy(alpha = 0.55f)),
           modifier = Modifier
             .fillMaxWidth()
-            .padding(metrics.scaledDp(26)),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+            .testTag("deck_completed_card")
         ) {
-          Surface(
-            shape = CircleShape,
-            color = goodAccentColor.copy(alpha = 0.16f),
-            modifier = Modifier.size(72.dp)
-          ) {
-            Box(contentAlignment = Alignment.Center) {
-              Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = "Deck Mastered!",
-                tint = goodAccentColor,
-                modifier = Modifier.size(42.dp)
-              )
-            }
-          }
-
-          Surface(
-            color = goodAccentColor.copy(alpha = 0.14f),
-            shape = CircleShape
-          ) {
-            Text(
-              text = "Deck Mastered!",
-              style = MaterialTheme.typography.labelLarge.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = goodAccentColor,
-              modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-            )
-          }
-
-          Text(
-            text = "All Cards Mastered!",
-            style = MaterialTheme.typography.headlineMedium.copy(
-              fontSize = metrics.scaledSp(26),
-              fontWeight = FontWeight.ExtraBold
-            ),
-            color = palette.textPrimary,
-            textAlign = TextAlign.Center
-          )
-
-          Text(
-            text = "You cycled through every difficult card until 100% mastery was achieved.",
-            style = MaterialTheme.typography.bodyMedium.copy(
-              fontSize = metrics.scaledSp(15),
-              lineHeight = metrics.scaledSp(22),
-              fontWeight = FontWeight.Medium
-            ),
-            color = palette.textSecondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.testTag("deck_completed_total_text")
-          )
-
-          Row(
+          Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(top = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+              .padding(metrics.scaledDp(26)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
           ) {
-            OutlinedButton(
-              onClick = {
-                playCardHapticSound(context, localView)
-                // Keep persisted mastered progress intact when tapping "Study Again"
-                studyQueue.clear()
-                studyQueue.addAll(deck.cards)
-                isFlipped = false
-                cardAdvanceStep++
-              },
-              shape = RoundedCornerShape(20.dp),
-              border = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.65f)),
-              colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = palette.nestedCardFill,
-                contentColor = palette.accentIndigo
+            Surface(
+              shape = CircleShape,
+              color = goodAccentColor.copy(alpha = 0.16f),
+              modifier = Modifier.size(72.dp)
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Filled.CheckCircle,
+                  contentDescription = "Deck Mastered!",
+                  tint = goodAccentColor,
+                  modifier = Modifier.size(42.dp)
+                )
+              }
+            }
+
+            Surface(
+              color = goodAccentColor.copy(alpha = 0.14f),
+              shape = CircleShape
+            ) {
+              Text(
+                text = "Deck Mastered!",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = goodAccentColor,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+              )
+            }
+
+            Text(
+              text = "All Cards Mastered!",
+              style = MaterialTheme.typography.headlineMedium.copy(
+                fontSize = metrics.scaledSp(26),
+                fontWeight = FontWeight.ExtraBold
               ),
-              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+              color = palette.textPrimary,
+              textAlign = TextAlign.Center
+            )
+
+            Text(
+              text = "You cycled through every difficult card until 100% mastery was achieved.",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(15),
+                lineHeight = metrics.scaledSp(22),
+                fontWeight = FontWeight.Medium
+              ),
+              color = palette.textSecondary,
+              textAlign = TextAlign.Center,
+              modifier = Modifier.testTag("deck_completed_total_text")
+            )
+
+            Row(
               modifier = Modifier
-                .weight(1f)
-                .height(46.dp)
-                .testTag("restart_deck_button")
+                .fillMaxWidth()
+                .padding(top = 16.dp),
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              OutlinedButton(
+                onClick = {
+                  playCardHapticSound(context, localView)
+                  // Keep persisted mastered progress intact when tapping "Study Again"
+                  studyHistory.clear()
+                  studyQueue.clear()
+                  studyQueue.addAll(deck.cards)
+                  isFlipped = false
+                  cardAdvanceStep++
+                },
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.65f)),
+                colors = ButtonDefaults.outlinedButtonColors(
+                  containerColor = palette.nestedCardFill,
+                  contentColor = palette.accentIndigo
+                ),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .height(46.dp)
+                  .testTag("restart_deck_button")
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Study Again",
+                    tint = palette.accentIndigo,
+                    modifier = Modifier.size(16.dp)
+                  )
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Text(
+                    text = "Study Again",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    color = palette.accentIndigo
+                  )
+                }
+              }
+
+              Button(
+                onClick = {
+                  playCardHapticSound(context, localView)
+                  onBackToDecks()
+                },
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = Color.Transparent,
+                  contentColor = Color.White
+                ),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .height(46.dp)
+                  .background(
+                    brush = Brush.horizontalGradient(
+                      listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                    ),
+                    shape = RoundedCornerShape(20.dp)
+                  )
+                  .clip(RoundedCornerShape(20.dp))
+                  .testTag("back_to_decks_button")
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.Center
+                ) {
+                  Text(
+                    text = "All Decks",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
+                    color = Color.White
+                  )
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Icon(
+                    imageVector = Icons.Default.ArrowForward,
+                    contentDescription = "All Decks",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                  )
+                }
+              }
+            }
+
+            TextButton(
+              onClick = {
+                performStudyReset()
+              },
+              shape = CircleShape,
+              colors = ButtonDefaults.textButtonColors(
+                containerColor = palette.nestedCardFill,
+                contentColor = palette.textSecondary
+              ),
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+              modifier = Modifier
+                .border(
+                  palette.nestedBorder,
+                  CircleShape
+                )
+                .testTag("reset_deck_mastery_button")
             ) {
               Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
               ) {
                 Icon(
                   imageVector = Icons.Default.Refresh,
-                  contentDescription = "Study Again",
-                  tint = palette.accentIndigo,
-                  modifier = Modifier.size(16.dp)
+                  contentDescription = null,
+                  tint = palette.textSecondary,
+                  modifier = Modifier.size(14.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                  text = "Study Again",
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold,
-                  maxLines = 1,
-                  softWrap = false,
-                  color = palette.accentIndigo
+                  text = "Reset Mastery Progress",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Medium,
+                  color = palette.textSecondary
                 )
               }
-            }
-
-            Button(
-              onClick = {
-                playCardHapticSound(context, localView)
-                onBackToDecks()
-              },
-              shape = RoundedCornerShape(20.dp),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                contentColor = Color.White
-              ),
-              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-              modifier = Modifier
-                .weight(1f)
-                .height(46.dp)
-                .background(
-                  brush = Brush.horizontalGradient(
-                    listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
-                  ),
-                  shape = RoundedCornerShape(20.dp)
-                )
-                .clip(RoundedCornerShape(20.dp))
-                .testTag("back_to_decks_button")
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-              ) {
-                Text(
-                  text = "All Decks",
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold,
-                  maxLines = 1,
-                  softWrap = false,
-                  color = Color.White
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Icon(
-                  imageVector = Icons.Default.ArrowForward,
-                  contentDescription = "All Decks",
-                  tint = Color.White,
-                  modifier = Modifier.size(16.dp)
-                )
-              }
-            }
-          }
-
-          TextButton(
-            onClick = {
-              performStudyReset()
-            },
-            shape = CircleShape,
-            colors = ButtonDefaults.textButtonColors(
-              containerColor = palette.nestedCardFill,
-              contentColor = palette.textSecondary
-            ),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-            modifier = Modifier
-              .border(
-                palette.nestedBorder,
-                CircleShape
-              )
-              .testTag("reset_deck_mastery_button")
-          ) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Default.Refresh,
-                contentDescription = null,
-                tint = palette.textSecondary,
-                modifier = Modifier.size(14.dp)
-              )
-              Text(
-                text = "Reset Mastery Progress",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                color = palette.textSecondary
-              )
             }
           }
         }
+
+        // Confetti Celebration Overlay drawn above card visuals without intercepting button clicks
+        ConfettiOverlay(
+          modifier = Modifier
+            .matchParentSize()
+            .clip(RoundedCornerShape(28.dp))
+        )
       }
     } else {
-      // Smooth Card Advance Animation + 3D Card Flip
+      // Smooth Card Advance Animation + 3D Card Flip + Swipe Right to Undo Gesture
       AnimatedContent(
         targetState = currentCard to cardAdvanceStep,
         transitionSpec = {
@@ -10627,7 +11350,7 @@ fun FlashcardStudyScreen(
           else -> "Current Interval: New Card"
         }
 
-        // Interactive Centered Flashcard as a Tactile Frosted Glass Slab with 3D Rotation
+        // Interactive Centered Flashcard as a Tactile Frosted Glass Slab with 3D Rotation + Swipe-Right Undo
         LiquidGlassCard(
           onClick = {
             playCardHapticSound(context, localView)
@@ -10639,6 +11362,20 @@ fun FlashcardStudyScreen(
           modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = metrics.scaledDp(320))
+            .pointerInput(studyHistory.size) {
+              var accumulatedHorizontalDrag = 0f
+              detectHorizontalDragGestures(
+                onDragStart = { accumulatedHorizontalDrag = 0f },
+                onHorizontalDrag = { change, dragAmount ->
+                  accumulatedHorizontalDrag += dragAmount
+                  if (accumulatedHorizontalDrag > 85f && studyHistory.isNotEmpty()) {
+                    change.consume()
+                    accumulatedHorizontalDrag = 0f
+                    performUndoPreviousCard()
+                  }
+                }
+              )
+            }
             .graphicsLayer {
               rotationY = rotation
               cameraDistance = 14f * density
@@ -10774,7 +11511,11 @@ fun FlashcardStudyScreen(
 
             // Bottom Helper Tip
             Text(
-              text = if (!showingBack) "(Tap card to 3D flip)" else "(Tap card to view question)",
+              text = if (!showingBack) {
+                if (studyHistory.isNotEmpty()) "(Tap card to 3D flip • Swipe right to undo)" else "(Tap card to 3D flip)"
+              } else {
+                "(Tap card to view question)"
+              },
               style = MaterialTheme.typography.bodySmall.copy(
                 fontSize = metrics.scaledSp(12),
                 fontWeight = FontWeight.SemiBold
@@ -10830,6 +11571,7 @@ fun FlashcardStudyScreen(
                 playCardHapticSound(context, localView)
                 if (studyQueue.isNotEmpty()) {
                   val activeCard = studyQueue.first()
+                  recordCardHistory(activeCard, false)
                   onRateCard(activeCard.id, "Again")
                   val updatedCard = activeCard.copy(masteryLevel = "Again")
                   if (studyQueue.size > 2) {
@@ -10902,6 +11644,7 @@ fun FlashcardStudyScreen(
                 playCardHapticSound(context, localView)
                 if (studyQueue.isNotEmpty()) {
                   val activeCard = studyQueue.removeAt(0)
+                  recordCardHistory(activeCard, false)
                   onRateCard(activeCard.id, "Hard")
                   studyQueue.add(activeCard.copy(masteryLevel = "Hard"))
                   isFlipped = false
@@ -10964,9 +11707,10 @@ fun FlashcardStudyScreen(
                 RoundedCornerShape(20.dp)
               )
               .clickable {
-                playCardHapticSound(context, localView)
+                SoundEffectsManager.playGoodButtonBeep()
                 if (studyQueue.isNotEmpty()) {
                   val activeCard = studyQueue.removeAt(0)
+                  recordCardHistory(activeCard, true)
                   activeCard.isMastered = true
                   activeCard.masteryLevel = "Good"
                   onRateCard(activeCard.id, "Good")
