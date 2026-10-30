@@ -169,6 +169,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
@@ -2271,52 +2272,22 @@ enum class LoginValidationResult {
   NETWORK_ERROR
 }
 
-private const val INTERNAL_SIBIL_EMAIL_DOMAIN = "sibil.app"
-
 /**
- * Maps a Sibil Username or Student ID to an internal email address (`"$username@sibil.app"`)
- * so Firebase Authentication (Email/Password provider) accepts it seamlessly without requiring
- * an external mailbox.
+ * Extracts the scholar's trimmed email address from a [FirebaseUser].
  */
-fun formatUsernameAsFirebaseEmail(rawUsername: String): String {
-  val trimmed = rawUsername.trim().lowercase(Locale.US)
-  if (trimmed.isEmpty()) return ""
-  if (trimmed.contains("@")) return trimmed
-  val sanitizedLocal = trimmed
-    .replace(Regex("\\s+"), ".")
-    .replace(Regex("[^a-z0-9._+-]"), "_")
-    .trim('.')
-    .ifEmpty { "scholar" }
-  return "$sanitizedLocal@$INTERNAL_SIBIL_EMAIL_DOMAIN"
-}
-
-/**
- * Extracts the scholar's Username / Student ID from a Firebase internal email (`"$username@sibil.app"`).
- */
-fun extractUsernameFromFirebaseUser(user: FirebaseUser?, fallbackUsername: String = ""): String {
-  if (user == null) return fallbackUsername.trim()
+fun extractUsernameFromFirebaseUser(user: FirebaseUser?, fallbackEmail: String = ""): String {
+  if (user == null) return fallbackEmail.trim()
   val rawEmail = user.email?.trim().orEmpty()
-  val fromEmail = if (rawEmail.endsWith("@$INTERNAL_SIBIL_EMAIL_DOMAIN", ignoreCase = true)) {
-    rawEmail.substringBefore("@").trim()
-  } else if (rawEmail.contains("@")) {
-    rawEmail.substringBefore("@").trim()
-  } else {
-    ""
-  }
-  val preferredFallback = fallbackUsername.trim()
+  if (rawEmail.isNotEmpty()) return rawEmail
+  val preferredFallback = fallbackEmail.trim()
   if (
     preferredFallback.isNotEmpty() &&
     !preferredFallback.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
-    !preferredFallback.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
-    formatUsernameAsFirebaseEmail(preferredFallback).equals(rawEmail, ignoreCase = true)
+    !preferredFallback.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
   ) {
     return preferredFallback
   }
-  return fromEmail.ifBlank {
-    preferredFallback.ifBlank {
-      user.displayName?.trim().orEmpty().ifBlank { user.uid.take(8) }
-    }
-  }
+  return user.displayName?.trim().orEmpty().ifBlank { user.uid.take(8) }
 }
 
 /**
@@ -2334,88 +2305,31 @@ fun getFirebaseAuthOrNull(context: Context? = null): FirebaseAuth? {
 }
 
 /**
- * Returns true if the Firebase failure indicates the Email/Password provider is not yet enabled
- * in the remote console or Firebase is uninitialized in a local unit test environment.
- */
-fun isFirebaseProviderConfigurationError(exception: Throwable?): Boolean {
-  if (exception == null) return false
-  if (exception is IllegalStateException) return true
-  val errorCode = (exception as? FirebaseAuthException)?.errorCode.orEmpty()
-  val msg = exception.message.orEmpty()
-  return errorCode == "ERROR_OPERATION_NOT_ALLOWED" ||
-    errorCode == "ERROR_CONFIGURATION_NOT_FOUND" ||
-    msg.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true) ||
-    msg.contains("OPERATION_NOT_ALLOWED", ignoreCase = true)
-}
-
-/**
- * Maps Firebase Authentication exceptions to clear, user-friendly messages for the Liquid Glass Auth card:
- * - Account already exists
- * - Incorrect password
- * - Weak password (< 6 characters)
- * - Network/connectivity timeout
+ * Maps Firebase Authentication exceptions to clear, user-friendly messages for the Liquid Glass Auth card.
  */
 fun mapFirebaseAuthExceptionToMessage(exception: Throwable?, isSignUp: Boolean): String {
-  if (exception == null) {
-    return if (isSignUp) {
-      "Unable to create account. Please try again."
-    } else {
-      "Incorrect password. Please double-check your credentials and try again."
+  if (isSignUp) {
+    return when (exception) {
+      is FirebaseAuthUserCollisionException -> "An account with this email already exists."
+      is FirebaseAuthWeakPasswordException -> "Password must be at least 6 characters."
+      is FirebaseAuthInvalidCredentialsException -> "Please enter a valid email address."
+      else -> "Registration failed: ${exception?.localizedMessage ?: "Unknown error"}"
     }
-  }
-  val errorCode = (exception as? FirebaseAuthException)?.errorCode.orEmpty()
-  val rawMessage = exception.message.orEmpty()
-
-  return when {
-    exception is FirebaseAuthWeakPasswordException ||
-      errorCode == "ERROR_WEAK_PASSWORD" ||
-      rawMessage.contains("WEAK_PASSWORD", ignoreCase = true) ||
-      rawMessage.contains("at least 6 characters", ignoreCase = true) -> {
-      "Weak password: Password must be at least 6 characters long."
-    }
-    exception is FirebaseAuthUserCollisionException ||
-      errorCode == "ERROR_EMAIL_ALREADY_IN_USE" ||
-      errorCode == "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL" ||
-      rawMessage.contains("EMAIL_EXISTS", ignoreCase = true) ||
-      rawMessage.contains("already in use", ignoreCase = true) -> {
-      "Account already exists for this Username / Student ID. Please log in instead."
-    }
-    exception is FirebaseNetworkException ||
+  } else {
+    val errorCode = (exception as? FirebaseAuthException)?.errorCode.orEmpty()
+    val rawMessage = exception?.message.orEmpty()
+    val isNetworkFailure = exception is FirebaseNetworkException ||
       exception is java.net.SocketTimeoutException ||
       exception is java.net.UnknownHostException ||
       exception is java.io.IOException ||
       errorCode == "ERROR_NETWORK_REQUEST_FAILED" ||
       rawMessage.contains("network", ignoreCase = true) ||
       rawMessage.contains("timeout", ignoreCase = true) ||
-      rawMessage.contains("unreachable", ignoreCase = true) -> {
-      "Network connection timeout. Please check your internet connection and try again."
-    }
-    exception is FirebaseAuthInvalidUserException ||
-      errorCode == "ERROR_USER_NOT_FOUND" ||
-      rawMessage.contains("USER_NOT_FOUND", ignoreCase = true) ||
-      rawMessage.contains("no user record", ignoreCase = true) -> {
-      "No scholar account found for this Username / Student ID. Please sign up first."
-    }
-    exception is FirebaseAuthInvalidCredentialsException ||
-      errorCode == "ERROR_WRONG_PASSWORD" ||
-      errorCode == "ERROR_INVALID_CREDENTIAL" ||
-      errorCode == "ERROR_INVALID_EMAIL" ||
-      rawMessage.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) ||
-      rawMessage.contains("WRONG_PASSWORD", ignoreCase = true) ||
-      rawMessage.contains("password is invalid", ignoreCase = true) -> {
-      "Incorrect password. Please double-check your password and try again."
-    }
-    errorCode == "ERROR_TOO_MANY_REQUESTS" ||
-      rawMessage.contains("TOO_MANY_ATTEMPTS", ignoreCase = true) ||
-      rawMessage.contains("blocked all requests", ignoreCase = true) -> {
-      "Too many failed login attempts. Please wait a moment and try again."
-    }
-    else -> {
-      if (isSignUp) {
-        "Unable to create account. Please verify your details and try again."
-      } else {
-        "Incorrect password. Please double-check your password and try again."
-      }
+      rawMessage.contains("unreachable", ignoreCase = true)
+    return if (isNetworkFailure) {
+      "Network error. Please check your internet connection."
+    } else {
+      "Invalid email or password. Please check your credentials."
     }
   }
 }
@@ -3761,16 +3675,14 @@ class TaskViewModel(
     selectedTaskFolder = folderName.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
   }
 
-  val isGuestMode: Boolean
-    get() = username.isBlank() ||
-      username.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
-      username.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
+  var isGuestMode by mutableStateOf(false)
+    private set
 
   val currentAccountKey: String
     get() = if (isGuestMode) {
       LocalStorageManager.GUEST_ACCOUNT_KEY
     } else {
-      username.trim().lowercase(Locale.US)
+      username.trim().lowercase(Locale.US).ifBlank { LocalStorageManager.GUEST_ACCOUNT_KEY }
     }
 
   // Default state of the Task list is completely empty (no hardcoded placeholder tasks)
@@ -3834,33 +3746,25 @@ class TaskViewModel(
     if (firebaseUser != null) {
       val resolvedUser = extractUsernameFromFirebaseUser(
         user = firebaseUser,
-        fallbackUsername = savedUserName.orEmpty()
-      ).ifBlank { "scholar" }
+        fallbackEmail = savedUserName.orEmpty()
+      ).ifBlank { "scholar@sibil.app" }
       val resolvedDisplay = firebaseUser.displayName?.trim().orEmpty().ifBlank {
         manager.getDisplayNameForUser(resolvedUser)
-      }.ifBlank { resolvedUser }
+      }.ifBlank { resolvedUser.substringBefore("@").ifBlank { resolvedUser } }
+      isGuestMode = false
       username = resolvedUser
       displayName = resolvedDisplay
       hasSavedSession = true
       manager.saveUserProfile(resolvedUser, resolvedDisplay)
       loadAccountDataForKey(manager, currentAccountKey)
-    } else if (manager.hasActiveAuthSession() && !savedUserName.isNullOrBlank()) {
-      username = if (
-        savedUserName.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
-        savedUserName.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
-      ) {
-        LocalStorageManager.GUEST_DISPLAY_NAME
-      } else {
-        savedUserName.trim()
-      }
-      displayName = if (isGuestMode) {
-        LocalStorageManager.GUEST_DISPLAY_NAME
-      } else {
-        manager.getDisplayNameForUser(username)
-      }
+    } else if (manager.isAuthGuest()) {
+      isGuestMode = true
+      username = LocalStorageManager.GUEST_DISPLAY_NAME
+      displayName = LocalStorageManager.GUEST_DISPLAY_NAME
       hasSavedSession = true
-      loadAccountDataForKey(manager, currentAccountKey)
+      loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
     } else {
+      isGuestMode = false
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
     }
@@ -3874,11 +3778,12 @@ class TaskViewModel(
     val savedUserName = storageManager?.loadUserName().orEmpty()
     val resolvedUser = extractUsernameFromFirebaseUser(
       user = firebaseUser,
-      fallbackUsername = savedUserName
-    ).ifBlank { "scholar" }
+      fallbackEmail = savedUserName
+    ).ifBlank { "scholar@sibil.app" }
     val resolvedDisplay = firebaseUser.displayName?.trim().orEmpty().ifBlank {
       storageManager?.getDisplayNameForUser(resolvedUser).orEmpty()
-    }.ifBlank { resolvedUser }
+    }.ifBlank { resolvedUser.substringBefore("@").ifBlank { resolvedUser } }
+    isGuestMode = false
     loginWithUsername(resolvedUser, resolvedDisplay)
   }
 
@@ -4243,11 +4148,12 @@ class TaskViewModel(
 
   fun loginWithUsername(typedUsername: String, explicitDisplayName: String = "") {
     val cleanUsername = typedUsername.trim()
+    isGuestMode = false
     username = if (cleanUsername.isEmpty()) LocalStorageManager.GUEST_DISPLAY_NAME else cleanUsername
     val resolvedDisplay = explicitDisplayName.trim().ifBlank {
-      storageManager?.getDisplayNameForUser(username) ?: username
+      storageManager?.getDisplayNameForUser(username) ?: username.substringBefore("@").ifBlank { username }
     }
-    displayName = if (isGuestMode) LocalStorageManager.GUEST_DISPLAY_NAME else resolvedDisplay
+    displayName = resolvedDisplay
     hasSavedSession = true
     storageManager?.let { manager ->
       loadAccountDataForKey(manager, currentAccountKey)
@@ -4256,6 +4162,7 @@ class TaskViewModel(
   }
 
   fun loginAsGuest() {
+    isGuestMode = true
     username = LocalStorageManager.GUEST_DISPLAY_NAME
     displayName = LocalStorageManager.GUEST_DISPLAY_NAME
     hasSavedSession = true
@@ -4267,7 +4174,7 @@ class TaskViewModel(
 
   /**
    * Logs out the current user by calling `FirebaseAuth.getInstance().signOut()` and clearing
-   * `auth_is_logged_in` and `auth_is_guest`, safely returning the user to the Login screen
+   * `isGuestMode`, `auth_is_logged_in`, and `auth_is_guest`, safely returning the user to the Login screen
    * without deleting their created decks or formula favorites.
    */
   fun logout() {
@@ -4275,6 +4182,7 @@ class TaskViewModel(
       FirebaseAuth.getInstance().signOut()
     } catch (_: Throwable) {
     }
+    isGuestMode = false
     hasSavedSession = false
     storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
@@ -4984,23 +4892,39 @@ fun CivilEngineeringProductivityApp(
       colorScheme = dynamicColorScheme,
       typography = Typography
     ) {
-      // App Launch Check:
-      // 1. Check FirebaseAuth.getInstance().currentUser on app launch.
-      // 2. If a current Firebase user exists (or an active Offline Scholar / local session is saved),
-      //    bypass the Login screen and open the Dashboard directly.
-      // 3. Otherwise, show the Liquid Glass Auth Screen.
+      // Cross-Device Persistence & Auto-Login:
+      // 1. On app launch, check val user = FirebaseAuth.getInstance().currentUser.
+      // 2. If user != null OR isGuestMode == true: navigate straight to the Dashboard (bypassing Auth screen).
+      // 3. If user == null AND !isGuestMode: show the Liquid Glass Auth Screen.
       val initialFirebaseUser = remember {
-        getFirebaseAuthOrNull(context)?.currentUser
+        try {
+          FirebaseAuth.getInstance().currentUser
+        } catch (_: Throwable) {
+          getFirebaseAuthOrNull(context)?.currentUser
+        }
+      }
+      var isGuestMode by rememberSaveable {
+        mutableStateOf(resolvedViewModel.isGuestMode)
       }
       var isLoggedIn by rememberSaveable {
-        mutableStateOf(initialFirebaseUser != null || resolvedViewModel.hasSavedSession)
+        mutableStateOf(initialFirebaseUser != null || isGuestMode)
       }
 
-      LaunchedEffect(initialFirebaseUser) {
-        val activeFirebaseUser = getFirebaseAuthOrNull(context)?.currentUser
-        if (activeFirebaseUser != null) {
-          resolvedViewModel.restoreSessionFromFirebaseUser(activeFirebaseUser)
+      LaunchedEffect(Unit) {
+        val user = try {
+          FirebaseAuth.getInstance().currentUser
+        } catch (_: Throwable) {
+          getFirebaseAuthOrNull(context)?.currentUser
+        }
+        if (user != null) {
+          isGuestMode = false
+          resolvedViewModel.restoreSessionFromFirebaseUser(user)
           isLoggedIn = true
+        } else if (resolvedViewModel.isGuestMode || isGuestMode) {
+          isGuestMode = true
+          isLoggedIn = true
+        } else {
+          isLoggedIn = false
         }
       }
 
@@ -5011,52 +4935,46 @@ fun CivilEngineeringProductivityApp(
       ) { loggedIn ->
         if (!loggedIn) {
           StartupLoginScreen(
-            onAttemptLogin = { typedUsername, typedPassword ->
-              val result = resolvedViewModel.attemptLogin(typedUsername, typedPassword)
+            onAttemptLogin = { typedEmail, typedPassword ->
+              val result = resolvedViewModel.attemptLogin(typedEmail, typedPassword)
               if (result == LoginValidationResult.SUCCESS) {
+                isGuestMode = false
                 isLoggedIn = true
               }
               result
             },
-            onFirebaseLoginSuccess = { loggedInUsername, firebaseDisplayName, enteredPassword ->
+            onFirebaseLoginSuccess = { loggedInEmail, firebaseDisplayName, enteredPassword ->
+              isGuestMode = false
               if (
                 enteredPassword.isNotBlank() &&
-                !resolvedViewModel.isUsernameRegistered(loggedInUsername)
+                !resolvedViewModel.isUsernameRegistered(loggedInEmail)
               ) {
                 resolvedViewModel.completeSignUp(
-                  usernameToRegister = loggedInUsername,
+                  usernameToRegister = loggedInEmail,
                   password = enteredPassword,
                   displayNameToRegister = firebaseDisplayName,
                   recoveryPinToRegister = ""
                 )
               } else {
-                resolvedViewModel.loginWithUsername(loggedInUsername, firebaseDisplayName)
+                resolvedViewModel.loginWithUsername(loggedInEmail, firebaseDisplayName)
               }
               isLoggedIn = true
             },
-            onCheckUsernameRegistered = { usernameToCheck ->
-              resolvedViewModel.isUsernameRegistered(usernameToCheck)
+            onCheckUsernameRegistered = { emailToCheck ->
+              resolvedViewModel.isUsernameRegistered(emailToCheck)
             },
-            onCompleteSignUp = { registeredUsername, createdPassword, displayName, recoveryPin ->
+            onCompleteSignUp = { registeredEmail, createdPassword, displayName, recoveryPin ->
+              isGuestMode = false
               resolvedViewModel.completeSignUp(
-                usernameToRegister = registeredUsername,
+                usernameToRegister = registeredEmail,
                 password = createdPassword,
                 displayNameToRegister = displayName,
                 recoveryPinToRegister = recoveryPin
               )
               isLoggedIn = true
             },
-            onVerifyRecoveryPin = { usernameToRecover, enteredPin ->
-              resolvedViewModel.verifyRecoveryPin(usernameToRecover, enteredPin)
-            },
-            onResetPasswordWithPin = { usernameToRecover, enteredPin, newPassword ->
-              resolvedViewModel.resetPasswordWithRecoveryPin(
-                username = usernameToRecover,
-                enteredPin = enteredPin,
-                newPassword = newPassword
-              )
-            },
             onContinueAsGuest = {
+              isGuestMode = true
               resolvedViewModel.loginAsGuest()
               isLoggedIn = true
             }
@@ -5069,6 +4987,7 @@ fun CivilEngineeringProductivityApp(
                 FirebaseAuth.getInstance().signOut()
               } catch (_: Throwable) {
               }
+              isGuestMode = false
               resolvedViewModel.logout()
               isLoggedIn = false
             }
@@ -5080,22 +4999,27 @@ fun CivilEngineeringProductivityApp(
 }
 
 /**
- * High-Depth Liquid Glass Login & Sign-Up Screen featuring:
- * - SHA-256 password and 4-Digit Recovery PIN hashing (`hashSecret`).
- * - Ambient radial mesh background with subtle indigo, violet, and dark slate tones.
- * - Centered squircle card (`28.dp` corner radius) with soft drop shadow and specular glass rim.
- * - App Header inside glowing glass pill: `"Sibil"` (Bold, `24.sp`) & `"Civil Engineering Board Examination Companion"` (`12.sp`).
- * - Animated frosted pill switcher between `"Log In"` and `"Sign Up"` (`animateDpAsState`).
- * - Elevated Glass Input Capsules (`14.dp` radius) with subtle glowing outline when focused.
- * - Local Recovery Modal (`"Forgot Password?"`) using Username + 4-Digit Recovery PIN.
- * - `"Continue as Offline Scholar →"` guest bypass.
+ * Refined Liquid Glass Login & Sign-Up Screen with Real Email & Password Firebase Authentication:
+ * - Centered responsive card (`Modifier.fillMaxWidth().widthIn(max = 440.dp).padding(20.dp)`).
+ * - Frosted glass card with specular gradient border and subtle depth shadow.
+ * - Animated segmented pill slider at the top of the card switching between `"Log In"` and `"Sign Up"`.
+ * - Clean rounded glass input containers (`14.dp` corner radius) with glowing outline when active.
+ * - Cloud Registration (Sign Up):
+ *   1. Full Name / Nickname (`Icons.Default.Badge`)
+ *   2. Email Address (`Icons.Default.Email`, `KeyboardType.Email`, `KeyboardCapitalization.None`)
+ *   3. Password (`Icons.Default.Lock`, min 6 characters, eye toggle)
+ * - Cloud Login (Log In):
+ *   1. Email Address (`Icons.Default.Email`, `KeyboardType.Email`, `KeyboardCapitalization.None`)
+ *   2. Password (`Icons.Default.Lock`, eye toggle)
+ * - Submit Button (`"Sign In"` or `"Create Account"`) disabled while `isLoading` is true with a circular progress spinner.
+ * - `"Continue as Offline Scholar →"` guest bypass at the bottom.
  */
 @Composable
 fun StartupLoginScreen(
-  onAttemptLogin: (String, String) -> LoginValidationResult,
-  onFirebaseLoginSuccess: (username: String, displayName: String, password: String) -> Unit = { _, _, _ -> },
-  onCheckUsernameRegistered: (String) -> Boolean,
-  onCompleteSignUp: (username: String, password: String, displayName: String, recoveryPin: String) -> Unit,
+  onAttemptLogin: (String, String) -> LoginValidationResult = { _, _ -> LoginValidationResult.NO_ACCOUNT_FOUND },
+  onFirebaseLoginSuccess: (email: String, displayName: String, password: String) -> Unit = { _, _, _ -> },
+  onCheckUsernameRegistered: (String) -> Boolean = { false },
+  onCompleteSignUp: (email: String, password: String, displayName: String, recoveryPin: String) -> Unit = { _, _, _, _ -> },
   onVerifyRecoveryPin: (username: String, pin: String) -> Boolean = { _, _ -> false },
   onResetPasswordWithPin: (username: String, pin: String, newPassword: String) -> Boolean = { _, _, _ -> false },
   onContinueAsGuest: () -> Unit,
@@ -5107,30 +5031,23 @@ fun StartupLoginScreen(
 
   // Mode toggle: false = "Log In", true = "Sign Up"
   var isSignUpMode by rememberSaveable { mutableStateOf(false) }
-  var displayName by rememberSaveable { mutableStateOf("") }
-  var username by rememberSaveable { mutableStateOf("") }
+  var fullName by rememberSaveable { mutableStateOf("") }
+  var email by rememberSaveable { mutableStateOf("") }
   var password by rememberSaveable { mutableStateOf("") }
-  var recoveryPin by rememberSaveable { mutableStateOf("") }
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
-  var isPinVisible by rememberSaveable { mutableStateOf(false) }
-  var isAuthLoading by remember { mutableStateOf(false) }
+  var isLoading by remember { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
-  var loginSuccessMessage by rememberSaveable { mutableStateOf<String?>(null) }
-  var isForgotPasswordModalOpen by rememberSaveable { mutableStateOf(false) }
-  var isSignUpDialogOpen by rememberSaveable { mutableStateOf(false) }
-  var isGuestWarningDialogOpen by rememberSaveable { mutableStateOf(false) }
 
   // Focus states for elevated glass input capsules
-  var isDisplayNameFocused by remember { mutableStateOf(false) }
-  var isUsernameFocused by remember { mutableStateOf(false) }
+  var isFullNameFocused by remember { mutableStateOf(false) }
+  var isEmailFocused by remember { mutableStateOf(false) }
   var isPasswordFocused by remember { mutableStateOf(false) }
-  var isPinFocused by remember { mutableStateOf(false) }
 
   // Primary button press-scale animation
   val primaryButtonInteraction = remember { MutableInteractionSource() }
   val isPrimaryPressed by primaryButtonInteraction.collectIsPressedAsState()
   val pressScale by animateFloatAsState(
-    targetValue = if (isPrimaryPressed) 0.96f else 1.0f,
+    targetValue = if (isPrimaryPressed && !isLoading) 0.96f else 1.0f,
     animationSpec = spring(
       dampingRatio = Spring.DampingRatioMediumBouncy,
       stiffness = Spring.StiffnessMediumLow
@@ -5139,144 +5056,99 @@ fun StartupLoginScreen(
   )
 
   fun handlePrimaryAuthAction() {
-    if (isAuthLoading) return
-    val cleanUsername = username.trim()
-    loginSuccessMessage = null
+    if (isLoading) return
+    val trimmedEmail = email.trim()
 
     if (!isSignUpMode) {
-      if (cleanUsername.isBlank() || password.isEmpty()) {
-        loginErrorMessage = "Invalid username or password"
-        return
-      }
-      if (password.length < 6 && !onCheckUsernameRegistered(cleanUsername)) {
-        loginErrorMessage = "Weak password: Password must be at least 6 characters long."
+      if (trimmedEmail.isBlank() || password.isEmpty()) {
+        loginErrorMessage = "Invalid email or password. Please check your credentials."
         return
       }
 
-      val internalEmail = formatUsernameAsFirebaseEmail(cleanUsername)
-      val firebaseAuth = getFirebaseAuthOrNull(context)
-      if (firebaseAuth == null) {
-        when (onAttemptLogin(cleanUsername, password)) {
-          LoginValidationResult.SUCCESS -> loginErrorMessage = null
-          LoginValidationResult.NO_ACCOUNT_FOUND -> {
-            loginErrorMessage = "No scholar account found for this Username / Student ID. Please sign up first."
-          }
-          LoginValidationResult.INCORRECT_PASSWORD -> {
-            loginErrorMessage = "Incorrect password. Please double-check your password and try again."
-          }
-          else -> {
-            loginErrorMessage = "Invalid username or password"
-          }
-        }
-        return
-      }
-
-      isAuthLoading = true
+      isLoading = true
       loginErrorMessage = null
-      firebaseAuth
-        .signInWithEmailAndPassword(internalEmail, password)
-        .addOnCompleteListener { task ->
-          isAuthLoading = false
-          if (task.isSuccessful) {
-            val firebaseUser = task.result?.user ?: firebaseAuth.currentUser
-            val resolvedUsername = extractUsernameFromFirebaseUser(firebaseUser, cleanUsername)
-              .ifBlank { cleanUsername }
-            val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
-              .ifBlank { resolvedUsername }
-            loginErrorMessage = null
-            onFirebaseLoginSuccess(resolvedUsername, resolvedDisplayName, password)
-          } else {
-            val exception = task.exception
-            // If account was created locally or Email/Password provider is not yet enabled in Console,
-            // verify against local SHA-256 credentials before showing an error.
-            if (onCheckUsernameRegistered(cleanUsername)) {
-              when (onAttemptLogin(cleanUsername, password)) {
-                LoginValidationResult.SUCCESS -> {
-                  loginErrorMessage = null
-                  return@addOnCompleteListener
-                }
-                LoginValidationResult.INCORRECT_PASSWORD -> {
-                  loginErrorMessage = "Incorrect password. Please double-check your password and try again."
-                  return@addOnCompleteListener
-                }
-                else -> {}
-              }
-            } else if (isFirebaseProviderConfigurationError(exception)) {
-              loginErrorMessage = "No scholar account found for this Username / Student ID. Please sign up first."
-              return@addOnCompleteListener
-            }
-            loginErrorMessage = mapFirebaseAuthExceptionToMessage(exception, isSignUp = false)
-          }
+      try {
+        if (FirebaseApp.getApps(context).isEmpty()) {
+          FirebaseApp.initializeApp(context)
         }
+        FirebaseAuth.getInstance()
+          .signInWithEmailAndPassword(trimmedEmail, password)
+          .addOnSuccessListener { authResult ->
+            isLoading = false
+            val firebaseUser = authResult.user ?: FirebaseAuth.getInstance().currentUser
+            val resolvedEmail = firebaseUser?.email?.trim().orEmpty().ifBlank { trimmedEmail }
+            val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
+              .ifBlank { resolvedEmail.substringBefore("@").ifBlank { resolvedEmail } }
+            loginErrorMessage = null
+            onFirebaseLoginSuccess(resolvedEmail, resolvedDisplayName, password)
+          }
+          .addOnFailureListener { e ->
+            isLoading = false
+            loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
+          }
+      } catch (e: Throwable) {
+        isLoading = false
+        loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
+      }
     } else {
-      val cleanDisplay = displayName.trim()
-      val cleanPin = recoveryPin.trim()
-      if (cleanDisplay.isBlank()) {
-        loginErrorMessage = "Please enter your Full Name / Nickname"
+      val trimmedFullName = fullName.trim()
+      if (trimmedFullName.isBlank()) {
+        loginErrorMessage = "Registration failed: Please enter your Full Name / Nickname."
         return
       }
-      if (cleanUsername.isBlank()) {
-        loginErrorMessage = "Please enter a Username / Student ID"
-        return
-      }
-      if (onCheckUsernameRegistered(cleanUsername)) {
-        loginErrorMessage = "Account already exists for this Username / Student ID. Please log in instead."
-        return
-      }
-      if (password.isBlank()) {
-        loginErrorMessage = "Please create a password"
+      if (trimmedEmail.isBlank()) {
+        loginErrorMessage = "Please enter a valid email address."
         return
       }
       if (password.length < 6) {
-        loginErrorMessage = "Weak password: Password must be at least 6 characters long."
-        return
-      }
-      if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
-        loginErrorMessage = "Please enter a 4-digit numeric Recovery PIN"
+        loginErrorMessage = "Password must be at least 6 characters."
         return
       }
 
-      val internalEmail = formatUsernameAsFirebaseEmail(cleanUsername)
-      val firebaseAuth = getFirebaseAuthOrNull(context)
-      if (firebaseAuth == null) {
-        loginErrorMessage = null
-        onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
-        return
-      }
-
-      isAuthLoading = true
+      isLoading = true
       loginErrorMessage = null
-      firebaseAuth
-        .createUserWithEmailAndPassword(internalEmail, password)
-        .addOnCompleteListener { createTask ->
-          if (createTask.isSuccessful) {
-            val createdUser = createTask.result?.user ?: firebaseAuth.currentUser
-            val profileChangeRequest = UserProfileChangeRequest.Builder()
-              .setDisplayName(cleanDisplay)
+      try {
+        if (FirebaseApp.getApps(context).isEmpty()) {
+          FirebaseApp.initializeApp(context)
+        }
+        FirebaseAuth.getInstance()
+          .createUserWithEmailAndPassword(trimmedEmail, password)
+          .addOnSuccessListener { it ->
+            val profileUpdate = UserProfileChangeRequest.Builder()
+              .setDisplayName(trimmedFullName)
               .build()
+            val createdUser = it.user
             if (createdUser != null) {
-              createdUser.updateProfile(profileChangeRequest)
+              createdUser.updateProfile(profileUpdate)
                 .addOnCompleteListener {
-                  isAuthLoading = false
+                  isLoading = false
                   loginErrorMessage = null
-                  onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+                  onCompleteSignUp(trimmedEmail, password, trimmedFullName, "")
                 }
             } else {
-              isAuthLoading = false
+              isLoading = false
               loginErrorMessage = null
-              onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
-            }
-          } else {
-            isAuthLoading = false
-            val exception = createTask.exception
-            if (isFirebaseProviderConfigurationError(exception)) {
-              loginErrorMessage = null
-              onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
-            } else {
-              loginErrorMessage = mapFirebaseAuthExceptionToMessage(exception, isSignUp = true)
+              onCompleteSignUp(trimmedEmail, password, trimmedFullName, "")
             }
           }
+          .addOnFailureListener { e ->
+            isLoading = false
+            loginErrorMessage = when (e) {
+              is FirebaseAuthUserCollisionException -> "An account with this email already exists."
+              is FirebaseAuthWeakPasswordException -> "Password must be at least 6 characters."
+              is FirebaseAuthInvalidCredentialsException -> "Please enter a valid email address."
+              else -> "Registration failed: ${e.localizedMessage}"
+            }
+          }
+      } catch (e: Throwable) {
+        isLoading = false
+        loginErrorMessage = when (e) {
+          is FirebaseAuthUserCollisionException -> "An account with this email already exists."
+          is FirebaseAuthWeakPasswordException -> "Password must be at least 6 characters."
+          is FirebaseAuthInvalidCredentialsException -> "Please enter a valid email address."
+          else -> "Registration failed: ${e.localizedMessage}"
         }
+      }
     }
   }
 
@@ -5349,17 +5221,14 @@ fun StartupLoginScreen(
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .widthIn(max = if (metrics.screenWidthDp > 600) 500.dp else 430.dp)
+        .widthIn(max = 440.dp)
         .windowInsetsPadding(WindowInsets.safeDrawing)
         .verticalScroll(rememberScrollState())
-        .padding(
-          horizontal = metrics.scaledDp(20),
-          vertical = metrics.scaledDp(22)
-        ),
+        .padding(20.dp),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
       // Main Glass Authentication Card:
-      // Centered squircle card (28.dp corner radius) with soft drop shadow and specular glass rim.
+      // Centered frosted glass card (28.dp corner radius) with specular gradient border and subtle depth shadow.
       val cardShape = RoundedCornerShape(28.dp)
       Box(
         modifier = Modifier
@@ -5500,7 +5369,7 @@ fun StartupLoginScreen(
           }
 
           // Animated Mode Switcher:
-          // Frosted pill toggle at top of the card switching between "Log In" and "Sign Up"
+          // Segmented pill slider at top of the card switching between "Log In" and "Sign Up"
           BoxWithConstraints(
             modifier = Modifier
               .fillMaxWidth()
@@ -5559,10 +5428,9 @@ fun StartupLoginScreen(
                   .weight(1f)
                   .fillMaxHeight()
                   .clip(CircleShape)
-                  .clickable {
+                  .clickable(enabled = !isLoading) {
                     isSignUpMode = false
                     loginErrorMessage = null
-                    loginSuccessMessage = null
                   }
                   .testTag("auth_mode_login_tab"),
                 contentAlignment = Alignment.Center
@@ -5582,10 +5450,9 @@ fun StartupLoginScreen(
                   .weight(1f)
                   .fillMaxHeight()
                   .clip(CircleShape)
-                  .clickable {
+                  .clickable(enabled = !isLoading) {
                     isSignUpMode = true
                     loginErrorMessage = null
-                    loginSuccessMessage = null
                   }
                   .testTag("sign_up_button"),
                 contentAlignment = Alignment.Center
@@ -5609,16 +5476,16 @@ fun StartupLoginScreen(
             exit = shrinkVertically() + fadeOut()
           ) {
             GlassElevatedInputCapsule(
-              value = displayName,
+              value = fullName,
               onValueChange = {
-                displayName = it
+                fullName = it
                 if (loginErrorMessage != null) loginErrorMessage = null
               },
               label = "Full Name / Nickname",
               placeholder = "Engr. Juan Dela Cruz",
               leadingIcon = Icons.Default.Badge,
-              isFocused = isDisplayNameFocused,
-              onFocusChange = { isDisplayNameFocused = it },
+              isFocused = isFullNameFocused,
+              onFocusChange = { isFullNameFocused = it },
               keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.Words,
                 keyboardType = KeyboardType.Text,
@@ -5631,22 +5498,22 @@ fun StartupLoginScreen(
             )
           }
 
-          // Username / Student ID Field
-          // Log In Leading Icon: Icons.Default.Person
-          // Sign Up Leading Icon: Icons.Default.AccountCircle
+          // Email Address Field (Icons.Default.Email, KeyboardType.Email, KeyboardCapitalization.None)
           GlassElevatedInputCapsule(
-            value = username,
+            value = email,
             onValueChange = {
-              username = it
+              email = it
               if (loginErrorMessage != null) loginErrorMessage = null
             },
-            label = "Username / Student ID",
-            placeholder = "Enter your username or student ID",
-            leadingIcon = if (isSignUpMode) Icons.Default.AccountCircle else Icons.Default.Person,
-            isFocused = isUsernameFocused,
-            onFocusChange = { isUsernameFocused = it },
+            label = "Email Address",
+            placeholder = "scholar@university.edu",
+            leadingIcon = Icons.Default.Email,
+            isFocused = isEmailFocused,
+            onFocusChange = { isEmailFocused = it },
             keyboardOptions = KeyboardOptions(
-              keyboardType = KeyboardType.Text,
+              capitalization = KeyboardCapitalization.None,
+              autoCorrectEnabled = false,
+              keyboardType = KeyboardType.Email,
               imeAction = ImeAction.Next
             ),
             metrics = metrics,
@@ -5655,7 +5522,7 @@ fun StartupLoginScreen(
               .testTag("login_username_input")
           )
 
-          // Password Field (Leading Icon: Icons.Default.Lock, Trailing Icon: Eye toggle)
+          // Password Field (Icons.Default.Lock, min 6 characters on Sign Up, eye toggle)
           GlassElevatedInputCapsule(
             value = password,
             onValueChange = {
@@ -5663,7 +5530,7 @@ fun StartupLoginScreen(
               if (loginErrorMessage != null) loginErrorMessage = null
             },
             label = "Password",
-            placeholder = "Enter your password",
+            placeholder = if (isSignUpMode) "At least 6 characters" else "Enter your password",
             leadingIcon = Icons.Default.Lock,
             isFocused = isPasswordFocused,
             onFocusChange = { isPasswordFocused = it },
@@ -5671,13 +5538,12 @@ fun StartupLoginScreen(
             isPasswordVisible = isPasswordVisible,
             onTogglePasswordVisibility = { isPasswordVisible = !isPasswordVisible },
             keyboardOptions = KeyboardOptions(
+              capitalization = KeyboardCapitalization.None,
               keyboardType = KeyboardType.Password,
-              imeAction = if (isSignUpMode) ImeAction.Next else ImeAction.Done
+              imeAction = ImeAction.Done
             ),
             keyboardActions = KeyboardActions(
-              onDone = {
-                if (!isSignUpMode) handlePrimaryAuthAction()
-              }
+              onDone = { handlePrimaryAuthAction() }
             ),
             metrics = metrics,
             modifier = Modifier
@@ -5685,90 +5551,7 @@ fun StartupLoginScreen(
               .testTag("login_password_input")
           )
 
-          // Forgot Password? trigger button on Login tab
-          AnimatedVisibility(
-            visible = !isSignUpMode,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-          ) {
-            Box(
-              modifier = Modifier.fillMaxWidth(),
-              contentAlignment = Alignment.CenterEnd
-            ) {
-              TextButton(
-                onClick = {
-                  loginErrorMessage = null
-                  loginSuccessMessage = null
-                  isForgotPasswordModalOpen = true
-                },
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                modifier = Modifier.testTag("forgot_password_button")
-              ) {
-                Text(
-                  text = "Forgot Password?",
-                  style = MaterialTheme.typography.labelLarge.copy(
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.accentIndigo
-                )
-              }
-            }
-          }
-
-          // Sign Up Field 4: 4-Digit Recovery PIN (Leading Icon: Icons.Default.Key, 4-digit numeric keyboard filter)
-          AnimatedVisibility(
-            visible = isSignUpMode,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-          ) {
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-              GlassElevatedInputCapsule(
-                value = recoveryPin,
-                onValueChange = { rawPin ->
-                  val digitsOnly = rawPin.filter { it.isDigit() }.take(4)
-                  recoveryPin = digitsOnly
-                  if (loginErrorMessage != null) loginErrorMessage = null
-                },
-                label = "4-Digit Recovery PIN",
-                placeholder = "e.g., 2026",
-                leadingIcon = Icons.Default.Key,
-                isFocused = isPinFocused,
-                onFocusChange = { isPinFocused = it },
-                isPassword = true,
-                isPasswordVisible = isPinVisible,
-                onTogglePasswordVisibility = { isPinVisible = !isPinVisible },
-                keyboardOptions = KeyboardOptions(
-                  keyboardType = KeyboardType.NumberPassword,
-                  imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                  onDone = { handlePrimaryAuthAction() }
-                ),
-                metrics = metrics,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("signup_recovery_pin_input")
-              )
-
-              Text(
-                text = "Used to reset your password if you ever forget it.",
-                style = MaterialTheme.typography.bodySmall.copy(
-                  fontSize = 11.5.sp,
-                  fontWeight = FontWeight.Medium
-                ),
-                color = palette.textSecondary.copy(alpha = 0.85f),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(horizontal = 6.dp)
-              )
-            }
-          }
-
-          // Validation Error Badge
+          // Clear Glass Error Badge
           loginErrorMessage?.let { errorText ->
             Surface(
               shape = RoundedCornerShape(14.dp),
@@ -5792,35 +5575,24 @@ fun StartupLoginScreen(
             }
           }
 
-          // Password Reset Confirmation Badge
-          loginSuccessMessage?.let { successText ->
-            Surface(
-              shape = RoundedCornerShape(14.dp),
-              color = Color(0xFF10B981).copy(alpha = 0.14f),
-              border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.45f)),
-              modifier = Modifier.fillMaxWidth()
-            ) {
-              Text(
-                text = successText,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                  fontSize = 13.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(horizontal = 12.dp, vertical = 9.dp)
-                  .testTag("login_success_text")
-              )
-            }
-          }
-
           Spacer(modifier = Modifier.height(2.dp))
 
           // Primary Action Button:
-          // Gradient fill (Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFF8B5CF6)))) with press scale animation.
-          // Label: "Sign In to Sibil" or "Create Scholar Account"
+          // While isLoading is true, disable the submit button and show a circular progress spinner inside the button.
+          // Button label: "Sign In" or "Create Account".
+          val buttonBrush = if (isLoading) {
+            Brush.horizontalGradient(
+              colors = listOf(
+                Color(0xFF6366F1).copy(alpha = 0.65f),
+                Color(0xFF8B5CF6).copy(alpha = 0.65f)
+              )
+            )
+          } else {
+            Brush.horizontalGradient(
+              colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+            )
+          }
+
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -5830,17 +5602,13 @@ fun StartupLoginScreen(
                 scaleY = pressScale
               }
               .shadow(
-                elevation = 12.dp,
+                elevation = if (isLoading) 4.dp else 12.dp,
                 shape = RoundedCornerShape(16.dp),
                 ambientColor = Color(0xFF6366F1).copy(alpha = 0.45f),
                 spotColor = Color(0xFF8B5CF6).copy(alpha = 0.45f)
               )
               .clip(RoundedCornerShape(16.dp))
-              .background(
-                brush = Brush.horizontalGradient(
-                  colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
-                )
-              )
+              .background(brush = buttonBrush)
               .border(
                 width = 1.dp,
                 brush = Brush.linearGradient(
@@ -5852,6 +5620,7 @@ fun StartupLoginScreen(
                 shape = RoundedCornerShape(16.dp)
               )
               .clickable(
+                enabled = !isLoading,
                 interactionSource = primaryButtonInteraction,
                 indication = null,
                 onClick = { handlePrimaryAuthAction() }
@@ -5861,9 +5630,9 @@ fun StartupLoginScreen(
           ) {
             Row(
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp)
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-              if (isAuthLoading) {
+              if (isLoading) {
                 CircularProgressIndicator(
                   color = Color.White,
                   strokeWidth = 2.2.dp,
@@ -5871,12 +5640,7 @@ fun StartupLoginScreen(
                 )
               }
               Text(
-                text = when {
-                  isAuthLoading && isSignUpMode -> "Creating Scholar Account..."
-                  isAuthLoading -> "Signing In..."
-                  isSignUpMode -> "Create Scholar Account"
-                  else -> "Sign In to Sibil"
-                },
+                text = if (isSignUpMode) "Create Account" else "Sign In",
                 style = MaterialTheme.typography.titleMedium.copy(
                   fontSize = 15.5.sp,
                   fontWeight = FontWeight.ExtraBold
@@ -5885,7 +5649,7 @@ fun StartupLoginScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
-              if (!isAuthLoading) {
+              if (!isLoading) {
                 Icon(
                   imageVector = Icons.Filled.ArrowForward,
                   contentDescription = null,
@@ -5898,13 +5662,15 @@ fun StartupLoginScreen(
 
           // Offline Scholar / Guest Bypass:
           // Text button at bottom: "Continue as Offline Scholar →"
-          // Sets auth_is_guest = true and navigates straight to Dashboard without credentials.
+          // Allows offline students to access study tools immediately without signing up.
           TextButton(
             onClick = {
-              loginErrorMessage = null
-              loginSuccessMessage = null
-              onContinueAsGuest()
+              if (!isLoading) {
+                loginErrorMessage = null
+                onContinueAsGuest()
+              }
             },
+            enabled = !isLoading,
             shape = CircleShape,
             modifier = Modifier
               .fillMaxWidth()
@@ -5924,51 +5690,6 @@ fun StartupLoginScreen(
           }
         }
       }
-    }
-
-    if (isForgotPasswordModalOpen) {
-      ForgotPasswordRecoveryModal(
-        initialUsername = username,
-        onCheckUsernameRegistered = onCheckUsernameRegistered,
-        onVerifyRecoveryPin = onVerifyRecoveryPin,
-        onResetPasswordWithPin = onResetPasswordWithPin,
-        onDismiss = { isForgotPasswordModalOpen = false },
-        onPasswordResetSuccess = { recoveredUsername ->
-          isForgotPasswordModalOpen = false
-          isSignUpMode = false
-          username = recoveredUsername
-          password = ""
-          loginErrorMessage = null
-          loginSuccessMessage = "Password reset successful! Sign in with your new password."
-          Toast.makeText(
-            context,
-            "Password updated successfully!",
-            Toast.LENGTH_SHORT
-          ).show()
-        }
-      )
-    }
-
-    if (isGuestWarningDialogOpen) {
-      GuestModeWarningDialog(
-        onCancel = { isGuestWarningDialogOpen = false },
-        onProceed = {
-          isGuestWarningDialogOpen = false
-          onContinueAsGuest()
-        }
-      )
-    }
-
-    if (isSignUpDialogOpen) {
-      SignUpVerificationDialog(
-        initialUsername = username,
-        onCheckUsernameRegistered = onCheckUsernameRegistered,
-        onDismiss = { isSignUpDialogOpen = false },
-        onCompleteSignUp = { registeredUsername, createdPassword ->
-          isSignUpDialogOpen = false
-          onCompleteSignUp(registeredUsername, createdPassword, registeredUsername, "0000")
-        }
-      )
     }
   }
 }
@@ -8214,38 +7935,82 @@ fun formatGitHubReleaseChangelogLines(rawBody: String?): List<String> {
 }
 
 /**
- * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest` on `Dispatchers.IO`,
- * extracts the semantic version from `tag_name`, release `name` (title), or `body`, and evaluates
- * `isStrictlyNewer(latestTag, localVersion)`.
+ * Helper to fetch a JSON response string from a GitHub API URL with standard headers and timeouts.
+ */
+private fun fetchGitHubApiResponse(url: String): Pair<Int, String?> {
+  var connection: HttpURLConnection? = null
+  return try {
+    connection = (URL(url).openConnection() as HttpURLConnection).apply {
+      requestMethod = "GET"
+      connectTimeout = 5_000
+      readTimeout = 5_000
+      doInput = true
+      setRequestProperty("User-Agent", "Sibil-App-Android")
+      setRequestProperty("Accept", "application/vnd.github.v3+json")
+    }
+    val code = connection.responseCode
+    if (code in 200..299) {
+      val body = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use {
+        it.readText()
+      }
+      code to body
+    } else {
+      code to null
+    }
+  } catch (_: Exception) {
+    -1 to null
+  } finally {
+    connection?.disconnect()
+  }
+}
+
+/**
+ * Resolves the latest valid release JSONObject from `Dodolzzzkie/Sibil-app`.
+ * Queries `/releases/latest` first, and falls back to `/releases?per_page=10` if `/releases/latest`
+ * returns 404 or points to `internal-keystore-vault`.
+ */
+private fun resolveLatestValidGitHubReleaseJson(): JSONObject? {
+  val latestUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
+  val (latestCode, latestBody) = fetchGitHubApiResponse(latestUrl)
+  if (latestCode in 200..299 && !latestBody.isNullOrBlank()) {
+    val obj = runCatching { JSONObject(latestBody) }.getOrNull()
+    val tag = obj?.optString("tag_name", "")?.trim().orEmpty()
+    if (obj != null && !tag.equals("internal-keystore-vault", ignoreCase = true)) {
+      return obj
+    }
+  }
+
+  // Fallback: inspect recent releases list (handles pre-releases or repos without a marked 'latest' release)
+  val listUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases?per_page=10"
+  val (listCode, listBody) = fetchGitHubApiResponse(listUrl)
+  if (listCode in 200..299 && !listBody.isNullOrBlank()) {
+    val arr = runCatching { JSONArray(listBody) }.getOrNull() ?: return null
+    for (i in 0 until arr.length()) {
+      val candidate = arr.optJSONObject(i) ?: continue
+      if (candidate.optBoolean("draft", false)) continue
+      val tag = candidate.optString("tag_name", "").trim()
+      if (tag.equals("internal-keystore-vault", ignoreCase = true)) continue
+      return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest` (with `/releases` fallback)
+ * on `Dispatchers.IO`, extracts the semantic version from `tag_name`, release `name` (title), or `body`,
+ * and evaluates `isStrictlyNewer(latestTag, localVersion)`.
  * Used by both the automatic startup check and the manual "Check for Updates" button in About Sibil.
  */
 suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult =
   withContext(Dispatchers.IO) {
-    val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
     val defaultDownloadUrl =
       "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest/download/app-debug.apk"
-    var connection: HttpURLConnection? = null
 
     try {
-      connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 5_000
-        readTimeout = 5_000
-        doInput = true
-        setRequestProperty("User-Agent", "Sibil-App-Android")
-        setRequestProperty("Accept", "application/vnd.github.v3+json")
-      }
+      val root = resolveLatestValidGitHubReleaseJson()
+        ?: return@withContext GitHubUpdateCheckResult.NetworkError
 
-      val responseCode = connection.responseCode
-      if (responseCode !in 200..299) {
-        return@withContext GitHubUpdateCheckResult.NetworkError
-      }
-
-      val responseBody = BufferedReader(
-        InputStreamReader(connection.inputStream, Charsets.UTF_8)
-      ).use { it.readText() }
-
-      val root = JSONObject(responseBody)
       val rawTag = root.optString("tag_name", "").trim()
       val releaseTitle = root.optString("name", "").trim()
       val rawBody = root.optString("body", "").trim()
@@ -8257,10 +8022,20 @@ suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult 
         )
       }
 
-      // Extract semantic version numbers from tag_name first, then release title (name), then body
+      // Extract semantic version numbers from tag_name first, then release title (name), then body,
+      // and finally CI build tag pattern ("debug-apk-build-<run>-<attempt>") if present.
       val extractedRemoteParts = extractVersionNumbers(rawTag)
         .ifEmpty { extractVersionNumbers(releaseTitle) }
         .ifEmpty { extractVersionNumbers(rawBody) }
+        .ifEmpty {
+          Regex("""debug-apk-build-(\d+)""", RegexOption.IGNORE_CASE)
+            .find(rawTag)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.let { listOf(1, 0, it) }
+            .orEmpty()
+        }
 
       if (extractedRemoteParts.isEmpty()) {
         return@withContext GitHubUpdateCheckResult.UpToDate(
@@ -8326,8 +8101,6 @@ suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult 
       )
     } catch (_: Exception) {
       GitHubUpdateCheckResult.NetworkError
-    } finally {
-      connection?.disconnect()
     }
   }
 
@@ -8366,24 +8139,8 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
  * is not yet cached locally.
  */
 suspend fun fetchLatestGitHubReleaseBody(context: Context): String? = withContext(Dispatchers.IO) {
-  val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
-  var connection: HttpURLConnection? = null
   try {
-    connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
-      requestMethod = "GET"
-      connectTimeout = 5_000
-      readTimeout = 5_000
-      doInput = true
-      setRequestProperty("User-Agent", "Sibil-App-Android")
-      setRequestProperty("Accept", "application/vnd.github.v3+json")
-    }
-    if (connection.responseCode !in 200..299) {
-      return@withContext null
-    }
-    val responseBody = BufferedReader(
-      InputStreamReader(connection.inputStream, Charsets.UTF_8)
-    ).use { it.readText() }
-    val root = JSONObject(responseBody)
+    val root = resolveLatestValidGitHubReleaseJson() ?: return@withContext null
     val body = root.optString("body", "").trim()
     if (body.isNotBlank()) {
       val prefs = context.applicationContext.getSharedPreferences(
@@ -8397,8 +8154,6 @@ suspend fun fetchLatestGitHubReleaseBody(context: Context): String? = withContex
     }
   } catch (_: Exception) {
     null
-  } finally {
-    connection?.disconnect()
   }
 }
 
@@ -20700,7 +20455,11 @@ private fun ProfileAndSettingsDialog(
                       .testTag("account_user_name_text")
                   )
                   Text(
-                    text = "@${viewModel.username}",
+                    text = if (viewModel.username.contains("@")) {
+                      "• ${viewModel.username}"
+                    } else {
+                      "@${viewModel.username}"
+                    },
                     style = MaterialTheme.typography.bodySmall.copy(
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Medium
@@ -20745,7 +20504,7 @@ private fun ProfileAndSettingsDialog(
                   OutlinedTextField(
                     value = editDisplayNameInput,
                     onValueChange = { editDisplayNameInput = it },
-                    label = { Text("Student Name", fontSize = 12.sp) },
+                    label = { Text("Full Name / Nickname", fontSize = 12.sp) },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = sibilOutlinedTextFieldColors(),
@@ -20754,7 +20513,7 @@ private fun ProfileAndSettingsDialog(
                   OutlinedTextField(
                     value = editHandleInput,
                     onValueChange = { editHandleInput = it },
-                    label = { Text("Student Handle / ID", fontSize = 12.sp) },
+                    label = { Text("Email Address", fontSize = 12.sp) },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = sibilOutlinedTextFieldColors(),
