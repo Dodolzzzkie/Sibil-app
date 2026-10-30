@@ -130,6 +130,10 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -268,11 +272,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -281,6 +287,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -315,6 +322,16 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Shape
 import com.example.ui.theme.Typography
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseNetworkException
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.UserProfileChangeRequest
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -372,7 +389,7 @@ const val APP_VERSION_CODE = 101            // Incremented with builds
 const val APP_VERSION_NAME = "v1.0.1"
 const val SIBIL_APP_VERSION_TAG = "Sibil $APP_VERSION_NAME (Official Release)"
 
-private const val DEFAULT_FALLBACK_LATITUDE = 10.51
+private const val DEFAULT_FALLBACK_LATITUDE = 10.52
 private const val DEFAULT_FALLBACK_LONGITUDE = 124.03
 
 // ============================================================================
@@ -898,8 +915,15 @@ class MainActivity : ComponentActivity() {
 data class ResponsiveMetrics(
   val screenWidthDp: Int,
   val scaleMultiplier: Float,
-  val maxContentWidth: Dp
+  val maxContentWidth: Dp,
+  val screenHeightDp: Int = 800,
+  val isLandscape: Boolean = false
 ) {
+  val isTablet: Boolean
+    get() = screenWidthDp >= 600
+  val isTabletLandscape: Boolean
+    get() = screenWidthDp >= 720 && isLandscape
+
   fun scaledDp(baseDp: Int): Dp = (baseDp * scaleMultiplier).dp
   fun scaledSp(baseSp: Int): TextUnit = (baseSp * scaleMultiplier).sp
 }
@@ -908,17 +932,21 @@ data class ResponsiveMetrics(
 private fun rememberResponsiveMetrics(): ResponsiveMetrics {
   val configuration = LocalConfiguration.current
   val screenWidth = configuration.screenWidthDp
+  val screenHeight = configuration.screenHeightDp
+  val isLandscape = screenWidth > screenHeight
   val scaleMultiplier = when {
-    screenWidth > 600 -> 1.2f
+    screenWidth >= 600 -> 1.12f
     screenWidth < 360 -> 0.92f
     else -> 1.0f
   }
-  val maxContentWidth = if (screenWidth > 600) 840.dp else 640.dp
-  return remember(screenWidth) {
+  val maxContentWidth = 680.dp
+  return remember(screenWidth, screenHeight) {
     ResponsiveMetrics(
       screenWidthDp = screenWidth,
       scaleMultiplier = scaleMultiplier,
-      maxContentWidth = maxContentWidth
+      maxContentWidth = maxContentWidth,
+      screenHeightDp = screenHeight,
+      isLandscape = isLandscape
     )
   }
 }
@@ -2237,7 +2265,159 @@ enum class LoginValidationResult {
   SUCCESS,
   INVALID_USERNAME,
   NO_ACCOUNT_FOUND,
-  INCORRECT_PASSWORD
+  INCORRECT_PASSWORD,
+  WEAK_PASSWORD,
+  ACCOUNT_ALREADY_EXISTS,
+  NETWORK_ERROR
+}
+
+private const val INTERNAL_SIBIL_EMAIL_DOMAIN = "sibil.app"
+
+/**
+ * Maps a Sibil Username or Student ID to an internal email address (`"$username@sibil.app"`)
+ * so Firebase Authentication (Email/Password provider) accepts it seamlessly without requiring
+ * an external mailbox.
+ */
+fun formatUsernameAsFirebaseEmail(rawUsername: String): String {
+  val trimmed = rawUsername.trim().lowercase(Locale.US)
+  if (trimmed.isEmpty()) return ""
+  if (trimmed.contains("@")) return trimmed
+  val sanitizedLocal = trimmed
+    .replace(Regex("\\s+"), ".")
+    .replace(Regex("[^a-z0-9._+-]"), "_")
+    .trim('.')
+    .ifEmpty { "scholar" }
+  return "$sanitizedLocal@$INTERNAL_SIBIL_EMAIL_DOMAIN"
+}
+
+/**
+ * Extracts the scholar's Username / Student ID from a Firebase internal email (`"$username@sibil.app"`).
+ */
+fun extractUsernameFromFirebaseUser(user: FirebaseUser?, fallbackUsername: String = ""): String {
+  if (user == null) return fallbackUsername.trim()
+  val rawEmail = user.email?.trim().orEmpty()
+  val fromEmail = if (rawEmail.endsWith("@$INTERNAL_SIBIL_EMAIL_DOMAIN", ignoreCase = true)) {
+    rawEmail.substringBefore("@").trim()
+  } else if (rawEmail.contains("@")) {
+    rawEmail.substringBefore("@").trim()
+  } else {
+    ""
+  }
+  val preferredFallback = fallbackUsername.trim()
+  if (
+    preferredFallback.isNotEmpty() &&
+    !preferredFallback.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
+    !preferredFallback.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
+    formatUsernameAsFirebaseEmail(preferredFallback).equals(rawEmail, ignoreCase = true)
+  ) {
+    return preferredFallback
+  }
+  return fromEmail.ifBlank {
+    preferredFallback.ifBlank {
+      user.displayName?.trim().orEmpty().ifBlank { user.uid.take(8) }
+    }
+  }
+}
+
+/**
+ * Safely returns [FirebaseAuth.getInstance], initializing [FirebaseApp] if needed.
+ */
+fun getFirebaseAuthOrNull(context: Context? = null): FirebaseAuth? {
+  return try {
+    if (context != null && FirebaseApp.getApps(context).isEmpty()) {
+      FirebaseApp.initializeApp(context)
+    }
+    FirebaseAuth.getInstance()
+  } catch (_: Throwable) {
+    null
+  }
+}
+
+/**
+ * Returns true if the Firebase failure indicates the Email/Password provider is not yet enabled
+ * in the remote console or Firebase is uninitialized in a local unit test environment.
+ */
+fun isFirebaseProviderConfigurationError(exception: Throwable?): Boolean {
+  if (exception == null) return false
+  if (exception is IllegalStateException) return true
+  val errorCode = (exception as? FirebaseAuthException)?.errorCode.orEmpty()
+  val msg = exception.message.orEmpty()
+  return errorCode == "ERROR_OPERATION_NOT_ALLOWED" ||
+    errorCode == "ERROR_CONFIGURATION_NOT_FOUND" ||
+    msg.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true) ||
+    msg.contains("OPERATION_NOT_ALLOWED", ignoreCase = true)
+}
+
+/**
+ * Maps Firebase Authentication exceptions to clear, user-friendly messages for the Liquid Glass Auth card:
+ * - Account already exists
+ * - Incorrect password
+ * - Weak password (< 6 characters)
+ * - Network/connectivity timeout
+ */
+fun mapFirebaseAuthExceptionToMessage(exception: Throwable?, isSignUp: Boolean): String {
+  if (exception == null) {
+    return if (isSignUp) {
+      "Unable to create account. Please try again."
+    } else {
+      "Incorrect password. Please double-check your credentials and try again."
+    }
+  }
+  val errorCode = (exception as? FirebaseAuthException)?.errorCode.orEmpty()
+  val rawMessage = exception.message.orEmpty()
+
+  return when {
+    exception is FirebaseAuthWeakPasswordException ||
+      errorCode == "ERROR_WEAK_PASSWORD" ||
+      rawMessage.contains("WEAK_PASSWORD", ignoreCase = true) ||
+      rawMessage.contains("at least 6 characters", ignoreCase = true) -> {
+      "Weak password: Password must be at least 6 characters long."
+    }
+    exception is FirebaseAuthUserCollisionException ||
+      errorCode == "ERROR_EMAIL_ALREADY_IN_USE" ||
+      errorCode == "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL" ||
+      rawMessage.contains("EMAIL_EXISTS", ignoreCase = true) ||
+      rawMessage.contains("already in use", ignoreCase = true) -> {
+      "Account already exists for this Username / Student ID. Please log in instead."
+    }
+    exception is FirebaseNetworkException ||
+      exception is java.net.SocketTimeoutException ||
+      exception is java.net.UnknownHostException ||
+      exception is java.io.IOException ||
+      errorCode == "ERROR_NETWORK_REQUEST_FAILED" ||
+      rawMessage.contains("network", ignoreCase = true) ||
+      rawMessage.contains("timeout", ignoreCase = true) ||
+      rawMessage.contains("unreachable", ignoreCase = true) -> {
+      "Network connection timeout. Please check your internet connection and try again."
+    }
+    exception is FirebaseAuthInvalidUserException ||
+      errorCode == "ERROR_USER_NOT_FOUND" ||
+      rawMessage.contains("USER_NOT_FOUND", ignoreCase = true) ||
+      rawMessage.contains("no user record", ignoreCase = true) -> {
+      "No scholar account found for this Username / Student ID. Please sign up first."
+    }
+    exception is FirebaseAuthInvalidCredentialsException ||
+      errorCode == "ERROR_WRONG_PASSWORD" ||
+      errorCode == "ERROR_INVALID_CREDENTIAL" ||
+      errorCode == "ERROR_INVALID_EMAIL" ||
+      rawMessage.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) ||
+      rawMessage.contains("WRONG_PASSWORD", ignoreCase = true) ||
+      rawMessage.contains("password is invalid", ignoreCase = true) -> {
+      "Incorrect password. Please double-check your password and try again."
+    }
+    errorCode == "ERROR_TOO_MANY_REQUESTS" ||
+      rawMessage.contains("TOO_MANY_ATTEMPTS", ignoreCase = true) ||
+      rawMessage.contains("blocked all requests", ignoreCase = true) -> {
+      "Too many failed login attempts. Please wait a moment and try again."
+    }
+    else -> {
+      if (isSignUp) {
+        "Unable to create account. Please verify your details and try again."
+      } else {
+        "Incorrect password. Please double-check your password and try again."
+      }
+    }
+  }
 }
 
 /**
@@ -3484,11 +3664,25 @@ class LocalStorageManager(context: Context) {
   }
 }
 
+data class EnvironmentalWeatherState(
+  val isLoading: Boolean = true,
+  val isOffline: Boolean = false,
+  val conditionText: String = "Fetching Weather...",
+  val conditionEmoji: String = "⛅",
+  val weatherCode: Int = 1,
+  val temperatureCelsius: Int = 29,
+  val heatIndexCelsius: Int = 33,
+  val relativeHumidity: Int = 75,
+  val usAqi: Int = 42,
+  val pm25: Double = 8.5,
+  val aqiRating: String = "Good"
+)
+
 /**
  * Shared ViewModel storing and managing:
  * 1. Global theme state (`isDarkMode`, default `false`).
  * 2. User session data (`username`, `displayName`, and `hasSavedSession`).
- * 3. Live Open-Meteo weather summary (`weatherText`, starting at `"Fetching Weather..."`).
+ * 3. Live Open-Meteo weather summary (`weatherText` and `weatherState`, starting at `"Fetching Weather..."`).
  * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager (`tasks_[username]`).
  * 5. Today's Schedule list on the Dashboard.
  * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View (`schedules_[username]`).
@@ -3545,6 +3739,9 @@ class TaskViewModel(
     private set
 
   var weatherText by mutableStateOf("Fetching Weather...")
+    private set
+
+  var weatherState by mutableStateOf(EnvironmentalWeatherState())
     private set
 
   var hasRequestedInitialWeather by mutableStateOf(false)
@@ -3627,8 +3824,27 @@ class TaskViewModel(
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
     savedGeminiApiKey = manager.loadSavedGeminiApiKey()
 
+    val firebaseUser = try {
+      FirebaseAuth.getInstance().currentUser
+    } catch (_: Throwable) {
+      null
+    }
+
     val savedUserName = manager.loadUserName()
-    if (manager.hasActiveAuthSession() && !savedUserName.isNullOrBlank()) {
+    if (firebaseUser != null) {
+      val resolvedUser = extractUsernameFromFirebaseUser(
+        user = firebaseUser,
+        fallbackUsername = savedUserName.orEmpty()
+      ).ifBlank { "scholar" }
+      val resolvedDisplay = firebaseUser.displayName?.trim().orEmpty().ifBlank {
+        manager.getDisplayNameForUser(resolvedUser)
+      }.ifBlank { resolvedUser }
+      username = resolvedUser
+      displayName = resolvedDisplay
+      hasSavedSession = true
+      manager.saveUserProfile(resolvedUser, resolvedDisplay)
+      loadAccountDataForKey(manager, currentAccountKey)
+    } else if (manager.hasActiveAuthSession() && !savedUserName.isNullOrBlank()) {
       username = if (
         savedUserName.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
         savedUserName.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
@@ -3648,6 +3864,22 @@ class TaskViewModel(
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
     }
+  }
+
+  /**
+   * Restores an active scholar session directly from [FirebaseAuth.getInstance().currentUser]
+   * on app launch so logged-in users bypass the Login screen and open the Dashboard immediately.
+   */
+  fun restoreSessionFromFirebaseUser(firebaseUser: FirebaseUser) {
+    val savedUserName = storageManager?.loadUserName().orEmpty()
+    val resolvedUser = extractUsernameFromFirebaseUser(
+      user = firebaseUser,
+      fallbackUsername = savedUserName
+    ).ifBlank { "scholar" }
+    val resolvedDisplay = firebaseUser.displayName?.trim().orEmpty().ifBlank {
+      storageManager?.getDisplayNameForUser(resolvedUser).orEmpty()
+    }.ifBlank { resolvedUser }
+    loginWithUsername(resolvedUser, resolvedDisplay)
   }
 
   private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
@@ -3802,8 +4034,12 @@ class TaskViewModel(
   }
 
   /**
-   * Fetches real-time weather from Open-Meteo using `Dispatchers.IO`,
-   * `java.net.URL(url).readText()`, and `org.json.JSONObject`.
+   * Fetches real-time weather, Heat Index (`apparent_temperature`), and Air Quality (`us_aqi`, `pm2_5`)
+   * from Open-Meteo on `Dispatchers.IO`.
+   *
+   * Endpoints:
+   * - Forecast: `https://api.open-meteo.com/v1/forecast?latitude=$latitude&longitude=$longitude&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&timezone=auto`
+   * - Air Quality: `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=$latitude&longitude=$longitude&current=us_aqi,pm2_5&timezone=auto`
    */
   suspend fun fetchWeather(
     latitude: Double = DEFAULT_FALLBACK_LATITUDE,
@@ -3811,38 +4047,119 @@ class TaskViewModel(
   ) {
     hasRequestedInitialWeather = true
     weatherText = "Fetching Weather..."
+    weatherState = weatherState.copy(isLoading = true, isOffline = false)
 
-    val updatedWeather = withContext(Dispatchers.IO) {
+    val fetchedState = withContext(Dispatchers.IO) {
       try {
-        val url =
-          "https://api.open-meteo.com/v1/forecast?latitude=$latitude&longitude=$longitude&current_weather=true"
-        val rawJson = URL(url).readText()
-        val rootObject = JSONObject(rawJson)
-        val currentWeather = rootObject.getJSONObject("current_weather")
-        val temperature = currentWeather.getDouble("temperature")
-        val weatherCode = currentWeather.getInt("weathercode")
-        val condition = mapWeatherCodeToCondition(weatherCode)
-        "$condition • ${temperature.roundToInt()}°C"
+        val forecastUrl =
+          "https://api.open-meteo.com/v1/forecast?latitude=$latitude&longitude=$longitude&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&timezone=auto"
+        val forecastConnection = (URL(forecastUrl).openConnection() as HttpURLConnection).apply {
+          requestMethod = "GET"
+          connectTimeout = 6_000
+          readTimeout = 6_000
+          setRequestProperty("User-Agent", "Sibil-App-Android")
+        }
+        val forecastRaw = try {
+          BufferedReader(InputStreamReader(forecastConnection.inputStream, Charsets.UTF_8)).use { it.readText() }
+        } finally {
+          forecastConnection.disconnect()
+        }
+
+        val forecastRoot = JSONObject(forecastRaw)
+        val currentObj = forecastRoot.optJSONObject("current")
+        val temperature = currentObj?.optDouble("temperature_2m", 29.0)
+          ?: forecastRoot.optJSONObject("current_weather")?.optDouble("temperature", 29.0)
+          ?: 29.0
+        val apparentTemp = currentObj?.optDouble("apparent_temperature", temperature) ?: temperature
+        val humidity = currentObj?.optInt("relative_humidity_2m", 75) ?: 75
+        val weatherCode = currentObj?.optInt("weather_code", -1)?.takeIf { it >= 0 }
+          ?: forecastRoot.optJSONObject("current_weather")?.optInt("weathercode", 1)
+          ?: 1
+
+        val (conditionLabel, conditionEmoji) = mapWmoWeatherCodeToConditionAndEmoji(weatherCode)
+
+        // Fetch Air Quality (US AQI & PM2.5) in best-effort mode so weather still renders if AQI endpoint is unreachable
+        var usAqiValue = 42
+        var pm25Value = 8.5
+        try {
+          val aqiUrl =
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=$latitude&longitude=$longitude&current=us_aqi,pm2_5&timezone=auto"
+          val aqiConnection = (URL(aqiUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            setRequestProperty("User-Agent", "Sibil-App-Android")
+          }
+          val aqiRaw = try {
+            BufferedReader(InputStreamReader(aqiConnection.inputStream, Charsets.UTF_8)).use { it.readText() }
+          } finally {
+            aqiConnection.disconnect()
+          }
+          val aqiRoot = JSONObject(aqiRaw)
+          val aqiCurrent = aqiRoot.optJSONObject("current")
+          if (aqiCurrent != null) {
+            usAqiValue = aqiCurrent.optDouble("us_aqi", 42.0).roundToInt().coerceAtLeast(0)
+            pm25Value = aqiCurrent.optDouble("pm2_5", 8.5).coerceAtLeast(0.0)
+          }
+        } catch (_: Exception) {
+          // Retain safe default AQI metrics if air-quality endpoint times out
+        }
+
+        val aqiRating = mapUsAqiToRating(usAqiValue)
+        EnvironmentalWeatherState(
+          isLoading = false,
+          isOffline = false,
+          conditionText = conditionLabel,
+          conditionEmoji = conditionEmoji,
+          weatherCode = weatherCode,
+          temperatureCelsius = temperature.roundToInt(),
+          heatIndexCelsius = apparentTemp.roundToInt(),
+          relativeHumidity = humidity,
+          usAqi = usAqiValue,
+          pm25 = pm25Value,
+          aqiRating = aqiRating
+        )
       } catch (e: CancellationException) {
         throw e
       } catch (_: Exception) {
-        "Weather Offline"
+        null
       }
     }
 
-    weatherText = updatedWeather
+    if (fetchedState != null) {
+      weatherState = fetchedState
+      weatherText = "${fetchedState.conditionText} • ${fetchedState.temperatureCelsius}°C"
+    } else {
+      weatherState = weatherState.copy(
+        isLoading = false,
+        isOffline = true,
+        conditionText = "Weather Offline"
+      )
+      weatherText = "Weather Offline"
+    }
   }
 
-  private fun mapWeatherCodeToCondition(weatherCode: Int): String {
+  private fun mapWmoWeatherCodeToConditionAndEmoji(weatherCode: Int): Pair<String, String> {
     return when (weatherCode) {
-      0 -> "Clear"
-      1, 2, 3 -> "Cloudy"
-      45, 48 -> "Foggy"
-      51, 53, 55, 56, 57 -> "Drizzle"
-      61, 63, 65, 66, 67, 80, 81, 82 -> "Rain"
-      71, 73, 75, 77, 85, 86 -> "Snow"
-      95, 96, 99 -> "Thunderstorm"
-      else -> "Cloudy"
+      0 -> "Clear Sky" to "☀️"
+      1 -> "Mainly Clear" to "⛅"
+      2, 3 -> "Partly Cloudy" to "⛅"
+      45, 48 -> "Foggy" to "🌫️"
+      in 51..57 -> "Drizzle" to "🌦️"
+      in 61..67 -> "Rain" to "🌧️"
+      in 71..77, 85, 86 -> "Snow" to "🌨️"
+      in 80..82 -> "Rain Showers" to "🌧️"
+      in 95..99 -> "Thunderstorm" to "⛈️"
+      else -> "Partly Cloudy" to "⛅"
+    }
+  }
+
+  private fun mapUsAqiToRating(usAqi: Int): String {
+    return when {
+      usAqi <= 50 -> "Good"
+      usAqi <= 100 -> "Moderate"
+      usAqi <= 150 -> "Sensitive"
+      else -> "Unhealthy"
     }
   }
 
@@ -3949,11 +4266,15 @@ class TaskViewModel(
   }
 
   /**
-   * Logs out the current user by clearing `auth_is_logged_in` and `auth_is_guest`,
-   * safely returning the user to the Login screen without deleting their created decks
-   * or formula favorites.
+   * Logs out the current user by calling `FirebaseAuth.getInstance().signOut()` and clearing
+   * `auth_is_logged_in` and `auth_is_guest`, safely returning the user to the Login screen
+   * without deleting their created decks or formula favorites.
    */
   fun logout() {
+    try {
+      FirebaseAuth.getInstance().signOut()
+    } catch (_: Throwable) {
+    }
     hasSavedSession = false
     storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
@@ -4664,9 +4985,24 @@ fun CivilEngineeringProductivityApp(
       typography = Typography
     ) {
       // App Launch Check:
-      // If auth_is_logged_in == true OR auth_is_guest == true, launch directly into the main app (Dashboard).
-      // If neither, show the Liquid Glass Auth Screen.
-      var isLoggedIn by rememberSaveable { mutableStateOf(resolvedViewModel.hasSavedSession) }
+      // 1. Check FirebaseAuth.getInstance().currentUser on app launch.
+      // 2. If a current Firebase user exists (or an active Offline Scholar / local session is saved),
+      //    bypass the Login screen and open the Dashboard directly.
+      // 3. Otherwise, show the Liquid Glass Auth Screen.
+      val initialFirebaseUser = remember {
+        getFirebaseAuthOrNull(context)?.currentUser
+      }
+      var isLoggedIn by rememberSaveable {
+        mutableStateOf(initialFirebaseUser != null || resolvedViewModel.hasSavedSession)
+      }
+
+      LaunchedEffect(initialFirebaseUser) {
+        val activeFirebaseUser = getFirebaseAuthOrNull(context)?.currentUser
+        if (activeFirebaseUser != null) {
+          resolvedViewModel.restoreSessionFromFirebaseUser(activeFirebaseUser)
+          isLoggedIn = true
+        }
+      }
 
       Crossfade(
         targetState = isLoggedIn,
@@ -4681,6 +5017,22 @@ fun CivilEngineeringProductivityApp(
                 isLoggedIn = true
               }
               result
+            },
+            onFirebaseLoginSuccess = { loggedInUsername, firebaseDisplayName, enteredPassword ->
+              if (
+                enteredPassword.isNotBlank() &&
+                !resolvedViewModel.isUsernameRegistered(loggedInUsername)
+              ) {
+                resolvedViewModel.completeSignUp(
+                  usernameToRegister = loggedInUsername,
+                  password = enteredPassword,
+                  displayNameToRegister = firebaseDisplayName,
+                  recoveryPinToRegister = ""
+                )
+              } else {
+                resolvedViewModel.loginWithUsername(loggedInUsername, firebaseDisplayName)
+              }
+              isLoggedIn = true
             },
             onCheckUsernameRegistered = { usernameToCheck ->
               resolvedViewModel.isUsernameRegistered(usernameToCheck)
@@ -4713,6 +5065,10 @@ fun CivilEngineeringProductivityApp(
           MainProductivityScaffold(
             taskViewModel = resolvedViewModel,
             onLogout = {
+              try {
+                FirebaseAuth.getInstance().signOut()
+              } catch (_: Throwable) {
+              }
               resolvedViewModel.logout()
               isLoggedIn = false
             }
@@ -4737,6 +5093,7 @@ fun CivilEngineeringProductivityApp(
 @Composable
 fun StartupLoginScreen(
   onAttemptLogin: (String, String) -> LoginValidationResult,
+  onFirebaseLoginSuccess: (username: String, displayName: String, password: String) -> Unit = { _, _, _ -> },
   onCheckUsernameRegistered: (String) -> Boolean,
   onCompleteSignUp: (username: String, password: String, displayName: String, recoveryPin: String) -> Unit,
   onVerifyRecoveryPin: (username: String, pin: String) -> Boolean = { _, _ -> false },
@@ -4756,6 +5113,7 @@ fun StartupLoginScreen(
   var recoveryPin by rememberSaveable { mutableStateOf("") }
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
   var isPinVisible by rememberSaveable { mutableStateOf(false) }
+  var isAuthLoading by remember { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var loginSuccessMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var isForgotPasswordModalOpen by rememberSaveable { mutableStateOf(false) }
@@ -4781,23 +5139,75 @@ fun StartupLoginScreen(
   )
 
   fun handlePrimaryAuthAction() {
+    if (isAuthLoading) return
     val cleanUsername = username.trim()
     loginSuccessMessage = null
+
     if (!isSignUpMode) {
       if (cleanUsername.isBlank() || password.isEmpty()) {
         loginErrorMessage = "Invalid username or password"
         return
       }
-      when (onAttemptLogin(cleanUsername, password)) {
-        LoginValidationResult.SUCCESS -> {
-          loginErrorMessage = null
-        }
-        LoginValidationResult.INVALID_USERNAME,
-        LoginValidationResult.NO_ACCOUNT_FOUND,
-        LoginValidationResult.INCORRECT_PASSWORD -> {
-          loginErrorMessage = "Invalid username or password"
-        }
+      if (password.length < 6 && !onCheckUsernameRegistered(cleanUsername)) {
+        loginErrorMessage = "Weak password: Password must be at least 6 characters long."
+        return
       }
+
+      val internalEmail = formatUsernameAsFirebaseEmail(cleanUsername)
+      val firebaseAuth = getFirebaseAuthOrNull(context)
+      if (firebaseAuth == null) {
+        when (onAttemptLogin(cleanUsername, password)) {
+          LoginValidationResult.SUCCESS -> loginErrorMessage = null
+          LoginValidationResult.NO_ACCOUNT_FOUND -> {
+            loginErrorMessage = "No scholar account found for this Username / Student ID. Please sign up first."
+          }
+          LoginValidationResult.INCORRECT_PASSWORD -> {
+            loginErrorMessage = "Incorrect password. Please double-check your password and try again."
+          }
+          else -> {
+            loginErrorMessage = "Invalid username or password"
+          }
+        }
+        return
+      }
+
+      isAuthLoading = true
+      loginErrorMessage = null
+      firebaseAuth
+        .signInWithEmailAndPassword(internalEmail, password)
+        .addOnCompleteListener { task ->
+          isAuthLoading = false
+          if (task.isSuccessful) {
+            val firebaseUser = task.result?.user ?: firebaseAuth.currentUser
+            val resolvedUsername = extractUsernameFromFirebaseUser(firebaseUser, cleanUsername)
+              .ifBlank { cleanUsername }
+            val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
+              .ifBlank { resolvedUsername }
+            loginErrorMessage = null
+            onFirebaseLoginSuccess(resolvedUsername, resolvedDisplayName, password)
+          } else {
+            val exception = task.exception
+            // If account was created locally or Email/Password provider is not yet enabled in Console,
+            // verify against local SHA-256 credentials before showing an error.
+            if (onCheckUsernameRegistered(cleanUsername)) {
+              when (onAttemptLogin(cleanUsername, password)) {
+                LoginValidationResult.SUCCESS -> {
+                  loginErrorMessage = null
+                  return@addOnCompleteListener
+                }
+                LoginValidationResult.INCORRECT_PASSWORD -> {
+                  loginErrorMessage = "Incorrect password. Please double-check your password and try again."
+                  return@addOnCompleteListener
+                }
+                else -> {}
+              }
+            } else if (isFirebaseProviderConfigurationError(exception)) {
+              loginErrorMessage = "No scholar account found for this Username / Student ID. Please sign up first."
+              return@addOnCompleteListener
+            }
+            loginErrorMessage = mapFirebaseAuthExceptionToMessage(exception, isSignUp = false)
+          }
+        }
     } else {
       val cleanDisplay = displayName.trim()
       val cleanPin = recoveryPin.trim()
@@ -4810,19 +5220,63 @@ fun StartupLoginScreen(
         return
       }
       if (onCheckUsernameRegistered(cleanUsername)) {
-        loginErrorMessage = "Username already exists. Please log in."
+        loginErrorMessage = "Account already exists for this Username / Student ID. Please log in instead."
         return
       }
       if (password.isBlank()) {
         loginErrorMessage = "Please create a password"
         return
       }
+      if (password.length < 6) {
+        loginErrorMessage = "Weak password: Password must be at least 6 characters long."
+        return
+      }
       if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
         loginErrorMessage = "Please enter a 4-digit numeric Recovery PIN"
         return
       }
+
+      val internalEmail = formatUsernameAsFirebaseEmail(cleanUsername)
+      val firebaseAuth = getFirebaseAuthOrNull(context)
+      if (firebaseAuth == null) {
+        loginErrorMessage = null
+        onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+        return
+      }
+
+      isAuthLoading = true
       loginErrorMessage = null
-      onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+      firebaseAuth
+        .createUserWithEmailAndPassword(internalEmail, password)
+        .addOnCompleteListener { createTask ->
+          if (createTask.isSuccessful) {
+            val createdUser = createTask.result?.user ?: firebaseAuth.currentUser
+            val profileChangeRequest = UserProfileChangeRequest.Builder()
+              .setDisplayName(cleanDisplay)
+              .build()
+            if (createdUser != null) {
+              createdUser.updateProfile(profileChangeRequest)
+                .addOnCompleteListener {
+                  isAuthLoading = false
+                  loginErrorMessage = null
+                  onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+                }
+            } else {
+              isAuthLoading = false
+              loginErrorMessage = null
+              onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+            }
+          } else {
+            isAuthLoading = false
+            val exception = createTask.exception
+            if (isFirebaseProviderConfigurationError(exception)) {
+              loginErrorMessage = null
+              onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
+            } else {
+              loginErrorMessage = mapFirebaseAuthExceptionToMessage(exception, isSignUp = true)
+            }
+          }
+        }
     }
   }
 
@@ -5409,8 +5863,20 @@ fun StartupLoginScreen(
               verticalAlignment = Alignment.CenterVertically,
               horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+              if (isAuthLoading) {
+                CircularProgressIndicator(
+                  color = Color.White,
+                  strokeWidth = 2.2.dp,
+                  modifier = Modifier.size(18.dp)
+                )
+              }
               Text(
-                text = if (isSignUpMode) "Create Scholar Account" else "Sign In to Sibil",
+                text = when {
+                  isAuthLoading && isSignUpMode -> "Creating Scholar Account..."
+                  isAuthLoading -> "Signing In..."
+                  isSignUpMode -> "Create Scholar Account"
+                  else -> "Sign In to Sibil"
+                },
                 style = MaterialTheme.typography.titleMedium.copy(
                   fontSize = 15.5.sp,
                   fontWeight = FontWeight.ExtraBold
@@ -5419,12 +5885,14 @@ fun StartupLoginScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
-              Icon(
-                imageVector = Icons.Filled.ArrowForward,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(18.dp)
-              )
+              if (!isAuthLoading) {
+                Icon(
+                  imageVector = Icons.Filled.ArrowForward,
+                  contentDescription = null,
+                  tint = Color.White,
+                  modifier = Modifier.size(18.dp)
+                )
+              }
             }
           }
 
@@ -6675,7 +7143,7 @@ private fun MainProductivityScaffold(
             viewModel = taskViewModel,
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = metrics.maxContentWidth)
+              .widthIn(max = if (metrics.isTabletLandscape) 1080.dp else metrics.maxContentWidth)
           )
           CeNavTab.EXTRAS -> ExtrasScreen(
             viewModel = taskViewModel,
@@ -7306,39 +7774,48 @@ fun DashboardScreen(
     LazyColumn(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = metrics.maxContentWidth)
+        .widthIn(max = 680.dp)
+        .align(Alignment.TopCenter)
         .testTag("academic_dashboard_list"),
       contentPadding = PaddingValues(
         horizontal = metrics.scaledDp(16),
-        vertical = metrics.scaledDp(20)
+        vertical = 12.dp
       ),
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(20))
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+      horizontalAlignment = Alignment.CenterHorizontally
     ) {
-      // 1. Dynamic Top Header inside a Frosted Liquid Glass Banner Pod
+      // 1. Compact User Greeting & Profile Bar + Sleek Compact Weather & Environmental Widget
       item {
-        LiquidGlassCard(
-          cornerRadius = 26.dp,
-          elevation = 8.dp,
-          modifier = Modifier.fillMaxWidth()
+        val env = viewModel.weatherState
+        val aqiAccentColor = when {
+          env.usAqi <= 50 -> Color(0xFF10B981)   // Good (Green accent)
+          env.usAqi <= 100 -> Color(0xFFF59E0B)  // Moderate (Yellow/Amber accent)
+          env.usAqi <= 150 -> Color(0xFFF97316)  // Sensitive (Orange accent)
+          else -> Color(0xFFEF4444)              // Unhealthy (Red accent)
+        }
+
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 680.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+          // Ultra-compact Header Row: Username + Live Date/Time on Left, Profile Button on Right
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(
-                horizontal = metrics.scaledDp(18),
-                vertical = metrics.scaledDp(16)
-              ),
-            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+              .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
           ) {
             Column(
               modifier = Modifier.weight(1f),
-              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(6))
+              verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
               Text(
                 text = viewModel.displayUsername,
                 style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(15),
+                  fontSize = 15.sp,
                   fontWeight = FontWeight.Bold
                 ),
                 color = palette.accentIndigo,
@@ -7349,55 +7826,10 @@ fun DashboardScreen(
                   .testTag("dashboard_username_header")
               )
 
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(14.dp))
-                  .clickable {
-                    coroutineScope.launch {
-                      val (lat, lon) = resolveDeviceCoordinatesOrFallback(context)
-                      viewModel.fetchWeather(latitude = lat, longitude = lon)
-                    }
-                  },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(brush = LiquidCyanVioletGradient)
-                    .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)), RoundedCornerShape(14.dp)),
-                  contentAlignment = Alignment.Center
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Cloud,
-                    contentDescription = "Live Weather Icon",
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                  )
-                }
-
-                Text(
-                  text = viewModel.weatherText,
-                  style = MaterialTheme.typography.headlineLarge.copy(
-                    fontSize = metrics.scaledSp(23),
-                    lineHeight = metrics.scaledSp(29),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.textPrimary,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier
-                    .weight(1f)
-                    .testTag("dashboard_weather_header")
-                )
-              }
-
               Text(
                 text = currentDateTimeText,
-                style = MaterialTheme.typography.bodyLarge.copy(
-                  fontSize = metrics.scaledSp(14),
+                style = MaterialTheme.typography.bodySmall.copy(
+                  fontSize = 12.sp,
                   fontWeight = FontWeight.SemiBold
                 ),
                 color = palette.textSecondary,
@@ -7410,7 +7842,7 @@ fun DashboardScreen(
             }
 
             LiquidGlassContainer(
-              cornerRadius = 24.dp,
+              cornerRadius = 20.dp,
               fillAlpha = 0.65f,
               onClick = onProfileIconClick,
               modifier = Modifier
@@ -7423,8 +7855,140 @@ fun DashboardScreen(
                   imageVector = Icons.Default.AccountCircle,
                   contentDescription = "Open Profile & Settings",
                   tint = palette.accentIndigo,
-                  modifier = Modifier.size(32.dp)
+                  modifier = Modifier.size(28.dp)
                 )
+              }
+            }
+          }
+
+          // Compact Dashboard Weather & Environmental Widget (16.dp corner radius, padding(12.dp))
+          LiquidGlassCard(
+            cornerRadius = 16.dp,
+            elevation = 6.dp,
+            onClick = {
+              coroutineScope.launch {
+                val (lat, lon) = resolveDeviceCoordinatesOrFallback(context)
+                viewModel.fetchWeather(latitude = lat, longitude = lon)
+              }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .widthIn(max = 680.dp)
+              .align(Alignment.CenterHorizontally)
+              .testTag("dashboard_compact_weather_card")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              // Row 1 (Condition & Temperature):
+              // Weather icon (18.dp), Condition description (13.sp, FontWeight.Medium), and Current Temp (14.sp, FontWeight.Bold)
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Cloud,
+                    contentDescription = "Live Weather Icon",
+                    tint = palette.accentIndigo,
+                    modifier = Modifier.size(18.dp)
+                  )
+
+                  Text(
+                    text = if (env.isLoading) {
+                      "Fetching Weather..."
+                    } else if (env.isOffline) {
+                      "Weather Offline"
+                    } else {
+                      "${env.conditionEmoji} ${env.conditionText}"
+                    },
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontSize = 13.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("dashboard_weather_header")
+                  )
+                }
+
+                if (!env.isLoading && !env.isOffline) {
+                  Text(
+                    text = "${env.temperatureCelsius}°C",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 14.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.testTag("dashboard_weather_temp")
+                  )
+                }
+              }
+
+              // Row 2 (Environmental Metrics - Fits directly underneath):
+              // Two compact micro-pills with subtle frosted outlines:
+              // 1. Heat Index pill: "🌡️ Heat Index: 33°C" (11.sp, FontWeight.SemiBold)
+              // 2. Air Quality pill: "🍃 AQI: 42 • Good" (11.sp, FontWeight.SemiBold)
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.72f else 0.85f),
+                  border = BorderStroke(
+                    width = 1.dp,
+                    color = palette.accentIndigo.copy(alpha = 0.28f)
+                  ),
+                  modifier = Modifier.testTag("dashboard_heat_index_pill")
+                ) {
+                  Text(
+                    text = "🌡️ Heat Index: ${env.heatIndexCelsius}°C",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                  )
+                }
+
+                Surface(
+                  shape = RoundedCornerShape(50),
+                  color = aqiAccentColor.copy(alpha = if (palette.isDark) 0.16f else 0.12f),
+                  border = BorderStroke(
+                    width = 1.dp,
+                    color = aqiAccentColor.copy(alpha = 0.45f)
+                  ),
+                  modifier = Modifier.testTag("dashboard_aqi_pill")
+                ) {
+                  Text(
+                    text = "🍃 AQI: ${env.usAqi} • ${env.aqiRating}",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = aqiAccentColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                  )
+                }
               }
             }
           }
@@ -9454,11 +10018,15 @@ fun ExtrasScreen(
   val deckCount = viewModel.flashcardDecks.size
   val totalCardCount = viewModel.flashcardDecks.sumOf { it.cards.size }
 
-  Box(modifier = modifier.fillMaxSize()) {
+  Box(
+    modifier = modifier.fillMaxSize(),
+    contentAlignment = Alignment.TopCenter
+  ) {
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = metrics.maxContentWidth)
+        .widthIn(max = 680.dp)
+        .align(Alignment.TopCenter)
         .verticalScroll(rememberScrollState())
         .padding(
           start = metrics.scaledDp(20),
@@ -9467,7 +10035,8 @@ fun ExtrasScreen(
           bottom = metrics.scaledDp(116)
         )
         .testTag("extras_tools_page"),
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18)),
+      horizontalAlignment = Alignment.CenterHorizontally
     ) {
       // Top Header
       Text(
@@ -9495,6 +10064,8 @@ fun ExtrasScreen(
         borderStroke = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.55f)),
         modifier = Modifier
           .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
           .testTag("extra_tool_card_smart_flashcards")
       ) {
         Column(
@@ -9660,7 +10231,10 @@ fun ExtrasScreen(
           playCardHapticSound(context, localView)
           isFormulaVaultOpen = true
         },
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
       )
 
       // 3. Secondary Modules ("Coming Soon" Frosted Cards)
@@ -9672,59 +10246,55 @@ fun ExtrasScreen(
           fontWeight = FontWeight.Bold,
           letterSpacing = 1.2.sp
         ),
-        color = palette.textSecondary
+        color = palette.textSecondary,
+        modifier = Modifier.fillMaxWidth()
       )
 
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
-      ) {
-        Row(
+      if (metrics.screenWidthDp >= 600) {
+        // Tablets (screenWidthDp >= 600.dp): Dual-column adaptive grid rows
+        Column(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
-          ExtraToolPlaceholderCard(
-            tool = comingSoonModules[0],
-            metrics = metrics,
-            isComingSoon = true,
-            onClick = {
-              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
-            },
-            modifier = Modifier.weight(1f)
-          )
-          ExtraToolPlaceholderCard(
-            tool = comingSoonModules[1],
-            metrics = metrics,
-            isComingSoon = true,
-            onClick = {
-              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
-            },
-            modifier = Modifier.weight(1f)
-          )
+          comingSoonModules.chunked(2).forEach { pair ->
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+            ) {
+              pair.forEach { module ->
+                ExtraToolPlaceholderCard(
+                  tool = module,
+                  metrics = metrics,
+                  isComingSoon = true,
+                  onClick = {
+                    comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+                  },
+                  modifier = Modifier.weight(1f)
+                )
+              }
+              if (pair.size == 1) {
+                Spacer(modifier = Modifier.weight(1f))
+              }
+            }
+          }
         }
-
-        Row(
+      } else {
+        // Phones: Clean 1-column stack
+        Column(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
         ) {
-          ExtraToolPlaceholderCard(
-            tool = comingSoonModules[2],
-            metrics = metrics,
-            isComingSoon = true,
-            onClick = {
-              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
-            },
-            modifier = Modifier.weight(1f)
-          )
-          ExtraToolPlaceholderCard(
-            tool = comingSoonModules[3],
-            metrics = metrics,
-            isComingSoon = true,
-            onClick = {
-              comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
-            },
-            modifier = Modifier.weight(1f)
-          )
+          comingSoonModules.forEach { module ->
+            ExtraToolPlaceholderCard(
+              tool = module,
+              metrics = metrics,
+              isComingSoon = true,
+              onClick = {
+                comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
+              },
+              modifier = Modifier.fillMaxWidth()
+            )
+          }
         }
       }
     }
@@ -10257,7 +10827,8 @@ private fun buildGeometryShapesCatalog(): List<GeometryShapeEntry> = listOf(
 private enum class FormulaVaultTier {
   MASTER_VOLUMES,
   MSTE_SUB_SHELF,
-  ALGEBRA_A4_SHEET
+  ALGEBRA_A4_SHEET,
+  TRIGONOMETRY_A4_SHEET
 }
 
 private data class EngineeringNotebookSpec(
@@ -10326,8 +10897,8 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
     fullTitle = "",
     subtitle = "Plane & Spherical Trigonometry",
     departmentCode = "MSTE / CE-02",
-    pageBadge = "COMING SOON",
-    isActive = false,
+    pageBadge = "ACTIVE • 12 SECTIONS",
+    isActive = true,
     spineAccentColor = Color(0xFF3B82F6),
     secondaryAccentColor = Color(0xFF06B6D4)
   ),
@@ -10368,7 +10939,7 @@ fun FormulaVaultMainView(
   val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
   // 3-Tier PRC Board Exam Hierarchy State:
-  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET"
+  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET" / "TRIGONOMETRY_A4_SHEET"
   var currentTierName by rememberSaveable { mutableStateOf(FormulaVaultTier.MASTER_VOLUMES.name) }
   val currentTier = remember(currentTierName) {
     runCatching { FormulaVaultTier.valueOf(currentTierName) }.getOrDefault(FormulaVaultTier.MASTER_VOLUMES)
@@ -10378,9 +10949,11 @@ fun FormulaVaultMainView(
   var searchQuery by rememberSaveable { mutableStateOf("") }
   var isAddCustomDialogOpen by rememberSaveable { mutableStateOf(false) }
   var showTocSheet by rememberSaveable { mutableStateOf(false) }
+  var showHolographicTriangleModal by rememberSaveable { mutableStateOf(false) }
   var highlightedSectionIndex by remember { mutableStateOf<Int?>(null) }
 
   val a4LazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+  val trigLazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
 
   // Automatically clear the arrival pulse glow after 1.8 seconds
   androidx.compose.runtime.LaunchedEffect(highlightedSectionIndex) {
@@ -10396,11 +10969,13 @@ fun FormulaVaultMainView(
   val masterVolumes = remember { buildMasterBoardVolumes() }
   val msteSubNotebooks = remember { buildMsteSubNotebooks() }
   val algebraSections = remember { buildAlgebraHandbookSections() }
+  val trigonometrySections = remember { buildTrigonometryHandbookSections() }
 
   fun navigateBackOneTier() {
     playCardHapticSound(context, localView)
     when (currentTier) {
-      FormulaVaultTier.ALGEBRA_A4_SHEET -> {
+      FormulaVaultTier.ALGEBRA_A4_SHEET,
+      FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> {
         currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
       }
       FormulaVaultTier.MSTE_SUB_SHELF -> {
@@ -10413,13 +10988,14 @@ fun FormulaVaultMainView(
   }
 
   BackHandler {
-    if (showTocSheet) {
-      showTocSheet = false
-    } else if (isSearchExpanded && searchQuery.isNotEmpty()) {
-      searchQuery = ""
-      isSearchExpanded = false
-    } else {
-      navigateBackOneTier()
+    when {
+      showHolographicTriangleModal -> showHolographicTriangleModal = false
+      showTocSheet -> showTocSheet = false
+      isSearchExpanded && searchQuery.isNotEmpty() -> {
+        searchQuery = ""
+        isSearchExpanded = false
+      }
+      else -> navigateBackOneTier()
     }
   }
 
@@ -10438,6 +11014,7 @@ fun FormulaVaultMainView(
     FormulaVaultTier.MASTER_VOLUMES -> "CE Formula Vault"
     FormulaVaultTier.MSTE_SUB_SHELF -> "MSTE Library"
     FormulaVaultTier.ALGEBRA_A4_SHEET -> "MSTE • Algebra"
+    FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "MSTE • Trigonometry"
   }
 
   val trimmedQuery = searchQuery.trim()
@@ -10454,8 +11031,20 @@ fun FormulaVaultMainView(
     }
   }
 
-  val showA4DirectlyFromSearch = trimmedQuery.isNotEmpty() &&
-    algebraMatchesQuery &&
+  val trigMatchesQuery = remember(trimmedQuery, trigonometrySections) {
+    if (trimmedQuery.isEmpty()) false
+    else trigonometrySections.any { sec ->
+      sec.sectionTitle.contains(trimmedQuery, ignoreCase = true) ||
+        sec.items.any { item ->
+          item.title.contains(trimmedQuery, ignoreCase = true) ||
+            item.formulaOrStatement.contains(trimmedQuery, ignoreCase = true) ||
+            item.note.contains(trimmedQuery, ignoreCase = true) ||
+            item.subItems.any { it.contains(trimmedQuery, ignoreCase = true) }
+        }
+    }
+  }
+
+  val noShelfMatchesQuery = trimmedQuery.isNotEmpty() &&
     masterVolumes.none {
       it.title.contains(trimmedQuery, ignoreCase = true) ||
         it.fullTitle.contains(trimmedQuery, ignoreCase = true)
@@ -10464,7 +11053,13 @@ fun FormulaVaultMainView(
       it.title.contains(trimmedQuery, ignoreCase = true)
     }
 
-  val isShowingA4Sheet = currentTier == FormulaVaultTier.ALGEBRA_A4_SHEET || showA4DirectlyFromSearch
+  val showTrigDirectlyFromSearch = noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
+  val showAlgebraDirectlyFromSearch = noShelfMatchesQuery && algebraMatchesQuery
+
+  val isShowingTrigSheet = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET ||
+    (showTrigDirectlyFromSearch && currentTier != FormulaVaultTier.ALGEBRA_A4_SHEET)
+  val isShowingAlgebraSheet = !isShowingTrigSheet &&
+    (currentTier == FormulaVaultTier.ALGEBRA_A4_SHEET || showAlgebraDirectlyFromSearch)
 
   Box(
     modifier = modifier
@@ -10475,6 +11070,7 @@ fun FormulaVaultMainView(
       modifier = Modifier
         .fillMaxSize()
         .widthIn(max = metrics.maxContentWidth)
+        .align(Alignment.TopCenter)
         .padding(
           start = metrics.scaledDp(18),
           end = metrics.scaledDp(18),
@@ -10512,7 +11108,8 @@ fun FormulaVaultMainView(
               Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                 contentDescription = when (currentTier) {
-                  FormulaVaultTier.ALGEBRA_A4_SHEET -> "Back to MSTE Library"
+                  FormulaVaultTier.ALGEBRA_A4_SHEET,
+                  FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "Back to MSTE Library"
                   FormulaVaultTier.MSTE_SUB_SHELF -> "Back to Master Volumes"
                   FormulaVaultTier.MASTER_VOLUMES -> "Back to Extras"
                 },
@@ -10522,7 +11119,7 @@ fun FormulaVaultMainView(
             }
           }
 
-          // Dynamic Single-Line Title ("CE Formula Vault" / "MSTE Library" / "MSTE • Algebra")
+          // Dynamic Single-Line Title ("CE Formula Vault" / "MSTE Library" / "MSTE • Algebra" / "MSTE • Trigonometry")
           Text(
             text = topBarTitle,
             style = MaterialTheme.typography.titleLarge.copy(
@@ -10640,12 +11237,14 @@ fun FormulaVaultMainView(
             placeholder = {
               Text(
                 text = when (currentTier) {
+                  FormulaVaultTier.TRIGONOMETRY_A4_SHEET ->
+                    "Filter Trigonometry laws, triangle area, medians, bisectors, or identities..."
                   FormulaVaultTier.ALGEBRA_A4_SHEET ->
                     "Filter Algebra laws, equations, or symbols (e.g., quadratic, log, radical)..."
                   FormulaVaultTier.MSTE_SUB_SHELF ->
-                    "Search MSTE sub-volumes or Algebra laws..."
+                    "Search MSTE sub-volumes, Algebra, or Trigonometry laws..."
                   FormulaVaultTier.MASTER_VOLUMES ->
-                    "Search PRC board subjects (MSTE, PSAD, HPGE) or Algebra laws..."
+                    "Search PRC board subjects (MSTE, PSAD, HPGE) or MSTE formulas..."
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                 color = palette.textSecondary
@@ -10693,7 +11292,34 @@ fun FormulaVaultMainView(
       // 2. 3-TIER HIERARCHY VIEW SWITCHER
       // ====================================================================
       when {
-        isShowingA4Sheet -> {
+        isShowingTrigSheet -> {
+          val customTrigFormulas = customFormulas.filter {
+            it.categoryTab.equals("Mathematics", ignoreCase = true) &&
+              it.mathSubTab.equals("Trigonometry", ignoreCase = true)
+          }
+          MsteTrigonometrySheet(
+            metrics = metrics,
+            lazyListState = trigLazyListState,
+            highlightedSectionIndex = highlightedSectionIndex,
+            searchQuery = trimmedQuery,
+            customFormulas = customTrigFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            onBackToShelf = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+            },
+            onOpenToc = {
+              playCardHapticSound(context, localView)
+              showTocSheet = true
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        isShowingAlgebraSheet -> {
           val customAlgebraFormulas = customFormulas.filter {
             it.categoryTab.equals("Mathematics", ignoreCase = true) &&
               it.mathSubTab.equals("Algebra", ignoreCase = true)
@@ -10735,14 +11361,20 @@ fun FormulaVaultMainView(
             },
             onOpenNotebook = { notebook ->
               playCardHapticSound(context, localView)
-              if (notebook.isActive && notebook.id == "algebra") {
-                currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
-              } else {
-                Toast.makeText(
-                  context,
-                  "${notebook.title} (${notebook.departmentCode}) reference sheet is coming soon!",
-                  Toast.LENGTH_SHORT
-                ).show()
+              when {
+                notebook.isActive && notebook.id == "algebra" -> {
+                  currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+                }
+                notebook.isActive && notebook.id == "trigonometry" -> {
+                  currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+                }
+                else -> {
+                  Toast.makeText(
+                    context,
+                    "${notebook.title} (${notebook.departmentCode}) reference sheet is coming soon!",
+                    Toast.LENGTH_SHORT
+                  ).show()
+                }
               }
             },
             modifier = Modifier
@@ -10781,49 +11413,91 @@ fun FormulaVaultMainView(
       }
     }
 
-    // Floating Quick-Jump Pill ("Contents") at bottom-right when viewing the A4 Algebra Sheet
-    if (isShowingA4Sheet) {
-      Surface(
-        onClick = {
-          playCardHapticSound(context, localView)
-          showTocSheet = true
-        },
-        shape = CircleShape,
-        color = palette.cardSurface.copy(alpha = 0.92f),
-        border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f)),
-        shadowElevation = 8.dp,
+    // ====================================================================
+    // INTERACTIVE "HOLOGRAPHIC TRIANGLE" INSPECTOR FLOATING TRIGGER ICON
+    // Positioned at lower-left corner (bottom = 24.dp, start = 20.dp)
+    // ====================================================================
+    val holoPulseTransition = rememberInfiniteTransition(label = "holographic_triangle_pulse")
+    val holoGlowAlpha by holoPulseTransition.animateFloat(
+      initialValue = 0.42f,
+      targetValue = 0.92f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
+      ),
+      label = "holo_glow_alpha"
+    )
+    val holoPulseScale by holoPulseTransition.animateFloat(
+      initialValue = 1.0f,
+      targetValue = 1.06f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+        repeatMode = RepeatMode.Reverse
+      ),
+      label = "holo_pulse_scale"
+    )
+
+    Surface(
+      onClick = {
+        playCardHapticSound(context, localView)
+        showHolographicTriangleModal = true
+      },
+      shape = CircleShape,
+      color = if (palette.isDark) {
+        Color(0xFF0F172A).copy(alpha = 0.90f)
+      } else {
+        Color(0xFFF8FAFC).copy(alpha = 0.94f)
+      },
+      border = BorderStroke(
+        width = 1.4.dp,
+        brush = Brush.linearGradient(
+          listOf(
+            Color(0xFF06B6D4).copy(alpha = holoGlowAlpha),
+            Color.White.copy(alpha = if (palette.isDark) 0.55f else 0.85f),
+            Color(0xFF3B82F6).copy(alpha = holoGlowAlpha * 0.85f)
+          )
+        )
+      ),
+      shadowElevation = 10.dp,
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .padding(bottom = 24.dp, start = 20.dp)
+        .size(52.dp)
+        .scale(holoPulseScale)
+        .testTag("holographic_triangle_trigger_button")
+    ) {
+      Box(
         modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .padding(bottom = 96.dp, end = 16.dp)
-          .testTag("formula_vault_floating_toc_pill")
+          .fillMaxSize()
+          .background(
+            brush = Brush.radialGradient(
+              colors = listOf(
+                Color(0xFF06B6D4).copy(alpha = 0.24f * holoGlowAlpha),
+                Color.Transparent
+              )
+            )
+          ),
+        contentAlignment = Alignment.Center
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.ViewList,
-            contentDescription = "Table of Contents",
-            tint = palette.accentIndigo,
-            modifier = Modifier.size(17.dp)
-          )
-          Text(
-            text = "Contents",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold
-            ),
-            color = palette.textPrimary
-          )
-        }
+        Icon(
+          imageVector = Icons.Default.ChangeHistory,
+          contentDescription = "Interactive Triangle Anatomy Inspector",
+          tint = Color(0xFF06B6D4),
+          modifier = Modifier.size(26.dp)
+        )
       }
     }
 
     // Frosted Glass Table of Contents (TOC) Quick-Jump Sheet
     if (showTocSheet) {
+      val activeTocIsTrig = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet
       FormulaVaultTocGlassSheet(
-        sections = algebraSections,
+        sections = if (activeTocIsTrig) trigonometrySections else algebraSections,
+        sheetSubtitle = if (activeTocIsTrig) {
+          "CIVIL ENGINEERING • TRIGONOMETRY CHEAT SHEET"
+        } else {
+          "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET"
+        },
         onDismiss = { showTocSheet = false },
         onSelectSection = { sectionZeroBasedIndex ->
           playCardHapticSound(context, localView)
@@ -10832,16 +11506,30 @@ fun FormulaVaultMainView(
             searchQuery = ""
             isSearchExpanded = false
           }
-          currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
-          highlightedSectionIndex = sectionZeroBasedIndex
-          // Item 0 is the A4 Running Header & Title ("ALGEBRA");
-          // Items 1..7 are the 7 Algebra reference sections
-          val targetIndex = sectionZeroBasedIndex + 1
-          coroutineScope.launch {
-            kotlinx.coroutines.delay(60L)
-            a4LazyListState.animateScrollToItem(index = targetIndex)
+          if (activeTocIsTrig) {
+            currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+            highlightedSectionIndex = sectionZeroBasedIndex
+            val targetIndex = sectionZeroBasedIndex + 1
+            coroutineScope.launch {
+              kotlinx.coroutines.delay(60L)
+              trigLazyListState.animateScrollToItem(index = targetIndex)
+            }
+          } else {
+            currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+            highlightedSectionIndex = sectionZeroBasedIndex
+            val targetIndex = sectionZeroBasedIndex + 1
+            coroutineScope.launch {
+              kotlinx.coroutines.delay(60L)
+              a4LazyListState.animateScrollToItem(index = targetIndex)
+            }
           }
         }
+      )
+    }
+
+    if (showHolographicTriangleModal) {
+      HolographicTriangleModal(
+        onDismiss = { showHolographicTriangleModal = false }
       )
     }
 
@@ -10893,7 +11581,11 @@ fun FormulaVaultMainView(
           customFormulas = updatedList
           saveCustomFormulas(context, updatedList)
           isAddCustomDialogOpen = false
-          currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+          currentTierName = if (mathSubTab.equals("Trigonometry", ignoreCase = true)) {
+            FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+          } else {
+            FormulaVaultTier.ALGEBRA_A4_SHEET.name
+          }
           Toast.makeText(context, "Saved \"$title\" to Formula Vault!", Toast.LENGTH_SHORT).show()
         }
       )
@@ -10904,6 +11596,7 @@ fun FormulaVaultMainView(
 @Composable
 private fun FormulaVaultTocGlassSheet(
   sections: List<AlgebraHandbookSection>,
+  sheetSubtitle: String = "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET",
   onDismiss: () -> Unit,
   onSelectSection: (Int) -> Unit
 ) {
@@ -10980,7 +11673,7 @@ private fun FormulaVaultTocGlassSheet(
                 color = palette.textPrimary
               )
               Text(
-                text = "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET",
+                text = sheetSubtitle,
                 style = MaterialTheme.typography.labelSmall.copy(
                   fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                   fontSize = 10.5.sp,
@@ -11016,7 +11709,7 @@ private fun FormulaVaultTocGlassSheet(
             color = Color(0xFF6366F1).copy(alpha = 0.22f)
           )
 
-          // 7 Itemized Clickable Chapter Cards
+          // Itemized Clickable Chapter Cards
           Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -11132,81 +11825,100 @@ private fun NotebookShelfLibraryView(
           ((nb.id == "algebra" || nb.id == "mste") &&
             "algebra exponents logarithms radicals polynomials quadratic inequalities mste".contains(
               searchQuery.lowercase(Locale.ROOT)
+            )) ||
+          ((nb.id == "trigonometry" || nb.id == "mste") &&
+            "trigonometry sine cosine tangent pythagorean oblique heron median altitude bisector incenter centroid orthocenter radians grads mils spherical".contains(
+              searchQuery.lowercase(Locale.ROOT)
             ))
       }
     }
   }
 
-  Column(
+  LazyVerticalGrid(
+    columns = if (metrics.screenWidthDp >= 600) {
+      GridCells.Adaptive(minSize = 300.dp)
+    } else {
+      GridCells.Fixed(1)
+    } ,
     modifier = modifier
-      .verticalScroll(rememberScrollState())
+      .widthIn(max = 680.dp)
       .padding(bottom = 96.dp),
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalArrangement = Arrangement.spacedBy(14.dp)
   ) {
     if (breadcrumbLabel != null && onBreadcrumbClick != null) {
-      Surface(
-        onClick = onBreadcrumbClick,
-        shape = RoundedCornerShape(10.dp),
-        color = palette.cardFill,
-        border = palette.glassBorder,
-        modifier = Modifier.testTag("back_to_master_volumes_chip")
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-            contentDescription = "Back to Master Volumes",
-            tint = palette.accentIndigo,
-            modifier = Modifier.size(16.dp)
-          )
-          Text(
-            text = breadcrumbLabel,
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontWeight = FontWeight.Bold,
-              fontSize = 11.5.sp
-            ),
-            color = palette.accentIndigo
-          )
+      item(span = { GridItemSpan(maxLineSpan) }) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+          Surface(
+            onClick = onBreadcrumbClick,
+            shape = RoundedCornerShape(10.dp),
+            color = palette.cardFill,
+            border = palette.glassBorder,
+            modifier = Modifier.testTag("back_to_master_volumes_chip")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = "Back to Master Volumes",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(16.dp)
+              )
+              Text(
+                text = breadcrumbLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.5.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
         }
       }
     }
 
     // Shelf Section Header
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(top = 2.dp, bottom = 2.dp),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      Text(
-        text = shelfHeaderTitle,
-        style = MaterialTheme.typography.labelMedium.copy(
-          fontFamily = JetBrainsMonoFamily,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.ExtraBold,
-          letterSpacing = 1.3.sp
-        ),
-        color = palette.textSecondary
-      )
+    item(span = { GridItemSpan(maxLineSpan) }) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(top = 2.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = shelfHeaderTitle,
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 1.3.sp
+          ),
+          color = palette.textSecondary
+        )
 
-      Text(
-        text = shelfCountBadge,
-        style = MaterialTheme.typography.labelSmall.copy(
-          fontFamily = JetBrainsMonoFamily,
-          fontSize = 10.5.sp,
-          fontWeight = FontWeight.Bold,
-          letterSpacing = 1.sp
-        ),
-        color = palette.accentIndigo
-      )
+        Text(
+          text = shelfCountBadge,
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+          ),
+          color = palette.accentIndigo
+        )
+      }
     }
 
-    // Styled Engineering Subject Notebooks
-    filteredNotebooks.forEach { notebook ->
+    // Styled Engineering Subject Notebooks (1 column on phones, Adaptive(300.dp) dual-column on tablets)
+    items(
+      items = filteredNotebooks,
+      key = { it.id }
+    ) { notebook ->
       MasterVolumeCard(
         notebook = notebook,
         customFormulasCount = if (notebook.id == "algebra") customFormulasCount else 0,
@@ -11961,6 +12673,1354 @@ private fun AlgebraA4PaperViewer(
     }
   }
 }
+
+private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = listOf(
+  AlgebraHandbookSection(
+    sectionTitle = "Functions of a Right Triangle",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Primary Ratios",
+        formulaOrStatement = "sin θ = opp / hyp ,  cos θ = adj / hyp ,  tan θ = opp / adj"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Reciprocal Ratios",
+        formulaOrStatement = "csc θ = hyp / opp ,  sec θ = hyp / adj ,  cot θ = adj / opp"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Pythagorean Theorem & Right Triangle Metric Relations",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Hypotenuse & Legs",
+        formulaOrStatement = "c² = a² + b²  ⟹  c = √(a² + b²)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Altitude to Hypotenuse (h)",
+        formulaOrStatement = "h = (a · b) / c ,  h² = p · q",
+        note = "(where p, q are hypotenuse segments)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Leg Projections",
+        formulaOrStatement = "a² = c · p ,  b² = c · q"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Trigonometric Identities",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Quotient & Reciprocal",
+        formulaOrStatement = "tan θ = sin θ / cos θ ,  cot θ = cos θ / sin θ = 1 / tan θ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Pythagorean Identities",
+        formulaOrStatement = "sin²θ + cos²θ = 1",
+        subItems = listOf(
+          "1 + tan²θ = sec²θ",
+          "1 + cot²θ = csc²θ"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Co-Function Identities",
+        formulaOrStatement = "sin(90° - θ) = cos θ ,  tan(90° - θ) = cot θ ,  sec(90° - θ) = csc θ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 4,
+        title = "Sum & Difference of Two Angles",
+        formulaOrStatement = "sin(A ± B) = sin A cos B ± cos A sin B",
+        subItems = listOf(
+          "cos(A ± B) = cos A cos B ∓ sin A sin B",
+          "tan(A ± B) = (tan A ± tan B) / (1 ∓ tan A tan B)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 5,
+        title = "Double-Angle Formulas",
+        formulaOrStatement = "sin 2θ = 2 sin θ cos θ",
+        subItems = listOf(
+          "cos 2θ = cos²θ - sin²θ = 2cos²θ - 1 = 1 - 2sin²θ",
+          "tan 2θ = (2 tan θ) / (1 - tan²θ)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 6,
+        title = "Half-Angle Formulas",
+        formulaOrStatement = "sin(θ/2) = ±√((1 - cos θ) / 2)",
+        subItems = listOf(
+          "cos(θ/2) = ±√((1 + cos θ) / 2)",
+          "tan(θ/2) = (1 - cos θ) / sin θ = sin θ / (1 + cos θ)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 7,
+        title = "Product-to-Sum Formulas",
+        formulaOrStatement = "sin A cos B = ½ [sin(A + B) + sin(A - B)]",
+        subItems = listOf(
+          "cos A cos B = ½ [cos(A + B) + cos(A - B)]",
+          "sin A sin B = -½ [cos(A + B) - cos(A - B)]"
+        )
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Laws of Oblique Triangles",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Sine Law",
+        formulaOrStatement = "a / sin A = b / sin B = c / sin C = 2R",
+        note = "(where R is circumradius)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Cosine Law",
+        formulaOrStatement = "a² = b² + c² - 2bc cos A",
+        subItems = listOf(
+          "b² = a² + c² - 2ac cos B",
+          "c² = a² + b² - 2ab cos C"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Law of Tangents",
+        formulaOrStatement = "(a - b) / (a + b) = tan[½(A - B)] / tan[½(A + B)]"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Angles & Classifications",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Classifications",
+        formulaOrStatement = "Acute: 0° < θ < 90° | Right: θ = 90° | Obtuse: 90° < θ < 180° | Reflex: 180° < θ < 360°"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Pairs",
+        formulaOrStatement = "Complementary: A + B = 90° (π/2 rad)",
+        subItems = listOf(
+          "Supplementary: A + B = 180° (π rad)",
+          "Explementary (Conjugate): A + B = 360° (2π rad)"
+        )
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Units of Angular Measurement & Exact Conversions",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Equivalence Relation",
+        formulaOrStatement = "1 rev = 360° = 2π rad = 400 grads (gons) = 6400 mils"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Common Conversion Factors",
+        formulaOrStatement = "1 rad = 180° / π ≈ 57.29578° = 57°17'45\"",
+        subItems = listOf(
+          "1° = π / 180° rad ≈ 0.017453 rad",
+          "1 grad = 0.9° | 1 mil = 360° / 6400 = 0.05625°"
+        )
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Area of a Triangle (All Engineering Formulas)",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Base and Altitude",
+        formulaOrStatement = "Area = ½ · b · h"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Two Sides and Included Angle (SAS)",
+        formulaOrStatement = "Area = ½ a b sin C = ½ b c sin A = ½ a c sin B"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Three Sides (Heron's Formula)",
+        formulaOrStatement = "Area = √[s(s - a)(s - b)(s - c)] ,  where s = (a + b + c) / 2"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 4,
+        title = "Inradius (r)",
+        formulaOrStatement = "Area = r · s  ⟹  r = Area / s"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 5,
+        title = "Circumradius (R)",
+        formulaOrStatement = "Area = (a · b · c) / (4R)  ⟹  R = (a · b · c) / (4 · Area)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 6,
+        title = "Exradius (r_a, r_b, r_c)",
+        formulaOrStatement = "Area = r_a(s - a) = r_b(s - b) = r_c(s - c)",
+        subItems = listOf(
+          "Area = √(r · r_a · r_b · r_c)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 7,
+        title = "Analytic / Surveyor's Coordinates",
+        formulaOrStatement = "Area = ½ |(x₁y₂ + x₂y₃ + x₃y₁) - (y₁x₂ + y₂x₃ + y₃x₁)|"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Medians of a Triangle & Centroid",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Length of Medians (Apollonius' Theorem)",
+        formulaOrStatement = "m_a = ½ √(2b² + 2c² - a²)",
+        subItems = listOf(
+          "m_b = ½ √(2a² + 2c² - b²)",
+          "m_c = ½ √(2a² + 2b² - c²)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Centroid Intersection Properties",
+        formulaOrStatement = "Centroid (G) divides each median in a 2:1 ratio from vertex to midpoint",
+        subItems = listOf(
+          "Area of 6 subtriangles formed by medians are strictly equal (Area / 6)"
+        )
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Altitudes of a Triangle & Orthocenter",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Heights from Vertices",
+        formulaOrStatement = "h_a = (2 · Area) / a ,  h_b = (2 · Area) / b ,  h_c = (2 · Area) / c"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Harmonic Relation",
+        formulaOrStatement = "1/h_a + 1/h_b + 1/h_c = 1/r",
+        note = "(where r is inradius)"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Angle Bisectors of a Triangle & Incenter",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Length of Internal Angle Bisectors",
+        formulaOrStatement = "t_a = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A / 2)] / (b + c)",
+        subItems = listOf(
+          "t_b = [2 √(a c s (s - b))] / (a + c) = [2 a c cos(B / 2)] / (a + c)",
+          "t_c = [2 √(a b s (s - c))] / (a + b) = [2 a b cos(C / 2)] / (a + b)"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Angle Bisector Theorem",
+        formulaOrStatement = "Segments of opposite side: c₁ / c₂ = a / b"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Circumcircle, Incircle & Euler Line Relations",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Euler's Theorem (Distance d between Circumcenter O & Incenter I)",
+        formulaOrStatement = "d² = R(R - 2r)  ⟹  R ≥ 2r"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Exradii & Circumradius Identity",
+        formulaOrStatement = "r_a + r_b + r_c - r = 4R ,  cos A + cos B + cos C = 1 + r / R"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Spherical Trigonometry (Right & Oblique Spherical Triangles)",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Napier's Rules for Right Spherical Triangles (C = 90°)",
+        formulaOrStatement = "sin(middle) = prod of cosines of opposite parts (SIN-COOP)",
+        subItems = listOf(
+          "sin(middle) = prod of tangents of adjacent parts (SIN-TAN-AD)",
+          "Circular Parts: a ,  b ,  co-A ,  co-c ,  co-B"
+        )
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Oblique Spherical Triangles & Spherical Excess (E)",
+        formulaOrStatement = "sin a / sin A = sin b / sin B = sin c / sin C",
+        subItems = listOf(
+          "cos a = cos b cos c + sin b sin c cos A",
+          "E = (A + B + C) - 180° ,  Area = (π R² E) / 180°"
+        )
+      )
+    )
+  )
+)
+
+@Composable
+private fun MsteTrigonometrySheet(
+  metrics: ResponsiveMetrics,
+  lazyListState: androidx.compose.foundation.lazy.LazyListState,
+  highlightedSectionIndex: Int?,
+  searchQuery: String,
+  customFormulas: List<ReferenceFormulaCardData>,
+  starredIds: Set<String>,
+  onToggleStar: (String) -> Unit,
+  onBackToShelf: () -> Unit,
+  onOpenToc: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val palette = currentGlassPalette()
+  val allSections = remember { buildTrigonometryHandbookSections() }
+
+  val filteredSections = remember(allSections, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      allSections.mapIndexed { idx, sec -> idx to sec }
+    } else {
+      allSections.mapIndexedNotNull { idx, section ->
+        if (section.sectionTitle.contains(searchQuery, ignoreCase = true)) {
+          idx to section
+        } else {
+          val matchingItems = section.items.filter { item ->
+            item.title.contains(searchQuery, ignoreCase = true) ||
+              item.formulaOrStatement.contains(searchQuery, ignoreCase = true) ||
+              item.note.contains(searchQuery, ignoreCase = true) ||
+              item.subItems.any { it.contains(searchQuery, ignoreCase = true) }
+          }
+          if (matchingItems.isNotEmpty()) {
+            idx to section.copy(items = matchingItems)
+          } else {
+            null
+          }
+        }
+      }
+    }
+  }
+
+  val a4PaperColor = if (palette.isDark) Color(0xFF1E222B) else Color(0xFFFAFAFC)
+  val a4BorderColor = if (palette.isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFCBD5E1)
+  val a4HeadingColor = if (palette.isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+  val a4SubtleTextColor = if (palette.isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+
+  val mathCalloutBg = if (palette.isDark) {
+    palette.cardSurface.copy(alpha = 0.9f)
+  } else {
+    Color(0xFFEEF2FF).copy(alpha = 0.92f)
+  }
+  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.25f)
+  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+
+  LazyColumn(
+    state = lazyListState,
+    contentPadding = PaddingValues(bottom = 120.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    modifier = modifier
+      .fillMaxSize()
+      .testTag("trigonometry_a4_paper_sheet")
+  ) {
+    // ====================================================================
+    // ITEM 0: Breadcrumb Bar + A4 Running Header & Title ("PLANE & SPHERICAL TRIGONOMETRY")
+    // ====================================================================
+    item(key = "trig_a4_header_item_0") {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Surface(
+            onClick = onBackToShelf,
+            shape = RoundedCornerShape(10.dp),
+            color = palette.cardFill,
+            border = palette.glassBorder,
+            modifier = Modifier.testTag("trig_back_to_notebook_shelf_chip")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = "Back to MSTE Library",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(16.dp)
+              )
+              Text(
+                text = "MSTE Library",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.5.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+
+          Surface(
+            onClick = onOpenToc,
+            shape = RoundedCornerShape(10.dp),
+            color = palette.cardFill,
+            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.35f))
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ViewList,
+                contentDescription = "Table of Contents",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(14.dp)
+              )
+              Text(
+                text = "MSTE / CE-02 • TOC",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = FontFamily.Monospace,
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 0.8.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+        }
+
+        // Top of the A4 Paper Sheet
+        Surface(
+          shape = if (filteredSections.isEmpty()) {
+            RoundedCornerShape(6.dp)
+          } else {
+            RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
+          },
+          color = a4PaperColor,
+          border = BorderStroke(1.dp, a4BorderColor),
+          shadowElevation = 4.dp,
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER II: TRIGONOMETRY",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.2.sp
+              ),
+              color = palette.accentIndigo
+            )
+
+            HorizontalDivider(
+              thickness = 1.5.dp,
+              color = palette.accentIndigo.copy(alpha = 0.45f)
+            )
+
+            Text(
+              text = "PLANE & SPHERICAL TRIGONOMETRY",
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.4.sp
+              ),
+              color = a4HeadingColor
+            )
+
+            if (filteredSections.isEmpty()) {
+              Text(
+                text = "No Trigonometry formulas match \"$searchQuery\".",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = a4SubtleTextColor,
+                modifier = Modifier.padding(vertical = 16.dp)
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // ====================================================================
+    // ITEMS 1..12: Each Trigonometry Section + High-Contrast Bold Monospace Capsules
+    // ====================================================================
+    items(
+      count = filteredSections.size,
+      key = { idx -> "trig_a4_section_item_${filteredSections[idx].first + 1}" }
+    ) { listIdx ->
+      val (originalSectionIndex, section) = filteredSections[listIdx]
+      val isLastSection = listIdx == filteredSections.lastIndex
+      val isHighlighted = highlightedSectionIndex == originalSectionIndex
+
+      val sectionHeaderBgAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.24f else 0f,
+        animationSpec = tween(durationMillis = 420),
+        label = "trig_toc_arrival_glow_alpha"
+      )
+      val sectionHeaderBorderAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.75f else 0f,
+        animationSpec = tween(durationMillis = 420),
+        label = "trig_toc_arrival_border_alpha"
+      )
+
+      Surface(
+        shape = if (isLastSection) {
+          RoundedCornerShape(bottomStart = 6.dp, bottomEnd = 6.dp)
+        } else {
+          RoundedCornerShape(0.dp)
+        },
+        color = a4PaperColor,
+        border = BorderStroke(1.dp, a4BorderColor),
+        shadowElevation = 4.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .testTag("trigonometry_section_${originalSectionIndex + 1}")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+              start = 22.dp,
+              end = 22.dp,
+              top = 14.dp,
+              bottom = if (isLastSection) 24.dp else 14.dp
+            ),
+          verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+          // Section Bullet Heading with Subtle Arrival Highlight Glow
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(10.dp))
+              .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
+              .border(
+                width = 1.dp,
+                color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
+                shape = RoundedCornerShape(10.dp)
+              )
+              .padding(
+                horizontal = if (isHighlighted) 10.dp else 0.dp,
+                vertical = if (isHighlighted) 6.dp else 2.dp
+              ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "•",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 19.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.accentIndigo
+            )
+            Text(
+              text = section.sectionTitle,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 16.5.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = a4HeadingColor
+            )
+          }
+
+          // Indented Highlighted Math Callout Blocks (1., 2., 3., ...)
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            section.items.forEach { rule ->
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Text(
+                    text = "${rule.number}. ${rule.title}:",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontSize = 14.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = a4HeadingColor
+                  )
+                  if (rule.note.isNotEmpty()) {
+                    Text(
+                      text = rule.note,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = a4SubtleTextColor
+                    )
+                  }
+                }
+
+                // High-contrast, bold monospace capsules (fontSize = 16.5.sp, FontWeight.Bold, FontFamily.Monospace, rounded glass container with hairline border)
+                val allFormulaCapsules = remember(rule) {
+                  listOf(rule.formulaOrStatement) + rule.subItems
+                }
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp),
+                  verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  allFormulaCapsules.forEach { formulaLine ->
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = mathCalloutBg,
+                      border = BorderStroke(1.dp, mathCalloutBorder),
+                      shadowElevation = 2.dp,
+                      modifier = Modifier.fillMaxWidth()
+                    ) {
+                      Text(
+                        text = formulaLine,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 16.5.sp,
+                          lineHeight = 23.sp,
+                          fontWeight = FontWeight.Bold,
+                          letterSpacing = 0.15.sp
+                        ),
+                        color = mathTextColor,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (!isLastSection) {
+            HorizontalDivider(
+              thickness = 0.8.dp,
+              color = a4BorderColor.copy(alpha = 0.55f),
+              modifier = Modifier.padding(top = 6.dp)
+            )
+          }
+        }
+      }
+    }
+
+    // Custom scholar formulas below the A4 paper sheet
+    if (customFormulas.isNotEmpty()) {
+      item(key = "trig_a4_custom_formulas_footer") {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 680.dp)
+            .padding(top = 16.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          customFormulas.forEach { formula ->
+            InteractiveReferenceFormulaCard(
+              formula = formula,
+              isStarred = starredIds.contains(formula.id),
+              onToggleStar = { onToggleStar(formula.id) },
+              metrics = metrics
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+private enum class HolographicTriangleTopic(
+  val chipLabel: String,
+  val conceptTitle: String,
+  val accentColor: Color,
+  val engineeringDefinition: String,
+  val geometricTheorem: String,
+  val boardExamFormula: String
+) {
+  SIDES_AND_ANGLES(
+    chipLabel = "Sides & Angles",
+    conceptTitle = "Oblique Sides (a, b, c) & Interior Angles (A, B, C)",
+    accentColor = Color(0xFF06B6D4),
+    engineeringDefinition = "In structural truss resolution and geodetic triangulation, side lengths a, b, and c lie strictly opposite interior vertex angles A, B, and C.",
+    geometricTheorem = "Interior Angle Sum & Law of Sines / Cosines: A + B + C = 180°; any side is proportional to the sine of its opposite angle.",
+    boardExamFormula = "a / sin A = b / sin B = c / sin C = 2R\na² = b² + c² - 2bc cos A"
+  ),
+  MEDIANS_AND_CENTROID(
+    chipLabel = "Medians & Centroid",
+    conceptTitle = "Medians (m_a, m_b, m_c) & Centroid (G)",
+    accentColor = Color(0xFFA855F7),
+    engineeringDefinition = "A median connects a vertex to the midpoint of the opposite side. All three medians intersect at the Centroid (G), the center of gravity of a uniform triangular plate.",
+    geometricTheorem = "Apollonius' Theorem & 2:1 Trisection: Centroid G divides each median in an exact 2:1 ratio from vertex to midpoint and partitions the triangle into 6 equal-area subtriangles.",
+    boardExamFormula = "m_a = ½ √(2b² + 2c² - a²)\nAG : GM_a = 2 : 1  •  A_sub = Area / 6"
+  ),
+  ALTITUDES_AND_ORTHOCENTER(
+    chipLabel = "Altitudes & Orthocenter",
+    conceptTitle = "Altitudes (h_a, h_b, h_c) & Orthocenter (H)",
+    accentColor = Color(0xFFF59E0B),
+    engineeringDefinition = "An altitude is the perpendicular drop from a vertex to the opposite side (or its extension). The three altitudes concur at the Orthocenter (H).",
+    geometricTheorem = "Reciprocal Altitude-Inradius Harmonic Theorem: Each altitude is inversely proportional to its base length, and the sum of reciprocals of the three altitudes equals the reciprocal of the inradius r.",
+    boardExamFormula = "h_a = (2 · Area) / a = b sin C = c sin B\n1/h_a + 1/h_b + 1/h_c = 1/r"
+  ),
+  BISECTORS_AND_INCENTER(
+    chipLabel = "Bisectors & Incenter",
+    conceptTitle = "Angle Bisectors (t_a, t_b, t_c) & Incenter (I)",
+    accentColor = Color(0xFF10B981),
+    engineeringDefinition = "An internal angle bisector divides a vertex angle into two equal halves (A/2). All three bisectors intersect at the Incenter (I), equidistant from all three sides.",
+    geometricTheorem = "Angle Bisector Theorem: An internal bisector divides the opposite side into segments (c₁, c₂) strictly proportional to the adjacent triangle sides (a : b).",
+    boardExamFormula = "t_a = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A/2)] / (b + c)\nc₁ / c₂ = b / c"
+  ),
+  RADII_R_AND_CAP_R(
+    chipLabel = "Radii (r, R)",
+    conceptTitle = "Inradius (r), Circumradius (R) & Centers (I, O)",
+    accentColor = Color(0xFF3B82F6),
+    engineeringDefinition = "Incenter (I) is the center of the inscribed circle (radius r tangent to all sides); Circumcenter (O) is the intersection of perpendicular bisectors (radius R through all vertices).",
+    geometricTheorem = "Euler's Triangle Inequality & Heron-Radius Relations: R ≥ 2r (equality holds iff equilateral), with distance d between O and I satisfying d² = R(R - 2r).",
+    boardExamFormula = "r = Area / s  •  R = (a · b · c) / (4 · Area)\nArea = √[s(s - a)(s - b)(s - c)]"
+  )
+}
+
+@Composable
+private fun HolographicTriangleModal(
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val localView = LocalView.current
+  var selectedTopic by rememberSaveable { mutableStateOf(HolographicTriangleTopic.SIDES_AND_ANGLES) }
+
+  val pulseTransition = rememberInfiniteTransition(label = "holo_modal_canvas_pulse")
+  val neonPulse by pulseTransition.animateFloat(
+    initialValue = 0.55f,
+    targetValue = 1.0f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 1350, easing = FastOutSlowInEasing),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "neon_pulse"
+  )
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color(0xFF030712).copy(alpha = 0.76f))
+        .clickable(
+          interactionSource = remember { MutableInteractionSource() },
+          indication = null,
+          onClick = onDismiss
+        ),
+      contentAlignment = Alignment.BottomCenter
+    ) {
+      Surface(
+        onClick = {},
+        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        color = Color(0xFF0B1120).copy(alpha = 0.97f),
+        border = BorderStroke(
+          width = 1.3.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              Color(0xFF06B6D4).copy(alpha = 0.75f),
+              Color(0xFF6366F1).copy(alpha = 0.45f),
+              Color(0xFFA855F7).copy(alpha = 0.40f)
+            )
+          )
+        ),
+        shadowElevation = 28.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 640.dp)
+          .testTag("holographic_triangle_modal")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(
+              brush = Brush.radialGradient(
+                colors = listOf(
+                  Color(0xFF06B6D4).copy(alpha = 0.12f),
+                  Color(0xFF1E1B4B).copy(alpha = 0.22f),
+                  Color.Transparent
+                ),
+                radius = 900f
+              )
+            )
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 18.dp)
+            .navigationBarsPadding(),
+          verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+          // Subtle Drag Handle
+          Box(
+            modifier = Modifier
+              .align(Alignment.CenterHorizontally)
+              .width(44.dp)
+              .height(4.dp)
+              .clip(CircleShape)
+              .background(Color(0xFF06B6D4).copy(alpha = 0.45f))
+          )
+
+          // Header: "Interactive Triangle Anatomy" with Close Button
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = "Interactive Triangle Anatomy",
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = 19.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color(0xFFF8FAFC)
+              )
+              Text(
+                text = "HOLOGRAPHIC CE BOARD GEOMETRY INSPECTOR • TAP CANVAS OR CHIPS",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = FontFamily.Monospace,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 1.sp
+                ),
+                color = Color(0xFF06B6D4)
+              )
+            }
+
+            Surface(
+              onClick = onDismiss,
+              shape = CircleShape,
+              color = Color(0xFF1E293B),
+              border = BorderStroke(1.dp, Color(0xFF06B6D4).copy(alpha = 0.35f)),
+              modifier = Modifier
+                .size(38.dp)
+                .testTag("holographic_triangle_close_button")
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Close Interactive Triangle Anatomy",
+                  tint = Color(0xFFE2E8F0),
+                  modifier = Modifier.size(18.dp)
+                )
+              }
+            }
+          }
+
+          // ==================================================================
+          // INTERACTIVE HOLOGRAPHIC CANVAS (OBLIQUE TRIANGLE ANATOMY)
+          // ==================================================================
+          Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color(0xFF060B16),
+            border = BorderStroke(
+              width = 1.2.dp,
+              color = selectedTopic.accentColor.copy(alpha = 0.55f)
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(236.dp)
+              .testTag("holographic_triangle_canvas")
+          ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+              Canvas(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .pointerInput(Unit) {
+                    detectTapGestures { tapOffset ->
+                      val w = size.width.toFloat()
+                      val h = size.height.toFloat()
+                      val ptA = Offset(w * 0.37f, h * 0.14f)
+                      val ptB = Offset(w * 0.12f, h * 0.82f)
+                      val ptC = Offset(w * 0.88f, h * 0.82f)
+                      val ptHFoot = Offset(ptA.x, ptB.y)
+                      val ptMidBC = Offset((ptB.x + ptC.x) / 2f, ptB.y)
+                      val ptG = Offset((ptA.x + ptB.x + ptC.x) / 3f, (ptA.y + ptB.y + ptC.y) / 3f)
+                      val ptI = Offset(w * 0.43f, h * 0.60f)
+                      val ptO = Offset(w * 0.50f, h * 0.56f)
+
+                      fun dist(p1: Offset, p2: Offset): Float =
+                        sqrt((p1.x - p2.x).pow(2) + (p1.y - p2.y).pow(2))
+
+                      val hitRadius = 46f
+                      val nextTopic = when {
+                        dist(tapOffset, ptG) < hitRadius || dist(tapOffset, ptMidBC) < hitRadius ->
+                          HolographicTriangleTopic.MEDIANS_AND_CENTROID
+                        dist(tapOffset, ptHFoot) < hitRadius || kotlin.math.abs(tapOffset.x - ptA.x) < 22f ->
+                          HolographicTriangleTopic.ALTITUDES_AND_ORTHOCENTER
+                        dist(tapOffset, ptI) < hitRadius ->
+                          HolographicTriangleTopic.BISECTORS_AND_INCENTER
+                        dist(tapOffset, ptO) < hitRadius ->
+                          HolographicTriangleTopic.RADII_R_AND_CAP_R
+                        else -> {
+                          val all = HolographicTriangleTopic.entries
+                          all[(all.indexOf(selectedTopic) + 1) % all.size]
+                        }
+                      }
+                      playCardHapticSound(context, localView)
+                      selectedTopic = nextTopic
+                    }
+                  }
+              ) {
+                val w = size.width
+                val h = size.height
+
+                // Subtle holographic engineering grid lines
+                val gridStep = w / 10f
+                for (i in 1..9) {
+                  drawLine(
+                    color = Color(0xFF06B6D4).copy(alpha = 0.06f),
+                    start = Offset(i * gridStep, 0f),
+                    end = Offset(i * gridStep, h),
+                    strokeWidth = 1f
+                  )
+                }
+                val hStep = h / 6f
+                for (j in 1..5) {
+                  drawLine(
+                    color = Color(0xFF06B6D4).copy(alpha = 0.06f),
+                    start = Offset(0f, j * hStep),
+                    end = Offset(w, j * hStep),
+                    strokeWidth = 1f
+                  )
+                }
+
+                // Oblique Triangle Vertices: A (top-left-ish apex), B (bottom-left), C (bottom-right)
+                val ptA = Offset(w * 0.37f, h * 0.14f)
+                val ptB = Offset(w * 0.12f, h * 0.82f)
+                val ptC = Offset(w * 0.88f, h * 0.82f)
+
+                // Key Foot Points on Base BC (side a)
+                // 1. Altitude foot H_a (perpendicular from A to BC)
+                val ptAltitudeFoot = Offset(ptA.x, ptB.y)
+                // 2. Median midpoint M_a of side BC
+                val ptMedianFoot = Offset((ptB.x + ptC.x) / 2f, ptB.y)
+                // 3. Angle Bisector foot T_a (divides BC in ratio c : b)
+                val sideA = distBetween(ptB, ptC)
+                val sideB = distBetween(ptA, ptC)
+                val sideC = distBetween(ptA, ptB)
+                val bisectorRatio = sideC / (sideB + sideC)
+                val ptBisectorFoot = Offset(
+                  x = ptB.x + (ptC.x - ptB.x) * bisectorRatio,
+                  y = ptB.y
+                )
+
+                // Notable Triangle Centers:
+                // Centroid G = (A + B + C) / 3
+                val ptG = Offset(
+                  x = (ptA.x + ptB.x + ptC.x) / 3f,
+                  y = (ptA.y + ptB.y + ptC.y) / 3f
+                )
+                // Incenter I = (aA + bB + cC) / (a + b + c)
+                val perimeter = sideA + sideB + sideC
+                val ptI = Offset(
+                  x = (sideA * ptA.x + sideB * ptB.x + sideC * ptC.x) / perimeter,
+                  y = (sideA * ptA.y + sideB * ptB.y + sideC * ptC.y) / perimeter
+                )
+                // Inradius r = 2 * Area / perimeter (since base BC is horizontal, Area = 0.5 * sideA * (ptB.y - ptA.y))
+                val triAreaPx = 0.5f * sideA * (ptB.y - ptA.y)
+                val inradiusPx = (2f * triAreaPx) / perimeter
+
+                // Circumcenter O (exact analytic circumcenter of A, B, C)
+                val dVal = 2f * (ptA.x * (ptB.y - ptC.y) + ptB.x * (ptC.y - ptA.y) + ptC.x * (ptA.y - ptB.y))
+                val aSq = ptA.x * ptA.x + ptA.y * ptA.y
+                val bSq = ptB.x * ptB.x + ptB.y * ptB.y
+                val cSq = ptC.x * ptC.x + ptC.y * ptC.y
+                val ptO = Offset(
+                  x = (aSq * (ptB.y - ptC.y) + bSq * (ptC.y - ptA.y) + cSq * (ptA.y - ptB.y)) / dVal,
+                  y = (aSq * (ptC.x - ptB.x) + bSq * (ptA.x - ptC.x) + cSq * (ptB.x - ptA.x)) / dVal
+                )
+
+                val dashEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
+
+                // Optional Radii (r, R) Holographic Rings
+                val isRadiiSelected = selectedTopic == HolographicTriangleTopic.RADII_R_AND_CAP_R
+                drawCircle(
+                  color = Color(0xFF3B82F6).copy(alpha = if (isRadiiSelected) 0.55f * neonPulse else 0.18f),
+                  radius = inradiusPx,
+                  center = ptI,
+                  style = Stroke(
+                    width = if (isRadiiSelected) 2.2.dp.toPx() else 1.2.dp.toPx(),
+                    pathEffect = dashEffect
+                  )
+                )
+
+                // 1. Dashed Amber Line: Altitude (h_a)
+                val isAltitudeSelected = selectedTopic == HolographicTriangleTopic.ALTITUDES_AND_ORTHOCENTER
+                drawLine(
+                  color = Color(0xFFF59E0B).copy(alpha = if (isAltitudeSelected) neonPulse else 0.65f),
+                  start = ptA,
+                  end = ptAltitudeFoot,
+                  strokeWidth = if (isAltitudeSelected) 3.2.dp.toPx() else 2.dp.toPx(),
+                  cap = StrokeCap.Round,
+                  pathEffect = dashEffect
+                )
+                // Right-angle marker at H_a
+                val sqSize = 8.dp.toPx()
+                drawLine(
+                  color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+                  start = Offset(ptAltitudeFoot.x, ptAltitudeFoot.y - sqSize),
+                  end = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y - sqSize),
+                  strokeWidth = 1.4.dp.toPx()
+                )
+                drawLine(
+                  color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+                  start = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y - sqSize),
+                  end = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y),
+                  strokeWidth = 1.4.dp.toPx()
+                )
+
+                // 2. Dashed Emerald Line: Angle Bisector (t_a)
+                val isBisectorSelected = selectedTopic == HolographicTriangleTopic.BISECTORS_AND_INCENTER
+                drawLine(
+                  color = Color(0xFF10B981).copy(alpha = if (isBisectorSelected) neonPulse else 0.68f),
+                  start = ptA,
+                  end = ptBisectorFoot,
+                  strokeWidth = if (isBisectorSelected) 3.2.dp.toPx() else 2.dp.toPx(),
+                  cap = StrokeCap.Round,
+                  pathEffect = dashEffect
+                )
+
+                // 3. Dashed Purple Line: Median (m_a)
+                val isMedianSelected = selectedTopic == HolographicTriangleTopic.MEDIANS_AND_CENTROID
+                drawLine(
+                  color = Color(0xFFA855F7).copy(alpha = if (isMedianSelected) neonPulse else 0.72f),
+                  start = ptA,
+                  end = ptMedianFoot,
+                  strokeWidth = if (isMedianSelected) 3.2.dp.toPx() else 2.dp.toPx(),
+                  cap = StrokeCap.Round,
+                  pathEffect = dashEffect
+                )
+
+                // 4. Cyan Glowing Outer Triangle Border Lines (A-B-C)
+                val trianglePath = Path().apply {
+                  moveTo(ptA.x, ptA.y)
+                  lineTo(ptB.x, ptB.y)
+                  lineTo(ptC.x, ptC.y)
+                  close()
+                }
+                val isSidesSelected = selectedTopic == HolographicTriangleTopic.SIDES_AND_ANGLES
+                // Outer Neon Halo
+                drawPath(
+                  path = trianglePath,
+                  color = Color(0xFF06B6D4).copy(alpha = if (isSidesSelected) 0.35f * neonPulse else 0.18f),
+                  style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
+                )
+                // Crisp Cyan Core Line
+                drawPath(
+                  path = trianglePath,
+                  color = Color(0xFF06B6D4).copy(alpha = if (isSidesSelected) 1f else 0.88f),
+                  style = Stroke(width = if (isSidesSelected) 2.8.dp.toPx() else 2.2.dp.toPx(), cap = StrokeCap.Round)
+                )
+
+                // Vertex Dots (A, B, C)
+                listOf(ptA, ptB, ptC).forEach { vPt ->
+                  drawCircle(
+                    color = Color(0xFF06B6D4).copy(alpha = 0.32f),
+                    radius = 8.dp.toPx(),
+                    center = vPt
+                  )
+                  drawCircle(
+                    color = Color(0xFFE0F2FE),
+                    radius = 4.dp.toPx(),
+                    center = vPt
+                  )
+                }
+
+                // Notable Center Points: Centroid (G), Incenter (I), Circumcenter (O)
+                // Centroid (G) - Purple
+                drawCircle(
+                  color = Color(0xFFA855F7).copy(alpha = 0.35f * neonPulse),
+                  radius = if (isMedianSelected) 10.dp.toPx() else 7.dp.toPx(),
+                  center = ptG
+                )
+                drawCircle(
+                  color = Color(0xFFA855F7),
+                  radius = 4.5.dp.toPx(),
+                  center = ptG
+                )
+
+                // Incenter (I) - Emerald
+                drawCircle(
+                  color = Color(0xFF10B981).copy(alpha = 0.35f * neonPulse),
+                  radius = if (isBisectorSelected || isRadiiSelected) 10.dp.toPx() else 7.dp.toPx(),
+                  center = ptI
+                )
+                drawCircle(
+                  color = Color(0xFF10B981),
+                  radius = 4.5.dp.toPx(),
+                  center = ptI
+                )
+
+                // Circumcenter (O) - Electric Blue
+                drawCircle(
+                  color = Color(0xFF3B82F6).copy(alpha = 0.35f * neonPulse),
+                  radius = if (isRadiiSelected) 10.dp.toPx() else 7.dp.toPx(),
+                  center = ptO
+                )
+                drawCircle(
+                  color = Color(0xFF3B82F6),
+                  radius = 4.5.dp.toPx(),
+                  center = ptO
+                )
+              }
+
+              // Vertex & Anatomy Legend Overlay Labels inside Canvas
+              Text(
+                text = "A",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 13.sp,
+                color = Color(0xFF67E8F9),
+                modifier = Modifier
+                  .align(Alignment.TopStart)
+                  .padding(start = 112.dp, top = 8.dp)
+              )
+              Text(
+                text = "B",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 13.sp,
+                color = Color(0xFF67E8F9),
+                modifier = Modifier
+                  .align(Alignment.BottomStart)
+                  .padding(start = 18.dp, bottom = 22.dp)
+              )
+              Text(
+                text = "C",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 13.sp,
+                color = Color(0xFF67E8F9),
+                modifier = Modifier
+                  .align(Alignment.BottomEnd)
+                  .padding(end = 18.dp, bottom = 22.dp)
+              )
+
+              // Compact Color Legend Bar at Bottom of Canvas
+              Row(
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .fillMaxWidth()
+                  .background(Color(0xFF020617).copy(alpha = 0.78f))
+                  .padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                HolographicLegendTag(color = Color(0xFFF59E0B), label = "h_a Altitude")
+                HolographicLegendTag(color = Color(0xFF10B981), label = "t_a Bisector • I")
+                HolographicLegendTag(color = Color(0xFFA855F7), label = "m_a Median • G")
+                HolographicLegendTag(color = Color(0xFF3B82F6), label = "Center O")
+              }
+            }
+          }
+
+          // ==================================================================
+          // INTERACTIVE SELECTOR CHIPS (BELOW CANVAS)
+          // [Sides & Angles] [Medians & Centroid] [Altitudes & Orthocenter] [Bisectors & Incenter] [Radii (r, R)]
+          // ==================================================================
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            HolographicTriangleTopic.entries.forEach { topic ->
+              val isSelected = selectedTopic == topic
+              Surface(
+                onClick = {
+                  playCardHapticSound(context, localView)
+                  selectedTopic = topic
+                },
+                shape = RoundedCornerShape(14.dp),
+                color = if (isSelected) {
+                  topic.accentColor.copy(alpha = 0.22f)
+                } else {
+                  Color(0xFF1E293B).copy(alpha = 0.75f)
+                },
+                border = BorderStroke(
+                  width = if (isSelected) 1.4.dp else 1.dp,
+                  color = if (isSelected) topic.accentColor else Color.White.copy(alpha = 0.14f)
+                ),
+                modifier = Modifier.testTag("holo_chip_${topic.name.lowercase(Locale.ROOT)}")
+              ) {
+                Text(
+                  text = topic.chipLabel,
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                  ),
+                  color = if (isSelected) topic.accentColor else Color(0xFFCBD5E1),
+                  maxLines = 1,
+                  softWrap = false,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+              }
+            }
+          }
+
+          // ==================================================================
+          // DYNAMIC CONCEPT CARD (UPDATES WHEN CHIP OR CANVAS ELEMENT IS TAPPED)
+          // ==================================================================
+          Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF111827).copy(alpha = 0.94f),
+            border = BorderStroke(1.2.dp, selectedTopic.accentColor.copy(alpha = 0.48f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("holographic_triangle_concept_card")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              Text(
+                text = selectedTopic.conceptTitle,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = 16.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = selectedTopic.accentColor
+              )
+
+              Text(
+                text = selectedTopic.engineeringDefinition,
+                style = MaterialTheme.typography.bodySmall.copy(
+                  fontSize = 13.sp,
+                  lineHeight = 18.sp,
+                  fontWeight = FontWeight.Medium
+                ),
+                color = Color(0xFFE2E8F0)
+              )
+
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF1E293B).copy(alpha = 0.72f),
+                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.12f)),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                  verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                  Text(
+                    text = "GEOMETRIC THEOREM",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 10.sp,
+                      fontWeight = FontWeight.ExtraBold,
+                      letterSpacing = 0.8.sp
+                    ),
+                    color = selectedTopic.accentColor
+                  )
+                  Text(
+                    text = selectedTopic.geometricTheorem,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.5.sp,
+                      lineHeight = 17.5.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = Color(0xFFCBD5E1)
+                  )
+                }
+              }
+
+              // Primary Board Exam Formula Capsule
+              Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF060B16),
+                border = BorderStroke(1.dp, selectedTopic.accentColor.copy(alpha = 0.55f)),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Text(
+                  text = selectedTopic.boardExamFormula,
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 15.5.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = Color(0xFF67E8F9),
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun HolographicLegendTag(
+  color: Color,
+  label: String
+) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp)
+  ) {
+    Box(
+      modifier = Modifier
+        .size(7.dp)
+        .clip(CircleShape)
+        .background(color)
+    )
+    Text(
+      text = label,
+      style = MaterialTheme.typography.labelSmall.copy(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 9.5.sp,
+        fontWeight = FontWeight.Bold
+      ),
+      color = Color(0xFFE2E8F0),
+      maxLines = 1,
+      softWrap = false
+    )
+  }
+}
+
+private fun distBetween(p1: Offset, p2: Offset): Float =
+  sqrt((p1.x - p2.x).pow(2) + (p1.y - p2.y).pow(2))
 
 @Composable
 private fun InteractiveReferenceFormulaCard(
@@ -18472,7 +20532,7 @@ private fun ProfileAndSettingsDialog(
     Surface(
       modifier = Modifier
         .fillMaxWidth(0.92f)
-        .widthIn(max = if (metrics.screenWidthDp > 600) 560.dp else 480.dp)
+        .widthIn(max = 680.dp)
         .heightIn(max = 680.dp)
         .testTag("profile_settings_dialog"),
       shape = RoundedCornerShape(22.dp),
@@ -18487,11 +20547,14 @@ private fun ProfileAndSettingsDialog(
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
           .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
       ) {
         // Compact Dialog Top Bar
         Row(
-          modifier = Modifier.fillMaxWidth(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 680.dp),
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
@@ -18528,6 +20591,8 @@ private fun ProfileAndSettingsDialog(
         Surface(
           modifier = Modifier
             .fillMaxWidth()
+            .widthIn(max = 680.dp)
+            .align(Alignment.CenterHorizontally)
             .testTag("extras_account_card"),
           shape = RoundedCornerShape(18.dp),
           color = consolidatedContainerColor,
@@ -18686,6 +20751,13 @@ private fun ProfileAndSettingsDialog(
                           viewModel.username
                         }
                         val cleanName = editDisplayNameInput.trim().ifBlank { cleanHandle }
+                        try {
+                          val profileUpdate = UserProfileChangeRequest.Builder()
+                            .setDisplayName(cleanName)
+                            .build()
+                          FirebaseAuth.getInstance().currentUser?.updateProfile(profileUpdate)
+                        } catch (_: Throwable) {
+                        }
                         viewModel.loginWithUsername(cleanHandle, cleanName)
                         isEditingProfile = false
                       },
@@ -19102,9 +21174,15 @@ private fun ProfileAndSettingsDialog(
 
             HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-            // 5. "ACCOUNT ACTIONS": Minimalist Text Button for "Log Out / Switch Account" with neutral red tint
+            // 5. "ACCOUNT ACTIONS": Minimalist Text Button for "Log Out" with neutral red tint
             TextButton(
-              onClick = onSwitchAccount,
+              onClick = {
+                try {
+                  FirebaseAuth.getInstance().signOut()
+                } catch (_: Throwable) {
+                }
+                onSwitchAccount()
+              },
               shape = RoundedCornerShape(10.dp),
               colors = ButtonDefaults.textButtonColors(
                 contentColor = palette.accentRed
@@ -20816,110 +22894,124 @@ fun ClockScreen(
       )
     }
 
-    // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch)
-    val trackShape = RoundedCornerShape(26.dp)
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 20.dp, vertical = 6.dp)
-        .height(52.dp)
-        .shadow(
-          elevation = 8.dp,
-          shape = trackShape,
-          ambientColor = palette.shadowAmbient,
-          spotColor = palette.shadowSpot
-        )
-        .clip(trackShape)
-        .background(
-          brush = Brush.verticalGradient(
-            colors = listOf(palette.cardTopSheen, palette.cardBottomSheen)
-          ),
-          shape = trackShape
-        )
-        .border(border = palette.glassBorder, shape = trackShape)
-        .padding(4.dp)
-        .testTag("clock_top_tab_row")
-    ) {
-      Row(
-        modifier = Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        ClockSubTab.entries.forEach { tab ->
-          val selected = selectedSubTab == tab
-          val pillShape = RoundedCornerShape(22.dp)
-          val pillModifier = if (selected) {
-            Modifier
-              .weight(1f)
-              .fillMaxHeight()
-              .shadow(
-                elevation = 6.dp,
-                shape = pillShape,
-                spotColor = Color(0x554F46E5)
-              )
-              .clip(pillShape)
-              .background(
-                brush = Brush.linearGradient(
-                  colors = listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
-                ),
-                shape = pillShape
-              )
-              .border(
-                border = BorderStroke(
-                  width = 1.dp,
-                  brush = Brush.verticalGradient(
-                    colors = listOf(
-                      Color.White.copy(alpha = 0.65f),
-                      Color.Transparent
-                    )
-                  )
-                ),
-                shape = pillShape
-              )
-          } else {
-            Modifier
-              .weight(1f)
-              .fillMaxHeight()
-              .clip(pillShape)
-              .background(Color.Transparent, shape = pillShape)
-          }
+    val isStopwatchTabletLandscape =
+      selectedSubTab == ClockSubTab.STOPWATCH && metrics.isTabletLandscape
 
-          Box(
-            modifier = pillModifier
-              .clickable {
-                if (selectedSubTab != tab) {
-                  playCardHapticSound(context)
-                  selectedSubTab = tab
-                } else {
-                  playCardHapticSound(context)
+    @Composable
+    fun renderClockModeSwitcher(modifier: Modifier = Modifier) {
+      val trackShape = RoundedCornerShape(26.dp)
+      Box(
+        modifier = modifier
+          .fillMaxWidth()
+          .height(52.dp)
+          .shadow(
+            elevation = 8.dp,
+            shape = trackShape,
+            ambientColor = palette.shadowAmbient,
+            spotColor = palette.shadowSpot
+          )
+          .clip(trackShape)
+          .background(
+            brush = Brush.verticalGradient(
+              colors = listOf(palette.cardTopSheen, palette.cardBottomSheen)
+            ),
+            shape = trackShape
+          )
+          .border(border = palette.glassBorder, shape = trackShape)
+          .padding(4.dp)
+          .testTag("clock_top_tab_row")
+      ) {
+        Row(
+          modifier = Modifier.fillMaxSize(),
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          ClockSubTab.entries.forEach { tab ->
+            val selected = selectedSubTab == tab
+            val pillShape = RoundedCornerShape(22.dp)
+            val pillModifier = if (selected) {
+              Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .shadow(
+                  elevation = 6.dp,
+                  shape = pillShape,
+                  spotColor = Color(0x554F46E5)
+                )
+                .clip(pillShape)
+                .background(
+                  brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                  ),
+                  shape = pillShape
+                )
+                .border(
+                  border = BorderStroke(
+                    width = 1.dp,
+                    brush = Brush.verticalGradient(
+                      colors = listOf(
+                        Color.White.copy(alpha = 0.65f),
+                        Color.Transparent
+                      )
+                    )
+                  ),
+                  shape = pillShape
+                )
+            } else {
+              Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(pillShape)
+                .background(Color.Transparent, shape = pillShape)
+            }
+
+            Box(
+              modifier = pillModifier
+                .clickable {
+                  if (selectedSubTab != tab) {
+                    playCardHapticSound(context)
+                    selectedSubTab = tab
+                  } else {
+                    playCardHapticSound(context)
+                  }
                 }
-              }
-              .testTag(tab.testTag),
-            contentAlignment = Alignment.Center
-          ) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(4.dp),
-              modifier = Modifier.padding(horizontal = 4.dp)
+                .testTag(tab.testTag),
+              contentAlignment = Alignment.Center
             ) {
-              Icon(
-                imageVector = tab.icon,
-                contentDescription = tab.title,
-                modifier = Modifier.size(14.dp),
-                tint = if (selected) Color.White else palette.textSecondary
-              )
-              Text(
-                text = tab.title,
-                color = if (selected) Color.White else palette.textSecondary,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                fontSize = 13.sp,
-                maxLines = 1,
-                softWrap = false
-              )
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(horizontal = 4.dp)
+              ) {
+                Icon(
+                  imageVector = tab.icon,
+                  contentDescription = tab.title,
+                  modifier = Modifier.size(14.dp),
+                  tint = if (selected) Color.White else palette.textSecondary
+                )
+                Text(
+                  text = tab.title,
+                  color = if (selected) Color.White else palette.textSecondary,
+                  fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                  fontSize = 13.sp,
+                  maxLines = 1,
+                  softWrap = false
+                )
+              }
             }
           }
         }
       }
+    }
+
+    // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch)
+    if (!isStopwatchTabletLandscape) {
+      renderClockModeSwitcher(
+        modifier = Modifier
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
+          .padding(horizontal = 20.dp, vertical = 6.dp)
+      )
     }
 
     // Dismissible POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM Permission Rationale Card (only on Alarm tab)
@@ -20930,6 +23022,8 @@ fun ClockScreen(
         borderStroke = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.45f)),
         modifier = Modifier
           .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
           .padding(
             horizontal = metrics.scaledDp(16),
             vertical = metrics.scaledDp(8)
@@ -21167,6 +23261,11 @@ fun ClockScreen(
           creamCardColor = creamCardColor,
           ivoryInnerColor = ivoryInnerColor,
           metrics = metrics,
+          modeSwitcherContent = if (isStopwatchTabletLandscape) {
+            { renderClockModeSwitcher(modifier = Modifier.fillMaxWidth()) }
+          } else {
+            null
+          },
           onToggleStartStop = {
             isStopwatchRunning = !isStopwatchRunning
           },
@@ -21934,10 +24033,12 @@ private fun TimerSubScreen(
             animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
             label = "timer_luminous_ring"
           )
+          val dialDiameter = if (metrics.screenWidthDp >= 600) 280.dp else 220.dp
+          val timeFontSize = if (metrics.screenWidthDp >= 600) 36.sp else 30.sp
 
           Box(
             modifier = Modifier
-              .size(metrics.scaledDp(208))
+              .size(dialDiameter)
               .padding(4.dp),
             contentAlignment = Alignment.Center
           ) {
@@ -21963,11 +24064,14 @@ private fun TimerSubScreen(
 
             Text(
               text = formatDurationSecondsHms(remainingSeconds),
+              maxLines = 1,
+              softWrap = false,
               style = MaterialTheme.typography.displayLarge.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = metrics.scaledSp(34),
-                lineHeight = metrics.scaledSp(38)
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = timeFontSize,
+                lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
+                letterSpacing = (-0.5).sp
               ),
               color = palette.textPrimary,
               textAlign = TextAlign.Center,
@@ -22154,6 +24258,8 @@ private fun TimerSubScreen(
                 Box(contentAlignment = Alignment.Center) {
                   Text(
                     text = keyLabel,
+                    maxLines = 1,
+                    softWrap = false,
                     style = MaterialTheme.typography.titleLarge.copy(
                       fontFamily = JetBrainsMonoFamily,
                       fontWeight = FontWeight.Bold,
@@ -22236,10 +24342,13 @@ private fun TimerUnitSegment(
   Row(verticalAlignment = Alignment.Bottom) {
     Text(
       text = value,
+      maxLines = 1,
+      softWrap = false,
       style = MaterialTheme.typography.displayMedium.copy(
-        fontFamily = JetBrainsMonoFamily,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = metrics.scaledSp(40)
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        fontSize = if (metrics.screenWidthDp >= 600) 36.sp else 32.sp,
+        letterSpacing = (-0.5).sp
       ),
       color = if (isHighlighted) {
         palette.accentIndigo
@@ -22249,6 +24358,8 @@ private fun TimerUnitSegment(
     )
     Text(
       text = unit,
+      maxLines = 1,
+      softWrap = false,
       style = MaterialTheme.typography.titleMedium.copy(
         fontWeight = FontWeight.Bold,
         fontSize = metrics.scaledSp(18)
@@ -22275,6 +24386,7 @@ private fun StopwatchSubScreen(
   creamCardColor: Color,
   ivoryInnerColor: Color,
   metrics: ResponsiveMetrics,
+  modeSwitcherContent: (@Composable () -> Unit)? = null,
   onToggleStartStop: () -> Unit,
   onLapOrReset: () -> Unit
 ) {
@@ -22292,25 +24404,15 @@ private fun StopwatchSubScreen(
     }
   }
   val latestLapNumber = laps.lastOrNull()?.lapNumber
+  val dialDiameter = if (metrics.screenWidthDp >= 600) 280.dp else 220.dp
+  val timeFontSize = if (metrics.screenWidthDp >= 600) 36.sp else 30.sp
 
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(
-        start = metrics.scaledDp(16),
-        end = metrics.scaledDp(16),
-        top = metrics.scaledDp(12),
-        bottom = 120.dp
-      )
-      .testTag("stopwatch_sub_screen"),
-    horizontalAlignment = Alignment.CenterHorizontally
-  ) {
-    // Luminous Circular Progress Ring + Frosted Glass Stopwatch Header
+  @Composable
+  fun renderStopwatchDialCard(modifier: Modifier = Modifier) {
     LiquidGlassCard(
       shape = RoundedCornerShape(30.dp),
       elevation = if (palette.isDark) 8.dp else 6.dp,
-      modifier = Modifier.fillMaxWidth()
+      modifier = modifier.fillMaxWidth()
     ) {
       Column(
         modifier = Modifier
@@ -22324,7 +24426,7 @@ private fun StopwatchSubScreen(
       ) {
         Box(
           modifier = Modifier
-            .size(190.dp)
+            .size(dialDiameter)
             .padding(4.dp),
           contentAlignment = Alignment.Center
         ) {
@@ -22354,6 +24456,8 @@ private fun StopwatchSubScreen(
           ) {
             Text(
               text = if (isRunning) "RUNNING" else if (elapsedMillis > 0L) "PAUSED" else "READY",
+              maxLines = 1,
+              softWrap = false,
               style = MaterialTheme.typography.labelMedium.copy(
                 fontFamily = JetBrainsMonoFamily,
                 fontWeight = FontWeight.Bold,
@@ -22368,11 +24472,14 @@ private fun StopwatchSubScreen(
 
             Text(
               text = formatStopwatchMillis(elapsedMillis),
+              maxLines = 1,
+              softWrap = false,
               style = MaterialTheme.typography.displayLarge.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = metrics.scaledSp(34),
-                lineHeight = metrics.scaledSp(38)
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = timeFontSize,
+                lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
+                letterSpacing = (-0.5).sp
               ),
               color = palette.textPrimary,
               textAlign = TextAlign.Center,
@@ -22382,10 +24489,10 @@ private fun StopwatchSubScreen(
         }
       }
     }
+  }
 
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Two liquid floating control buttons: Lap/Reset and Start/Stop
+  @Composable
+  fun renderStopwatchControlsRow() {
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
@@ -22419,6 +24526,8 @@ private fun StopwatchSubScreen(
           )
           Text(
             text = if (isRunning) "Lap" else "Reset",
+            maxLines = 1,
+            softWrap = false,
             style = MaterialTheme.typography.labelSmall.copy(
               fontWeight = FontWeight.Bold,
               fontSize = metrics.scaledSp(10)
@@ -22451,14 +24560,17 @@ private fun StopwatchSubScreen(
         )
       }
     }
+  }
 
-    Spacer(modifier = Modifier.height(12.dp))
-
-    // Naturally expanding Lap Splits Card ordered newest-first
+  @Composable
+  fun renderLapSplitsCard(
+    dedicatedScroll: Boolean,
+    modifier: Modifier = Modifier
+  ) {
     LiquidGlassCard(
       shape = RoundedCornerShape(24.dp),
       elevation = if (palette.isDark) 8.dp else 6.dp,
-      modifier = Modifier
+      modifier = modifier
         .fillMaxWidth()
         .heightIn(min = 180.dp)
     ) {
@@ -22546,12 +24658,20 @@ private fun StopwatchSubScreen(
             )
           }
         } else {
-          Column(
-            modifier = Modifier
+          val listModifier = if (dedicatedScroll) {
+            Modifier
+              .fillMaxWidth()
+              .verticalScroll(rememberScrollState())
+              .padding(top = 4.dp)
+              .testTag("stopwatch_laps_list")
+          } else {
+            Modifier
               .fillMaxWidth()
               .padding(top = 4.dp)
               .testTag("stopwatch_laps_list")
-          ) {
+          }
+
+          Column(modifier = listModifier) {
             reversedLaps.forEachIndexed { index, lap ->
               val isHighlightedLap =
                 lap.lapNumber == latestLapNumber || lap.lapNumber == fastestLapNumber
@@ -22600,6 +24720,8 @@ private fun StopwatchSubScreen(
                   ) {
                     Text(
                       text = String.format(Locale.US, "#%02d", lap.lapNumber),
+                      maxLines = 1,
+                      softWrap = false,
                       style = MaterialTheme.typography.labelLarge.copy(
                         fontFamily = JetBrainsMonoFamily,
                         fontWeight = FontWeight.Bold,
@@ -22617,7 +24739,8 @@ private fun StopwatchSubScreen(
                         fontWeight = FontWeight.Bold
                       ),
                       color = highlightIndigo,
-                      maxLines = 1
+                      maxLines = 1,
+                      softWrap = false
                     )
                   }
                 }
@@ -22625,8 +24748,10 @@ private fun StopwatchSubScreen(
                 // Center column: SPLIT
                 Text(
                   text = "+${formatStopwatchMillis(lap.lapSplitMillis)}",
+                  maxLines = 1,
+                  softWrap = false,
                   style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = JetBrainsMonoFamily,
+                    fontFamily = FontFamily.Monospace,
                     fontWeight = if (isHighlightedLap) FontWeight.Bold else FontWeight.Medium,
                     fontSize = 13.sp
                   ),
@@ -22638,8 +24763,10 @@ private fun StopwatchSubScreen(
                 // Right column: TOTAL
                 Text(
                   text = formatStopwatchMillis(lap.totalElapsedMillis),
+                  maxLines = 1,
+                  softWrap = false,
                   style = MaterialTheme.typography.bodyLarge.copy(
-                    fontFamily = JetBrainsMonoFamily,
+                    fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 14.sp
                   ),
@@ -22658,6 +24785,78 @@ private fun StopwatchSubScreen(
             }
           }
         }
+      }
+    }
+  }
+
+  if (metrics.isTabletLandscape) {
+    // Tablet Landscape Layout (screenWidthDp >= 720.dp in landscape):
+    // Balanced two-column layout:
+    // Left column: Circular Dial, Mode Switcher, and Primary Control Buttons.
+    // Right column: Lap Splits list with its own dedicated scroll state.
+    Row(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(
+          start = metrics.scaledDp(16),
+          end = metrics.scaledDp(16),
+          top = metrics.scaledDp(8),
+          bottom = 96.dp
+        )
+        .testTag("stopwatch_sub_screen"),
+      horizontalArrangement = Arrangement.spacedBy(20.dp),
+      verticalAlignment = Alignment.Top
+    ) {
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        renderStopwatchDialCard()
+        modeSwitcherContent?.invoke()
+        renderStopwatchControlsRow()
+      }
+
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxHeight()
+      ) {
+        renderLapSplitsCard(
+          dedicatedScroll = true,
+          modifier = Modifier.fillMaxSize()
+        )
+      }
+    }
+  } else {
+    // Standard Portrait / Phone Layout: Clean vertical stack
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .verticalScroll(rememberScrollState())
+        .padding(
+          start = metrics.scaledDp(16),
+          end = metrics.scaledDp(16),
+          top = metrics.scaledDp(12),
+          bottom = 120.dp
+        )
+        .testTag("stopwatch_sub_screen"),
+      horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally),
+        horizontalAlignment = Alignment.CenterHorizontally
+      ) {
+        renderStopwatchDialCard()
+        Spacer(modifier = Modifier.height(12.dp))
+        renderStopwatchControlsRow()
+        Spacer(modifier = Modifier.height(12.dp))
+        renderLapSplitsCard(dedicatedScroll = false)
       }
     }
   }
