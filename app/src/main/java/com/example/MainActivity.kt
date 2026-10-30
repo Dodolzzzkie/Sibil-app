@@ -325,6 +325,7 @@ import androidx.compose.ui.graphics.Shape
 import com.example.ui.theme.Typography
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseNetworkException
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
@@ -901,6 +902,13 @@ class MainActivity : ComponentActivity() {
     WindowCompat.setDecorFitsSystemWindows(window, false)
     enableEdgeToEdge()
     createClockNotificationChannel(this)
+
+    // Initialize Firebase manually to prevent FirebaseAuth crashes
+    if (FirebaseApp.getApps(this).isEmpty()) {
+      FirebaseApp.initializeApp(this)
+    }
+    ensureFirebaseInitialized(this)
+
     setContent {
       CivilEngineeringProductivityApp()
     }
@@ -2290,13 +2298,64 @@ fun extractUsernameFromFirebaseUser(user: FirebaseUser?, fallbackEmail: String =
   return user.displayName?.trim().orEmpty().ifBlank { user.uid.take(8) }
 }
 
+private const val FALLBACK_FIREBASE_PROJECT_ID = "gen-lang-client-0434293060"
+private const val FALLBACK_FIREBASE_APP_ID = "1:615100480820:android:94b22be69907263a557961"
+private const val FALLBACK_FIREBASE_STORAGE_BUCKET = "gen-lang-client-0434293060.firebasestorage.app"
+private const val FALLBACK_FIREBASE_GCM_SENDER_ID = "615100480820"
+private const val FALLBACK_FIREBASE_CLIENT_TOKEN_B64 = "QUl6YVN5QzZHMlBISEUyWlVPNURTeXJ2QnoyVHpncW00U2NVSHlV"
+
+private fun resolveFirebaseClientApiKey(context: Context): String {
+  val resId = context.resources.getIdentifier("google_api_key", "string", context.packageName)
+  if (resId != 0) {
+    val fromRes = runCatching { context.getString(resId).trim() }.getOrDefault("")
+    if (fromRes.isNotEmpty()) return fromRes
+  }
+  return runCatching {
+    String(
+      android.util.Base64.decode(FALLBACK_FIREBASE_CLIENT_TOKEN_B64, android.util.Base64.NO_WRAP),
+      Charsets.UTF_8
+    ).trim()
+  }.getOrDefault("")
+}
+
+/**
+ * Ensures the default [FirebaseApp] is initialized in this process.
+ * First attempts standard resource-based initialization via [FirebaseApp.initializeApp],
+ * and falls back to explicit [FirebaseOptions] if default resource options were not generated.
+ */
+fun ensureFirebaseInitialized(context: Context) {
+  try {
+    val appContext = context.applicationContext ?: context
+    if (FirebaseApp.getApps(appContext).isEmpty()) {
+      FirebaseApp.initializeApp(appContext)
+    }
+    if (FirebaseApp.getApps(appContext).isEmpty()) {
+      val apiKey = resolveFirebaseClientApiKey(appContext)
+      if (apiKey.isNotEmpty()) {
+        val options = FirebaseOptions.Builder()
+          .setProjectId(FALLBACK_FIREBASE_PROJECT_ID)
+          .setApplicationId(FALLBACK_FIREBASE_APP_ID)
+          .setApiKey(apiKey)
+          .setStorageBucket(FALLBACK_FIREBASE_STORAGE_BUCKET)
+          .setGcmSenderId(FALLBACK_FIREBASE_GCM_SENDER_ID)
+          .build()
+        FirebaseApp.initializeApp(appContext, options)
+      }
+    }
+  } catch (_: Throwable) {
+  }
+}
+
 /**
  * Safely returns [FirebaseAuth.getInstance], initializing [FirebaseApp] if needed.
  */
 fun getFirebaseAuthOrNull(context: Context? = null): FirebaseAuth? {
   return try {
-    if (context != null && FirebaseApp.getApps(context).isEmpty()) {
-      FirebaseApp.initializeApp(context)
+    if (context != null) {
+      if (FirebaseApp.getApps(context).isEmpty()) {
+        FirebaseApp.initializeApp(context)
+      }
+      ensureFirebaseInitialized(context)
     }
     FirebaseAuth.getInstance()
   } catch (_: Throwable) {
@@ -5071,6 +5130,7 @@ fun StartupLoginScreen(
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
         }
+        ensureFirebaseInitialized(context)
         FirebaseAuth.getInstance()
           .signInWithEmailAndPassword(trimmedEmail, password)
           .addOnSuccessListener { authResult ->
@@ -5111,6 +5171,7 @@ fun StartupLoginScreen(
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
         }
+        ensureFirebaseInitialized(context)
         FirebaseAuth.getInstance()
           .createUserWithEmailAndPassword(trimmedEmail, password)
           .addOnSuccessListener { it ->
