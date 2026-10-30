@@ -244,6 +244,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -296,6 +297,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -7183,6 +7185,26 @@ fun DashboardScreen(
     mutableStateOf(cachedSessionUpdateRelease != null && !hasDismissedUpdateForSession)
   }
 
+  val currentVersion = remember(context) { getInstalledVersionName(context) }
+  var showWhatsNewDialog by rememberSaveable { mutableStateOf(false) }
+
+  // First-Launch "What's New" Version Handshake Logic on App Launch
+  LaunchedEffect(currentVersion) {
+    val prefs = context.applicationContext.getSharedPreferences(
+      "sibil_app_offline_storage",
+      Context.MODE_PRIVATE
+    )
+    val lastSeenVersion = prefs.getString("last_seen_version", null)
+    if (lastSeenVersion == null) {
+      // First install ever -> Do not show "What's New". Save last_seen_version = currentVersion.
+      prefs.edit().putString("last_seen_version", currentVersion).apply()
+      showWhatsNewDialog = false
+    } else if (isNewerVersion(currentVersion, lastSeenVersion)) {
+      // User just installed an update -> Trigger showWhatsNewDialog = true.
+      showWhatsNewDialog = true
+    }
+  }
+
   // Trigger In-App GitHub Auto-Update Check asynchronously when DashboardScreen mounts
   LaunchedEffect(Unit) {
     if (!hasDismissedUpdateForSession && availableUpdateRelease == null) {
@@ -7413,24 +7435,31 @@ fun DashboardScreen(
       }
     }
 
+    if (showWhatsNewDialog) {
+      WhatsNewDialog(
+        currentVersion = currentVersion,
+        metrics = metrics,
+        onExploreUpdates = {
+          val prefs = context.applicationContext.getSharedPreferences(
+            "sibil_app_offline_storage",
+            Context.MODE_PRIVATE
+          )
+          prefs.edit().putString("last_seen_version", currentVersion).apply()
+          showWhatsNewDialog = false
+        }
+      )
+    }
+
     val activeUpdateRelease = availableUpdateRelease
     if (showUpdateDialog && activeUpdateRelease != null && !hasDismissedUpdateForSession) {
       UpdateAvailableDialog(
         releaseInfo = activeUpdateRelease,
         metrics = metrics,
         onUpdateNow = {
-          try {
-            val downloadIntent = Intent(Intent.ACTION_VIEW, Uri.parse(activeUpdateRelease.downloadUrl)).apply {
-              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(downloadIntent)
-          } catch (_: Exception) {
-            Toast.makeText(
-              context,
-              "Unable to open browser for APK download.",
-              Toast.LENGTH_SHORT
-            ).show()
-          }
+          hasDismissedUpdateForSession = true
+          cachedSessionUpdateRelease = null
+          availableUpdateRelease = null
+          showUpdateDialog = false
         },
         onRemindLater = {
           val prefs = context.applicationContext.getSharedPreferences(
@@ -7460,7 +7489,7 @@ data class GitHubReleaseUpdateInfo(
 )
 
 private const val DEFAULT_FALLBACK_RELEASE_NOTES =
-  "• Bug fixes and system stability improvements\n• Updated formula reference manual\n• Performance optimizations"
+  "• Performance enhancements & formula vault rendering optimizations.\n• Bug fixes and battery life improvements."
 
 private var hasDismissedUpdateForSession by mutableStateOf(false)
 private var cachedSessionUpdateRelease by mutableStateOf<GitHubReleaseUpdateInfo?>(null)
@@ -7486,19 +7515,27 @@ fun getInstalledVersionName(context: Context): String {
 }
 
 /**
- * Strict semantic version comparison (`remoteTag` vs `localVersion`).
- * Returns `true` ONLY when `remoteTag` is strictly newer than `localVersion`.
+ * Semantic Version Evaluator (`remoteTag` vs `localVersion`):
+ * Extracts numerical parts from the release tag (`tag_name`) and `packageInfo.versionName`
+ * (e.g., `"v1.0.4"` -> `[1, 0, 4]`) and returns `true` ONLY if remote version > installed version.
  */
 fun isNewerVersion(remoteTag: String, localVersion: String): Boolean {
   fun parseVersionParts(versionStr: String): List<Int> {
-    // Clean out leading 'v', 'V', whitespace, and suffixes like -debug or -release
     val cleaned = versionStr.trim()
       .removePrefix("v")
       .removePrefix("V")
       .substringBefore("-")
 
-    return cleaned.split(".")
-      .map { part -> part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 }
+    val dotParts = cleaned.split(".")
+      .mapNotNull { part -> part.takeWhile { it.isDigit() }.toIntOrNull() }
+    if (dotParts.isNotEmpty()) {
+      return dotParts
+    }
+
+    return Regex("\\d+")
+      .findAll(versionStr)
+      .mapNotNull { it.value.toIntOrNull() }
+      .toList()
   }
 
   val remoteParts = parseVersionParts(remoteTag)
@@ -7547,10 +7584,10 @@ fun formatGitHubReleaseChangelogLines(rawBody: String?): List<String> {
 
 /**
  * In-App GitHub Auto-Update Checker:
- * Queries `https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest`
- * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`app-debug.apk`),
- * dynamically resolves `getInstalledVersionName(context)`, and checks `isNewerVersion`
- * and `dismissed_update_tag` in `SharedPreferences`.
+ * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest`
+ * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`.apk`),
+ * caches `pending_release_notes` in `SharedPreferences`, dynamically resolves
+ * `getInstalledVersionName(context)`, and checks `isNewerVersion` and `dismissed_update_tag`.
  */
 suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = withContext(Dispatchers.IO) {
   val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
@@ -7583,20 +7620,25 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
       return@withContext null
     }
 
-    val localVersion = getInstalledVersionName(context)
-    val isNewer = isNewerVersion(remoteTag = tag_name, localVersion = localVersion)
-
     val prefs = context.applicationContext.getSharedPreferences(
       "sibil_app_offline_storage",
       Context.MODE_PRIVATE
     )
+
+    val rawBody = root.optString("body", "").trim()
+    if (rawBody.isNotBlank()) {
+      prefs.edit().putString("pending_release_notes", rawBody).apply()
+    }
+
+    val localVersion = getInstalledVersionName(context)
+    val isNewer = isNewerVersion(remoteTag = tag_name, localVersion = localVersion)
     val dismissedTag = prefs.getString("dismissed_update_tag", "").orEmpty()
 
     if (!isNewer || tag_name == dismissedTag) {
       return@withContext null
     }
 
-    val releaseBody = root.optString("body", "").trim().ifEmpty {
+    val releaseBody = rawBody.ifEmpty {
       DEFAULT_FALLBACK_RELEASE_NOTES
     }
 
@@ -7607,9 +7649,18 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
         val assetObj = assetsArray.optJSONObject(i) ?: continue
         val assetName = assetObj.optString("name", "").trim()
         val assetUrl = assetObj.optString("browser_download_url", "").trim()
-        if (assetName.equals("app-debug.apk", ignoreCase = true) && assetUrl.isNotBlank()) {
+        if (assetName.endsWith(".apk", ignoreCase = true) && assetUrl.isNotBlank()) {
           resolvedDownloadUrl = assetUrl
           break
+        }
+      }
+      if (resolvedDownloadUrl == defaultDownloadUrl && assetsArray.length() > 0) {
+        val fallbackAssetUrl = assetsArray.optJSONObject(0)
+          ?.optString("browser_download_url", "")
+          ?.trim()
+          .orEmpty()
+        if (fallbackAssetUrl.isNotBlank()) {
+          resolvedDownloadUrl = fallbackAssetUrl
         }
       }
     }
@@ -7629,15 +7680,95 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
 }
 
 /**
- * Dynamic "What's New in Sibil" / Update Available Liquid Glass Modal (`UpdateAvailableDialog`):
- * - Uses dynamic data fetched from GitHub's Releases API (`body`, `tag_name`):
- *   - Tag badge: Displays the actual incoming `tag_name` (`release.tagName`).
- *   - Title: "What's New in Sibil"
- *   - Body / Changelog: Renders the actual GitHub release notes (`release.body`), parsing markdown
- *     bullet points (`- ` or `* `) into clean bulleted items, with fallback to standard release notes if empty.
- * - Action Buttons:
- *   - Primary Button: "Update Now" (Opens browser directly to `browser_download_url` / release APK).
- *   - Dismiss Button: "Remind Me Later" (Stores `tag_name` in SharedPreferences to prevent re-prompting).
+ * Fetches the latest release notes (`body`) from GitHub Releases API when `pending_release_notes`
+ * is not yet cached locally.
+ */
+suspend fun fetchLatestGitHubReleaseBody(context: Context): String? = withContext(Dispatchers.IO) {
+  val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
+  var connection: HttpURLConnection? = null
+  try {
+    connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+      requestMethod = "GET"
+      connectTimeout = 5_000
+      readTimeout = 5_000
+      doInput = true
+      setRequestProperty("User-Agent", "Sibil-App-Android")
+      setRequestProperty("Accept", "application/vnd.github.v3+json")
+    }
+    if (connection.responseCode !in 200..299) {
+      return@withContext null
+    }
+    val responseBody = BufferedReader(
+      InputStreamReader(connection.inputStream, Charsets.UTF_8)
+    ).use { it.readText() }
+    val root = JSONObject(responseBody)
+    val body = root.optString("body", "").trim()
+    if (body.isNotBlank()) {
+      val prefs = context.applicationContext.getSharedPreferences(
+        "sibil_app_offline_storage",
+        Context.MODE_PRIVATE
+      )
+      prefs.edit().putString("pending_release_notes", body).apply()
+      body
+    } else {
+      null
+    }
+  } catch (_: Exception) {
+    null
+  } finally {
+    connection?.disconnect()
+  }
+}
+
+/**
+ * Launches the Android Package Installer intent for a downloaded APK using `FileProvider`,
+ * falling back to direct browser `ACTION_VIEW` if a `FileProvider` or security restriction occurs.
+ */
+private fun launchInstalledApkOrBrowserFallback(
+  context: Context,
+  apkFile: File,
+  releaseDownloadUrl: String
+) {
+  try {
+    val uri = FileProvider.getUriForFile(
+      context,
+      "${context.packageName}.provider",
+      apkFile
+    )
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+      setDataAndType(uri, "application/vnd.android.package-archive")
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+    }
+    context.startActivity(intent)
+  } catch (_: Exception) {
+    try {
+      val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(releaseDownloadUrl)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(browserIntent)
+    } catch (_: Exception) {
+      Toast.makeText(
+        context,
+        "Unable to launch package installer or open browser.",
+        Toast.LENGTH_SHORT
+      ).show()
+    }
+  }
+}
+
+/**
+ * Dynamic "What's New in Sibil" / Update Available Liquid Glass Modal (`UpdateAvailableDialog`)
+ * with Live In-App Direct APK Downloader & Progress Animation:
+ * - State Management:
+ *   - `updateDownloadProgress`: `Float` state (`0.0f` to `1.0f`)
+ *   - `isDownloadingUpdate`: `Boolean` state
+ *   - `downloadError`: `String?` state
+ * - When user taps "Update Now":
+ *   - Switches dialog view to an animated Liquid Glass "Downloading Update" container.
+ *   - Streams APK bytes on `Dispatchers.IO` via `HttpURLConnection` to `File(context.cacheDir, "sibil-update.apk")`.
+ *   - Emits real-time progress (`0%` to `100%`), byte counter (`"12.4 MB / 24.8 MB"`), and speed indicator.
+ *   - Once download reaches 100%, dismisses the modal and triggers Android package installer via `FileProvider`
+ *     (with automatic browser `ACTION_VIEW` fallback).
  */
 @Composable
 fun UpdateAvailableDialog(
@@ -7646,6 +7777,8 @@ fun UpdateAvailableDialog(
   onUpdateNow: () -> Unit,
   onRemindLater: () -> Unit
 ) {
+  val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
   val palette = currentGlassPalette()
   val cardShape = RoundedCornerShape(28.dp)
   val cardGradientBrush = remember(palette.isDark, palette.cardSurface, palette.cardBottomSheen) {
@@ -7657,20 +7790,208 @@ fun UpdateAvailableDialog(
     )
   }
 
+  // In-App Direct Downloader State Management
+  var updateDownloadProgress by remember { mutableFloatStateOf(0.0f) }
+  var isDownloadingUpdate by remember { mutableStateOf(false) }
+  var downloadError by remember { mutableStateOf<String?>(null) }
+  var downloadedBytes by remember { mutableLongStateOf(0L) }
+  var totalBytes by remember { mutableLongStateOf(0L) }
+  var downloadSpeedMBps by remember { mutableFloatStateOf(0.0f) }
+
+  val animatedProgress by animateFloatAsState(
+    targetValue = updateDownloadProgress.coerceIn(0f, 1f),
+    animationSpec = spring(
+      dampingRatio = Spring.DampingRatioNoBouncy,
+      stiffness = Spring.StiffnessMediumLow
+    ),
+    label = "update_download_progress_anim"
+  )
+
+  val infiniteTransition = rememberInfiniteTransition(label = "download_arrow_pulse")
+  val arrowBounceOffsetDp by infiniteTransition.animateFloat(
+    initialValue = -5f,
+    targetValue = 6f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 720, easing = FastOutSlowInEasing),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "arrow_bounce_offset"
+  )
+  val orbPulseScale by infiniteTransition.animateFloat(
+    initialValue = 0.94f,
+    targetValue = 1.06f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "orb_pulse_scale"
+  )
+
   val formattedChangelogItems = remember(releaseInfo.body, releaseInfo.releaseNotes) {
     val rawNotes = releaseInfo.body.ifBlank { releaseInfo.releaseNotes }
     formatGitHubReleaseChangelogLines(rawNotes)
   }
 
+  fun startInAppApkDownload() {
+    if (isDownloadingUpdate) return
+    isDownloadingUpdate = true
+    downloadError = null
+    updateDownloadProgress = 0.0f
+    downloadedBytes = 0L
+    totalBytes = 0L
+    downloadSpeedMBps = 0.0f
+
+    // Cache release notes so the post-install "What's New" dialog has them ready
+    val rawNotes = releaseInfo.body.ifBlank { releaseInfo.releaseNotes }.trim()
+    if (rawNotes.isNotBlank()) {
+      context.applicationContext
+        .getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
+        .edit()
+        .putString("pending_release_notes", rawNotes)
+        .apply()
+    }
+
+    coroutineScope.launch {
+      val targetFile = File(context.cacheDir, "sibil-update.apk")
+      val downloadResult = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+          var currentUrl = releaseInfo.downloadUrl
+          var redirectCount = 0
+          while (redirectCount < 6) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+              requestMethod = "GET"
+              instanceFollowRedirects = true
+              connectTimeout = 15_000
+              readTimeout = 20_000
+              setRequestProperty("User-Agent", "Sibil-App-Android")
+              setRequestProperty("Accept", "application/octet-stream, */*")
+            }
+            val code = conn.responseCode
+            if (code in listOf(
+                HttpURLConnection.HTTP_MOVED_PERM,
+                HttpURLConnection.HTTP_MOVED_TEMP,
+                HttpURLConnection.HTTP_SEE_OTHER,
+                307,
+                308
+              )
+            ) {
+              val location = conn.getHeaderField("Location")
+              conn.disconnect()
+              if (location.isNullOrBlank()) break
+              currentUrl = location
+              redirectCount++
+            } else {
+              connection = conn
+              break
+            }
+          }
+
+          val activeConnection = connection
+            ?: (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+              requestMethod = "GET"
+              instanceFollowRedirects = true
+              connectTimeout = 15_000
+              readTimeout = 20_000
+              setRequestProperty("User-Agent", "Sibil-App-Android")
+            }
+          connection = activeConnection
+
+          val status = activeConnection.responseCode
+          if (status !in 200..299) {
+            return@withContext Result.failure<File>(
+              IllegalStateException("HTTP $status while downloading update APK")
+            )
+          }
+
+          val contentLength = activeConnection.contentLengthLong
+          withContext(Dispatchers.Main) {
+            totalBytes = if (contentLength > 0L) contentLength else 0L
+          }
+
+          val startTimeMs = SystemClock.elapsedRealtime()
+          var bytesCopied = 0L
+
+          activeConnection.inputStream.use { input ->
+            FileOutputStream(targetFile).use { output ->
+              val buffer = ByteArray(8 * 1024)
+              var bytesRead: Int
+              while (input.read(buffer).also { bytesRead = it } != -1) {
+                ensureActive()
+                output.write(buffer, 0, bytesRead)
+                bytesCopied += bytesRead
+
+                val elapsedSec = ((SystemClock.elapsedRealtime() - startTimeMs) / 1000f).coerceAtLeast(0.1f)
+                val speed = (bytesCopied / (1024f * 1024f)) / elapsedSec
+                val fraction = if (contentLength > 0L) {
+                  (bytesCopied.toFloat() / contentLength.toFloat()).coerceIn(0f, 0.99f)
+                } else {
+                  // Smooth indeterminate-style ramp when Content-Length is omitted
+                  (bytesCopied.toFloat() / (25f * 1024f * 1024f)).coerceIn(0.05f, 0.95f)
+                }
+
+                withContext(Dispatchers.Main) {
+                  downloadedBytes = bytesCopied
+                  if (contentLength > 0L) {
+                    totalBytes = contentLength
+                  }
+                  downloadSpeedMBps = speed
+                  updateDownloadProgress = fraction
+                }
+              }
+              output.flush()
+            }
+          }
+
+          withContext(Dispatchers.Main) {
+            updateDownloadProgress = 1.0f
+          }
+          Result.success(targetFile)
+        } catch (ce: CancellationException) {
+          throw ce
+        } catch (e: Exception) {
+          Result.failure(e)
+        } finally {
+          connection?.disconnect()
+        }
+      }
+
+      downloadResult.fold(
+        onSuccess = { downloadedApkFile ->
+          delay(220L)
+          isDownloadingUpdate = false
+          onUpdateNow()
+          launchInstalledApkOrBrowserFallback(
+            context = context,
+            apkFile = downloadedApkFile,
+            releaseDownloadUrl = releaseInfo.downloadUrl
+          )
+        },
+        onFailure = { err ->
+          isDownloadingUpdate = false
+          downloadError = err.message ?: "Download interrupted. You can retry or download via browser."
+        }
+      )
+    }
+  }
+
   Dialog(
-    onDismissRequest = onRemindLater,
-    properties = DialogProperties(usePlatformDefaultWidth = false)
+    onDismissRequest = {
+      if (!isDownloadingUpdate) {
+        onRemindLater()
+      }
+    },
+    properties = DialogProperties(
+      dismissOnBackPress = !isDownloadingUpdate,
+      dismissOnClickOutside = !isDownloadingUpdate,
+      usePlatformDefaultWidth = false
+    )
   ) {
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .background(Color.Black.copy(alpha = if (palette.isDark) 0.62f else 0.38f))
-        .clickable(onClick = onRemindLater),
+        .background(Color.Black.copy(alpha = if (palette.isDark) 0.65f else 0.42f))
+        .clickable(enabled = !isDownloadingUpdate, onClick = onRemindLater),
       contentAlignment = Alignment.Center
     ) {
       Box(
@@ -7678,170 +7999,432 @@ fun UpdateAvailableDialog(
           .fillMaxWidth(0.92f)
           .widthIn(max = 460.dp)
           .shadow(
-            elevation = 16.dp,
+            elevation = 18.dp,
             shape = cardShape,
             ambientColor = palette.shadowAmbient,
             spotColor = palette.shadowSpot
           )
           .clip(cardShape)
           .background(brush = cardGradientBrush, shape = cardShape)
-          .border(border = palette.glassBorder, shape = cardShape)
+          .border(
+            border = BorderStroke(
+              1.dp,
+              Brush.linearGradient(
+                colors = listOf(
+                  Color.White.copy(alpha = if (palette.isDark) 0.45f else 0.85f),
+                  Color(0xFF6366F1).copy(alpha = 0.35f),
+                  Color.White.copy(alpha = 0.12f)
+                )
+              )
+            ),
+            shape = cardShape
+          )
           .clickable(enabled = false) {}
           .testTag("update_available_dialog")
       ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(metrics.scaledDp(22)),
-          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
-        ) {
-          // Header: Glowing rocket/sparkle badge icon + "What's New in Sibil" + dynamic tag_name badge
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-          ) {
-            Box(
-              modifier = Modifier
-                .size(42.dp)
-                .shadow(
-                  elevation = 8.dp,
-                  shape = RoundedCornerShape(14.dp),
-                  ambientColor = Color(0x334338CA),
-                  spotColor = Color(0x554F46E5)
-                )
-                .clip(RoundedCornerShape(14.dp))
-                .background(brush = LiquidOrbBrush)
-                .border(
-                  BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)),
-                  RoundedCornerShape(14.dp)
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              Icon(
-                imageVector = Icons.Filled.AutoAwesome,
-                contentDescription = "What's New in Sibil",
-                tint = Color.White,
-                modifier = Modifier.size(22.dp)
-              )
+        AnimatedContent(
+          targetState = isDownloadingUpdate,
+          transitionSpec = {
+            (fadeIn(tween(240)) + scaleIn(initialScale = 0.95f, animationSpec = tween(240)))
+              .togetherWith(fadeOut(tween(180)))
+          },
+          label = "update_dialog_mode_transition"
+        ) { downloading ->
+          if (downloading) {
+            // Animated Liquid Glass "Downloading Update" Container
+            val percentInt = (animatedProgress * 100f).roundToInt().coerceIn(0, 100)
+            val downloadedMbText = String.format(Locale.US, "%.1f MB", downloadedBytes / (1024f * 1024f))
+            val totalMbText = if (totalBytes > 0L) {
+              String.format(Locale.US, "%.1f MB", totalBytes / (1024f * 1024f))
+            } else {
+              "Calculating..."
             }
+            val speedText = String.format(Locale.US, "%.1f MB/s", downloadSpeedMBps.coerceAtLeast(0.1f))
 
-            Column(
-              modifier = Modifier.weight(1f),
-              verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              Text(
-                text = "What's New in Sibil",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                  fontSize = 20.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = palette.textPrimary,
-                modifier = Modifier.testTag("update_dialog_title")
-              )
-
-              Surface(
-                shape = CircleShape,
-                color = Color(0xFF6366F1).copy(alpha = 0.16f),
-                border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
-              ) {
-                Text(
-                  text = releaseInfo.tagName,
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.accentIndigo,
-                  modifier = Modifier
-                    .padding(horizontal = 10.dp, vertical = 3.dp)
-                    .testTag("update_dialog_version_badge")
-                )
-              }
-            }
-          }
-
-          // Dynamic Scrollable Changelog Container
-          Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = palette.nestedCardFill,
-            border = palette.nestedBorder,
-            modifier = Modifier.fillMaxWidth()
-          ) {
             Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 220.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 12.dp)
-                .testTag("update_dialog_changelog_scroll"),
-              verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(metrics.scaledDp(24))
+                .testTag("update_downloading_container"),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
             ) {
-              formattedChangelogItems.forEach { itemText ->
+              // Pulsating & Floating Animated Downward Arrow Orb
+              Box(
+                modifier = Modifier
+                  .size(68.dp)
+                  .graphicsLayer {
+                    scaleX = orbPulseScale
+                    scaleY = orbPulseScale
+                  }
+                  .shadow(
+                    elevation = 14.dp,
+                    shape = RoundedCornerShape(22.dp),
+                    ambientColor = Color(0x444338CA),
+                    spotColor = Color(0x6606B6D4)
+                  )
+                  .clip(RoundedCornerShape(22.dp))
+                  .background(brush = LiquidCyanVioletGradient)
+                  .border(
+                    BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)),
+                    RoundedCornerShape(22.dp)
+                  ),
+                contentAlignment = Alignment.Center
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.KeyboardArrowDown,
+                  contentDescription = "Downloading Update",
+                  tint = Color.White,
+                  modifier = Modifier
+                    .size(36.dp)
+                    .offset(y = arrowBounceOffsetDp.dp)
+                )
+              }
+
+              Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+              ) {
                 Text(
-                  text = itemText,
-                  style = MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = metrics.scaledSp(13),
-                    lineHeight = metrics.scaledSp(19),
-                    fontWeight = FontWeight.Medium
+                  text = "Downloading Update",
+                  style = MaterialTheme.typography.headlineSmall.copy(
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.ExtraBold
                   ),
                   color = palette.textPrimary
                 )
+                Text(
+                  text = "Sibil ${releaseInfo.tagName} • Keep app open",
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+
+              // Frosted Glass Progress Card with Glowing Linear Progress Bar & Percentage
+              Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = palette.nestedCardFill,
+                border = palette.nestedBorder,
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                  verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Text(
+                      text = "$percentInt%",
+                      style = MaterialTheme.typography.titleLarge.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold
+                      ),
+                      color = palette.accentIndigo,
+                      modifier = Modifier.testTag("update_download_percentage_text")
+                    )
+
+                    Surface(
+                      shape = CircleShape,
+                      color = Color(0xFF06B6D4).copy(alpha = 0.16f),
+                      border = BorderStroke(1.dp, Color(0xFF06B6D4).copy(alpha = 0.4f))
+                    ) {
+                      Text(
+                        text = speedText,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontFamily = JetBrainsMonoFamily,
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = if (palette.isDark) Color(0xFF67E8F9) else Color(0xFF0E7490),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                      )
+                    }
+                  }
+
+                  // Glowing Linear Progress Bar Track
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(12.dp)
+                      .clip(CircleShape)
+                      .background(
+                        if (palette.isDark) Color.White.copy(alpha = 0.10f)
+                        else Color(0xFF6366F1).copy(alpha = 0.14f)
+                      )
+                      .border(
+                        BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
+                        CircleShape
+                      )
+                  ) {
+                    Box(
+                      modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(animatedProgress.coerceIn(0.03f, 1f))
+                        .clip(CircleShape)
+                        .background(
+                          brush = Brush.horizontalGradient(
+                            colors = listOf(
+                              Color(0xFF06B6D4),
+                              Color(0xFF6366F1),
+                              Color(0xFF8B5CF6)
+                            )
+                          )
+                        )
+                        .testTag("update_download_progress_bar")
+                    )
+                  }
+
+                  // Byte counter indicator (e.g., "12.4 MB / 24.8 MB")
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Text(
+                      text = if (totalBytes > 0L) {
+                        "$downloadedMbText / $totalMbText"
+                      } else {
+                        "$downloadedMbText downloaded"
+                      },
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = palette.textSecondary,
+                      modifier = Modifier.testTag("update_download_bytes_text")
+                    )
+
+                    Text(
+                      text = if (percentInt >= 100) "Launching installer..." else "Streaming APK...",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textSecondary
+                    )
+                  }
+                }
               }
             }
-          }
-
-          // Action Buttons: "Update Now" + "Remind Me Later"
-          Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            Box(
+          } else {
+            // Standard Update Available View
+            Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .shadow(
-                  elevation = 8.dp,
-                  shape = RoundedCornerShape(18.dp),
-                  ambientColor = Color(0x334338CA),
-                  spotColor = Color(0x554F46E5)
-                )
-                .clip(RoundedCornerShape(18.dp))
-                .background(brush = LiquidOrbBrush, shape = RoundedCornerShape(18.dp))
-                .border(
-                  BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
-                  RoundedCornerShape(18.dp)
-                )
-                .clickable(onClick = onUpdateNow)
-                .padding(vertical = 14.dp)
-                .testTag("update_dialog_update_now_button"),
-              contentAlignment = Alignment.Center
+                .padding(metrics.scaledDp(22)),
+              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
             ) {
-              Text(
-                text = "Update Now",
-                style = MaterialTheme.typography.labelLarge.copy(
-                  fontSize = 14.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = Color.White
-              )
-            }
+              // Header: Glowing rocket/sparkle badge icon + "What's New in Sibil" + dynamic tag_name badge
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(42.dp)
+                    .shadow(
+                      elevation = 8.dp,
+                      shape = RoundedCornerShape(14.dp),
+                      ambientColor = Color(0x334338CA),
+                      spotColor = Color(0x554F46E5)
+                    )
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(brush = LiquidOrbBrush)
+                    .border(
+                      BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)),
+                      RoundedCornerShape(14.dp)
+                    ),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.AutoAwesome,
+                    contentDescription = "What's New in Sibil",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                  )
+                }
 
-            TextButton(
-              onClick = onRemindLater,
-              shape = CircleShape,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("update_dialog_remind_later_button")
-            ) {
-              Text(
-                text = "Remind Me Later",
-                style = MaterialTheme.typography.labelLarge.copy(
-                  fontSize = 13.sp,
-                  fontWeight = FontWeight.SemiBold
-                ),
-                color = palette.textSecondary
-              )
+                Column(
+                  modifier = Modifier.weight(1f),
+                  verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                  Text(
+                    text = "What's New in Sibil",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                      fontSize = 20.sp,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = palette.textPrimary,
+                    modifier = Modifier.testTag("update_dialog_title")
+                  )
+
+                  Surface(
+                    shape = CircleShape,
+                    color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
+                  ) {
+                    Text(
+                      text = releaseInfo.tagName,
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = palette.accentIndigo,
+                      modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                        .testTag("update_dialog_version_badge")
+                    )
+                  }
+                }
+              }
+
+              // Dynamic Scrollable Changelog Container
+              Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.nestedCardFill,
+                border = palette.nestedBorder,
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 220.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .testTag("update_dialog_changelog_scroll"),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  formattedChangelogItems.forEach { itemText ->
+                    Text(
+                      text = itemText,
+                      style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = metrics.scaledSp(13),
+                        lineHeight = metrics.scaledSp(19),
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textPrimary
+                    )
+                  }
+                }
+              }
+
+              // Optional download error banner with browser fallback option
+              val activeError = downloadError
+              if (!activeError.isNullOrBlank()) {
+                Surface(
+                  shape = RoundedCornerShape(14.dp),
+                  color = Color(0xFFEF4444).copy(alpha = 0.14f),
+                  border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f)),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Text(
+                      text = activeError,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = if (palette.isDark) Color(0xFFFCA5A5) else Color(0xFFB91C1C)
+                    )
+                    Text(
+                      text = "Open Direct Browser Download →",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textDecoration = TextDecoration.Underline
+                      ),
+                      color = palette.accentIndigo,
+                      modifier = Modifier.clickable {
+                        onUpdateNow()
+                        try {
+                          val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(releaseInfo.downloadUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          }
+                          context.startActivity(browserIntent)
+                        } catch (_: Exception) {
+                          Toast.makeText(
+                            context,
+                            "Unable to open browser for APK download.",
+                            Toast.LENGTH_SHORT
+                          ).show()
+                        }
+                      }
+                    )
+                  }
+                }
+              }
+
+              // Action Buttons: "Update Now" + "Remind Me Later"
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .shadow(
+                      elevation = 8.dp,
+                      shape = RoundedCornerShape(18.dp),
+                      ambientColor = Color(0x334338CA),
+                      spotColor = Color(0x554F46E5)
+                    )
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(brush = LiquidOrbBrush, shape = RoundedCornerShape(18.dp))
+                    .border(
+                      BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
+                      RoundedCornerShape(18.dp)
+                    )
+                    .clickable { startInAppApkDownload() }
+                    .padding(vertical = 14.dp)
+                    .testTag("update_dialog_update_now_button"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Text(
+                    text = if (downloadError == null) "Update Now" else "Retry Update Now",
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontSize = 14.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = Color.White
+                  )
+                }
+
+                TextButton(
+                  onClick = onRemindLater,
+                  shape = CircleShape,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("update_dialog_remind_later_button")
+                ) {
+                  Text(
+                    text = "Remind Me Later",
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontSize = 13.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = palette.textSecondary
+                  )
+                }
+              }
             }
           }
         }
@@ -7850,139 +8433,248 @@ fun UpdateAvailableDialog(
   }
 }
 
+/**
+ * First-Launch "What's New" Changelog Card (`WhatsNewDialog`):
+ * - Displayed automatically when `lastSeenVersion != null && isNewerVersion(currentVersion, lastSeenVersion)`.
+ * - Frosted Liquid Glass Card (`28.dp` radius with specular border).
+ * - Header: Glowing badge `v${currentVersion} Update Installed` + Title `"What's New in Sibil"`.
+ * - Content Body: Displays cached `pending_release_notes` (or fetches the current release body from GitHub),
+ *   parsing markdown bullets (`*`, `-`) into styled checkmark bullet rows with high-contrast text.
+ * - Fallback text if notes are blank:
+ *   `"• Performance enhancements & formula vault rendering optimizations.\n• Bug fixes and battery life improvements."`
+ * - Action Button: `"Explore Updates"` gradient button that saves `last_seen_version = currentVersion` and dismisses.
+ */
 @Composable
 fun WhatsNewDialog(
   metrics: ResponsiveMetrics,
-  onExploreUpdates: () -> Unit
+  onExploreUpdates: () -> Unit,
+  currentVersion: String = APP_VERSION_NAME
 ) {
+  val context = LocalContext.current
   val palette = currentGlassPalette()
-  val changelogBullets = remember {
-    listOf(
-      "🗂️ Smart Flashcards: AI document-to-card generator with multi-key failover and 3D card physics.",
-      "🎨 Refined Liquid Glass: True daylight contrast in Light Mode and deep obsidian in Dark Mode.",
-      "⏱️ CE Time Suite: Segmented pill navigation with scrollable Lap Splits and background alarms.",
-      "⚡ Offline Deck Sharing: Export and import decks directly with classmates via code."
+  val cardShape = RoundedCornerShape(28.dp)
+  val cardGradientBrush = remember(palette.isDark, palette.cardSurface, palette.cardBottomSheen) {
+    Brush.verticalGradient(
+      colors = listOf(
+        palette.cardSurface,
+        palette.cardBottomSheen
+      )
     )
+  }
+
+  val normalizedVersion = remember(currentVersion) {
+    currentVersion.trim().removePrefix("v").removePrefix("V").ifEmpty { "1.0.0" }
+  }
+
+  var rawReleaseNotes by remember {
+    val prefs = context.applicationContext.getSharedPreferences(
+      "sibil_app_offline_storage",
+      Context.MODE_PRIVATE
+    )
+    mutableStateOf(prefs.getString("pending_release_notes", "")?.trim().orEmpty())
+  }
+
+  // If cached release notes are blank, asynchronously fetch the latest release body from GitHub
+  LaunchedEffect(Unit) {
+    if (rawReleaseNotes.isBlank()) {
+      val fetchedBody = fetchLatestGitHubReleaseBody(context)
+      if (!fetchedBody.isNullOrBlank()) {
+        rawReleaseNotes = fetchedBody
+      }
+    }
+  }
+
+  val parsedBulletLines = remember(rawReleaseNotes) {
+    formatGitHubReleaseChangelogLines(
+      rawReleaseNotes.ifBlank { DEFAULT_FALLBACK_RELEASE_NOTES }
+    ).map { line ->
+      line.removePrefix("• ").removePrefix("- ").removePrefix("* ").trim()
+    }.filter { it.isNotEmpty() }
   }
 
   Dialog(
     onDismissRequest = onExploreUpdates,
     properties = DialogProperties(usePlatformDefaultWidth = false)
   ) {
-    LiquidGlassCard(
-      shape = RoundedCornerShape(28.dp),
-      elevation = 14.dp,
-      borderStroke = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.50f)),
+    Box(
       modifier = Modifier
-        .fillMaxWidth(0.92f)
-        .widthIn(max = 460.dp)
-        .testTag("whats_new_dialog")
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = if (palette.isDark) 0.62f else 0.38f))
+        .clickable(onClick = onExploreUpdates),
+      contentAlignment = Alignment.Center
     ) {
-      Column(
+      Box(
         modifier = Modifier
-          .fillMaxWidth()
-          .padding(metrics.scaledDp(22)),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+          .fillMaxWidth(0.92f)
+          .widthIn(max = 460.dp)
+          .shadow(
+            elevation = 18.dp,
+            shape = cardShape,
+            ambientColor = palette.shadowAmbient,
+            spotColor = palette.shadowSpot
+          )
+          .clip(cardShape)
+          .background(brush = cardGradientBrush, shape = cardShape)
+          .border(
+            border = BorderStroke(
+              1.dp,
+              Brush.linearGradient(
+                colors = listOf(
+                  Color.White.copy(alpha = if (palette.isDark) 0.45f else 0.85f),
+                  Color(0xFF6366F1).copy(alpha = 0.38f),
+                  Color.White.copy(alpha = 0.10f)
+                )
+              )
+            ),
+            shape = cardShape
+          )
+          .clickable(enabled = false) {}
+          .testTag("whats_new_dialog")
       ) {
-        // Header: Sparkle icon + "What's New in Sibil" + version badge
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-          Box(
-            modifier = Modifier
-              .size(46.dp)
-              .clip(RoundedCornerShape(14.dp))
-              .background(brush = LiquidOrbBrush)
-              .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)), RoundedCornerShape(14.dp)),
-            contentAlignment = Alignment.Center
-          ) {
-            Icon(
-              imageVector = Icons.Filled.AutoAwesome,
-              contentDescription = "Sparkle",
-              tint = Color.White,
-              modifier = Modifier.size(24.dp)
-            )
-          }
-
-          Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-          ) {
-            Text(
-              text = "What's New in Sibil",
-              style = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = metrics.scaledSp(20),
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = palette.textPrimary
-            )
-            Surface(
-              shape = CircleShape,
-              color = Color(0xFF6366F1).copy(alpha = 0.16f),
-              border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
-            ) {
-              Text(
-                text = "$APP_VERSION_NAME (Official Release)",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.accentIndigo,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
-              )
-            }
-          }
-        }
-
-        // Concise Bullet List
         Column(
-          modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-          changelogBullets.forEach { bullet ->
-            Surface(
-              shape = RoundedCornerShape(14.dp),
-              color = palette.nestedCardFill,
-              border = palette.nestedBorder,
-              modifier = Modifier.fillMaxWidth()
-            ) {
-              Text(
-                text = bullet,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                  fontSize = metrics.scaledSp(13),
-                  lineHeight = metrics.scaledSp(18),
-                  fontWeight = FontWeight.Medium
-                ),
-                color = palette.textPrimary,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-              )
-            }
-          }
-        }
-
-        // Action Button: Full-width vibrant indigo button "Explore Updates"
-        Button(
-          onClick = onExploreUpdates,
-          shape = RoundedCornerShape(18.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = Color(0xFF4F46E5),
-            contentColor = Color.White
-          ),
-          contentPadding = PaddingValues(vertical = 14.dp),
           modifier = Modifier
             .fillMaxWidth()
-            .testTag("whats_new_explore_button")
+            .padding(metrics.scaledDp(22)),
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
         ) {
-          Text(
-            text = "Explore Updates",
-            style = MaterialTheme.typography.labelLarge.copy(
-              fontSize = 14.sp,
-              fontWeight = FontWeight.Bold
-            ),
-            color = Color.White
-          )
+          // Header: Sparkle icon + Glowing badge "v${currentVersion} Update Installed" + Title "What's New in Sibil"
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .size(46.dp)
+                .shadow(
+                  elevation = 8.dp,
+                  shape = RoundedCornerShape(14.dp),
+                  ambientColor = Color(0x334338CA),
+                  spotColor = Color(0x554F46E5)
+                )
+                .clip(RoundedCornerShape(14.dp))
+                .background(brush = LiquidOrbBrush)
+                .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)), RoundedCornerShape(14.dp)),
+              contentAlignment = Alignment.Center
+            ) {
+              Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = "Sparkle",
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+              )
+            }
+
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              Surface(
+                shape = CircleShape,
+                color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.50f))
+              ) {
+                Text(
+                  text = "v$normalizedVersion Update Installed",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.accentIndigo,
+                  modifier = Modifier
+                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                    .testTag("whats_new_version_badge")
+                )
+              }
+
+              Text(
+                text = "What's New in Sibil",
+                style = MaterialTheme.typography.headlineSmall.copy(
+                  fontSize = metrics.scaledSp(20),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary,
+                modifier = Modifier.testTag("whats_new_title")
+              )
+            }
+          }
+
+          // Styled Checkmark Bullet Rows in Scrollable Frosted Container
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(max = 260.dp)
+              .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            parsedBulletLines.forEach { bulletText ->
+              Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = palette.nestedCardFill,
+                border = palette.nestedBorder,
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                  verticalAlignment = Alignment.Top,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = palette.accentIndigo,
+                    modifier = Modifier
+                      .size(18.dp)
+                      .padding(top = 1.dp)
+                  )
+                  Text(
+                    text = bulletText,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontSize = metrics.scaledSp(13),
+                      lineHeight = metrics.scaledSp(19),
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textPrimary,
+                    modifier = Modifier.weight(1f)
+                  )
+                }
+              }
+            }
+          }
+
+          // Action Button: "Explore Updates" Gradient Button
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .shadow(
+                elevation = 8.dp,
+                shape = RoundedCornerShape(18.dp),
+                ambientColor = Color(0x334338CA),
+                spotColor = Color(0x554F46E5)
+              )
+              .clip(RoundedCornerShape(18.dp))
+              .background(brush = LiquidOrbBrush, shape = RoundedCornerShape(18.dp))
+              .border(
+                BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
+                RoundedCornerShape(18.dp)
+              )
+              .clickable(onClick = onExploreUpdates)
+              .padding(vertical = 14.dp)
+              .testTag("whats_new_explore_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Text(
+              text = "Explore Updates",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = Color.White
+            )
+          }
         }
       }
     }
