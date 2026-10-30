@@ -9,6 +9,8 @@
 
     <application
         android:allowBackup="true"
+        android:fullBackupOnly="true"
+        android:restoreAnyVersion="true"
         android:hasFragileUserData="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

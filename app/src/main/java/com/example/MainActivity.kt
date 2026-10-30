@@ -76,17 +76,23 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -96,8 +102,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -141,6 +150,7 @@ import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AvTimer
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
@@ -159,8 +169,12 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.ArrowForward
@@ -171,6 +185,7 @@ import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Snooze
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
@@ -182,6 +197,7 @@ import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.EventNote
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
@@ -189,6 +205,7 @@ import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -240,6 +257,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -313,6 +331,7 @@ import java.util.zip.InflaterInputStream
 import java.util.zip.ZipInputStream
 import kotlin.coroutines.coroutineContext
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -2207,7 +2226,7 @@ Convert the document into high-yield active-recall flashcards using these strict
 }
 
 /**
- * Result of validating user credentials against the `SharedPreferences` mock backend.
+ * Result of validating user credentials against the `SharedPreferences` local authentication engine.
  */
 enum class LoginValidationResult {
   SUCCESS,
@@ -2215,6 +2234,25 @@ enum class LoginValidationResult {
   NO_ACCOUNT_FOUND,
   INCORRECT_PASSWORD
 }
+
+/**
+ * Computes the SHA-256 hex digest of [input] so raw plaintext passwords and PINs
+ * are never stored in `SharedPreferences`.
+ */
+fun hashSecret(input: String): String {
+  val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+  return bytes.joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * Stored account metadata for registered scholars.
+ */
+data class StoredScholarAccount(
+  val username: String,
+  val displayName: String,
+  val passwordHash: String,
+  val recoveryPinHash: String
+)
 
 /**
  * Validates that a username is not blank and has at least 3 characters.
@@ -2226,15 +2264,14 @@ fun isValidUsername(username: String): Boolean {
 
 /**
  * Lightweight offline data manager wrapping Android's native `SharedPreferences`.
- * Acts as a local mock backend that persists:
- * 1. Registered user accounts (`username` -> `password` map).
+ * Acts as a local backend that persists:
+ * 1. SHA-256 hashed user accounts (`auth_username`, `auth_display_name`, `auth_password_hash`,
+ *    `auth_recovery_pin_hash`, `auth_is_logged_in`, `auth_is_guest`).
  * 2. Account-segregated `Task` lists (`tasks_[username]` or `tasks_guest`).
  * 3. Account-segregated `ClassSchedule` lists (`schedules_[username]` or `schedules_guest`).
  * 4. Account-segregated `AlarmItem` lists (`alarms_[username]` or `alarms_guest`).
- * 5. Account-segregated `FlashcardDeck` lists (`flashcards_[username]` or `flashcards_guest`),
- *    automatically seeding default CE demo decks if storage is empty.
- * 6. Active user session (`username`) and `isDarkMode`.
- * 7. Explicit Guest data wipe (`clearGuestData()`) when logging out of Guest mode.
+ * 5. Account-segregated `FlashcardDeck` lists (`flashcards_[username]` or `flashcards_guest`).
+ * 6. Active user session (`auth_is_logged_in` / `auth_is_guest`) and `isDarkMode`.
  */
 class LocalStorageManager(context: Context) {
   private val appContext: Context = context.applicationContext ?: context
@@ -2265,15 +2302,17 @@ class LocalStorageManager(context: Context) {
   }
 
   /**
-   * On app startup, if `SharedPreferences` has no logged-in username (such as after an uninstall
+   * On app startup, if `SharedPreferences` has no active session (such as after an uninstall
    * and fresh reinstall), automatically looks for `"sibil_device_backup_${androidId}.json"` in
    * `MediaStore.Downloads` or `Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)`.
-   * If found, silently restores the username, tasks, schedules, alarms, and flashcard decks
-   * before rendering the screen so the user is logged right back into their account automatically.
+   * If found, silently restores the account, tasks, schedules, alarms, and flashcard decks.
    */
   private fun restoreFromDeviceBackupIfUnauthenticated() {
     val existingUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
-    if (existingUser.isNotBlank()) return
+    val hasAuthAccount = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty().isNotBlank()
+    val isLoggedIn = prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false)
+    val isGuest = prefs.getBoolean(KEY_AUTH_IS_GUEST, false)
+    if (existingUser.isNotBlank() || hasAuthAccount || isLoggedIn || isGuest) return
 
     val backupJson = readDeviceBackupFileFromDownloads()
     if (!backupJson.isNullOrBlank()) {
@@ -2296,8 +2335,9 @@ class LocalStorageManager(context: Context) {
     }
 
     val currentSavedUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
-    val hasRegisteredAccounts = getRegisteredUsers().isNotEmpty()
-    if (currentSavedUser.isBlank() && !hasRegisteredAccounts) {
+    val currentAuthUser = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty()
+    val hasRegisteredAccounts = getRegisteredUsers().isNotEmpty() || getRegisteredAccountsMap().isNotEmpty()
+    if (currentSavedUser.isBlank() && currentAuthUser.isBlank() && !hasRegisteredAccounts) {
       return
     }
 
@@ -2556,24 +2596,97 @@ class LocalStorageManager(context: Context) {
   }
 
   /**
-   * Returns all registered users stored in `SharedPreferences` (normalized lowercase username -> password).
+   * Returns all registered scholar accounts stored in `SharedPreferences` (normalized lowercase username -> StoredScholarAccount).
+   */
+  fun getRegisteredAccountsMap(): Map<String, StoredScholarAccount> {
+    val result = mutableMapOf<String, StoredScholarAccount>()
+    val rawAccountsJson = prefs.getString(KEY_REGISTERED_ACCOUNTS_JSON, "")?.trim().orEmpty()
+    if (rawAccountsJson.isNotEmpty()) {
+      try {
+        val root = JSONObject(rawAccountsJson)
+        val keys = root.keys()
+        while (keys.hasNext()) {
+          val k = keys.next().trim().lowercase(Locale.US)
+          val obj = root.optJSONObject(k) ?: continue
+          val handle = obj.optString("username", k).trim().ifEmpty { k }
+          val display = obj.optString("displayName", handle).trim().ifEmpty { handle }
+          val passHash = obj.optString("passwordHash", "").trim()
+          val pinHash = obj.optString("recoveryPinHash", "").trim()
+          if (k.isNotEmpty() && passHash.isNotEmpty()) {
+            result[k] = StoredScholarAccount(
+              username = handle,
+              displayName = display,
+              passwordHash = passHash,
+              recoveryPinHash = pinHash
+            )
+          }
+        }
+      } catch (_: Exception) {
+      }
+    }
+
+    // Also include the primary top-level auth_username schema if present
+    val primaryAuthUsername = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty()
+    val primaryNormalized = normalizeAccountKey(primaryAuthUsername)
+    val primaryPassHash = prefs.getString(KEY_AUTH_PASSWORD_HASH, "")?.trim().orEmpty()
+    if (
+      primaryNormalized.isNotEmpty() &&
+      primaryNormalized != GUEST_ACCOUNT_KEY &&
+      primaryPassHash.isNotEmpty()
+    ) {
+      val primaryDisplay = prefs.getString(KEY_AUTH_DISPLAY_NAME, primaryAuthUsername)
+        ?.trim()
+        .orEmpty()
+        .ifEmpty { primaryAuthUsername }
+      val primaryPinHash = prefs.getString(KEY_AUTH_RECOVERY_PIN_HASH, "")?.trim().orEmpty()
+      val existing = result[primaryNormalized]
+      result[primaryNormalized] = StoredScholarAccount(
+        username = existing?.username?.ifBlank { primaryAuthUsername } ?: primaryAuthUsername,
+        displayName = primaryDisplay.ifBlank { existing?.displayName ?: primaryAuthUsername },
+        passwordHash = primaryPassHash,
+        recoveryPinHash = primaryPinHash.ifBlank { existing?.recoveryPinHash.orEmpty() }
+      )
+    }
+
+    return result
+  }
+
+  private fun saveRegisteredAccountsMap(accounts: Map<String, StoredScholarAccount>) {
+    val root = JSONObject()
+    accounts.forEach { (normKey, acct) ->
+      val obj = JSONObject().apply {
+        put("username", acct.username)
+        put("displayName", acct.displayName)
+        put("passwordHash", acct.passwordHash)
+        put("recoveryPinHash", acct.recoveryPinHash)
+      }
+      root.put(normKey, obj)
+    }
+    prefs.edit().putString(KEY_REGISTERED_ACCOUNTS_JSON, root.toString()).apply()
+  }
+
+  /**
+   * Returns all registered users stored in `SharedPreferences` (normalized lowercase username -> passwordHash).
    * Uses safe string default `""` and fallback parsing.
    */
   fun getRegisteredUsers(): Map<String, String> {
+    val map = mutableMapOf<String, String>()
     val rawJson = prefs.getString(KEY_REGISTERED_USERS, "")?.trim().orEmpty()
-    if (rawJson.isEmpty()) return emptyMap()
-    return try {
-      val jsonObject = JSONObject(rawJson)
-      val map = mutableMapOf<String, String>()
-      val keys = jsonObject.keys()
-      while (keys.hasNext()) {
-        val usernameKey = keys.next()
-        map[usernameKey.trim().lowercase(Locale.US)] = jsonObject.optString(usernameKey, "")
+    if (rawJson.isNotEmpty()) {
+      try {
+        val jsonObject = JSONObject(rawJson)
+        val keys = jsonObject.keys()
+        while (keys.hasNext()) {
+          val usernameKey = keys.next()
+          map[usernameKey.trim().lowercase(Locale.US)] = jsonObject.optString(usernameKey, "")
+        }
+      } catch (_: Exception) {
       }
-      map
-    } catch (_: Exception) {
-      emptyMap()
     }
+    getRegisteredAccountsMap().forEach { (normKey, acct) ->
+      map[normKey] = acct.passwordHash
+    }
+    return map
   }
 
   /**
@@ -2582,31 +2695,163 @@ class LocalStorageManager(context: Context) {
   fun isUsernameRegistered(username: String): Boolean {
     val normalizedUsername = normalizeAccountKey(username)
     if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return false
+    val primaryAuthUser = normalizeAccountKey(prefs.getString(KEY_AUTH_USERNAME, ""))
+    if (primaryAuthUser == normalizedUsername && !prefs.getString(KEY_AUTH_PASSWORD_HASH, "").isNullOrBlank()) {
+      return true
+    }
     return getRegisteredUsers().containsKey(normalizedUsername)
   }
 
   /**
-   * Verifies that the username exists and its stored password matches `password`.
+   * Verifies that the username exists and `hashSecret(enteredPassword) == storedPasswordHash`.
    */
   fun verifyUserPassword(username: String, password: String): Boolean {
     val normalizedUsername = normalizeAccountKey(username)
     if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return false
+    val enteredHash = hashSecret(password)
+
+    val primaryAuthUser = normalizeAccountKey(prefs.getString(KEY_AUTH_USERNAME, ""))
+    val primaryStoredHash = prefs.getString(KEY_AUTH_PASSWORD_HASH, "")?.trim().orEmpty()
+    if (primaryAuthUser == normalizedUsername && primaryStoredHash.isNotEmpty()) {
+      if (enteredHash == primaryStoredHash || password == primaryStoredHash) return true
+    }
+
+    val acct = getRegisteredAccountsMap()[normalizedUsername]
+    if (acct != null && acct.passwordHash.isNotEmpty()) {
+      if (enteredHash == acct.passwordHash || password == acct.passwordHash) return true
+    }
+
     val savedPassword = getRegisteredUsers()[normalizedUsername] ?: return false
-    return savedPassword == password
+    return savedPassword == enteredHash || savedPassword == password
   }
 
   /**
-   * Registers a new user account (`username` -> `password`) in `SharedPreferences`.
+   * Verifies that the username exists and `hashSecret(enteredPin) == storedPinHash`.
    */
-  fun registerUser(username: String, password: String) {
+  fun verifyRecoveryPin(username: String, enteredPin: String): Boolean {
     val normalizedUsername = normalizeAccountKey(username)
-    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return
+    val cleanPin = enteredPin.trim()
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY || cleanPin.isEmpty()) {
+      return false
+    }
+    val enteredPinHash = hashSecret(cleanPin)
+
+    val primaryAuthUser = normalizeAccountKey(prefs.getString(KEY_AUTH_USERNAME, ""))
+    val primaryPinHash = prefs.getString(KEY_AUTH_RECOVERY_PIN_HASH, "")?.trim().orEmpty()
+    if (primaryAuthUser == normalizedUsername && primaryPinHash.isNotEmpty()) {
+      if (enteredPinHash == primaryPinHash) return true
+    }
+
+    val acct = getRegisteredAccountsMap()[normalizedUsername] ?: return false
+    return acct.recoveryPinHash.isNotEmpty() && enteredPinHash == acct.recoveryPinHash
+  }
+
+  /**
+   * Resets a user's password after verifying their 4-digit Recovery PIN.
+   * Updates `auth_password_hash` with the new SHA-256 hash without wiping flashcards or saved settings.
+   */
+  fun resetPasswordWithRecoveryPin(
+    username: String,
+    enteredPin: String,
+    newPassword: String
+  ): Boolean {
+    val normalizedUsername = normalizeAccountKey(username)
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return false
+    if (newPassword.isBlank()) return false
+    if (!verifyRecoveryPin(username, enteredPin)) return false
+
+    val newPasswordHash = hashSecret(newPassword)
+    val accounts = getRegisteredAccountsMap().toMutableMap()
+    val existingAcct = accounts[normalizedUsername]
+    val canonicalUsername = existingAcct?.username ?: username.trim()
+    val canonicalDisplay = existingAcct?.displayName ?: prefs.getString(KEY_AUTH_DISPLAY_NAME, canonicalUsername).orEmpty().ifBlank { canonicalUsername }
+    val canonicalPinHash = existingAcct?.recoveryPinHash?.ifBlank { hashSecret(enteredPin.trim()) } ?: hashSecret(enteredPin.trim())
+
+    accounts[normalizedUsername] = StoredScholarAccount(
+      username = canonicalUsername,
+      displayName = canonicalDisplay,
+      passwordHash = newPasswordHash,
+      recoveryPinHash = canonicalPinHash
+    )
+    saveRegisteredAccountsMap(accounts)
+
     val currentUsers = getRegisteredUsers().toMutableMap()
-    currentUsers[normalizedUsername] = password
+    currentUsers[normalizedUsername] = newPasswordHash
+    val usersJson = JSONObject()
+    currentUsers.forEach { (k, v) -> usersJson.put(k, v) }
+
+    val editor = prefs.edit()
+      .putString(KEY_REGISTERED_USERS, usersJson.toString())
+      .putString(KEY_AUTH_PASSWORD_HASH, newPasswordHash)
+    val primaryAuthUser = normalizeAccountKey(prefs.getString(KEY_AUTH_USERNAME, ""))
+    if (primaryAuthUser.isEmpty() || primaryAuthUser == normalizedUsername) {
+      editor.putString(KEY_AUTH_USERNAME, canonicalUsername)
+      editor.putString(KEY_AUTH_DISPLAY_NAME, canonicalDisplay)
+      editor.putString(KEY_AUTH_RECOVERY_PIN_HASH, canonicalPinHash)
+    }
+    editor.apply()
+    syncToDeviceStorage(normalizedUsername)
+    return true
+  }
+
+  /**
+   * Registers a new user account with SHA-256 hashed password and 4-digit recovery PIN in `SharedPreferences`.
+   */
+  fun registerUser(
+    username: String,
+    password: String,
+    displayName: String = "",
+    recoveryPin: String = ""
+  ) {
+    val cleanUsername = username.trim()
+    val normalizedUsername = normalizeAccountKey(cleanUsername)
+    if (normalizedUsername.isEmpty() || normalizedUsername == GUEST_ACCOUNT_KEY) return
+
+    val resolvedDisplayName = displayName.trim().ifBlank { cleanUsername }
+    val passwordHash = hashSecret(password)
+    val pinHash = if (recoveryPin.trim().isNotEmpty()) hashSecret(recoveryPin.trim()) else ""
+
+    val accounts = getRegisteredAccountsMap().toMutableMap()
+    accounts[normalizedUsername] = StoredScholarAccount(
+      username = cleanUsername,
+      displayName = resolvedDisplayName,
+      passwordHash = passwordHash,
+      recoveryPinHash = pinHash
+    )
+    saveRegisteredAccountsMap(accounts)
+
+    val currentUsers = getRegisteredUsers().toMutableMap()
+    currentUsers[normalizedUsername] = passwordHash
     val jsonObject = JSONObject()
     currentUsers.forEach { (k, v) -> jsonObject.put(k, v) }
-    prefs.edit().putString(KEY_REGISTERED_USERS, jsonObject.toString()).apply()
+
+    prefs.edit()
+      .putString(KEY_REGISTERED_USERS, jsonObject.toString())
+      .putString(KEY_AUTH_USERNAME, cleanUsername)
+      .putString(KEY_AUTH_DISPLAY_NAME, resolvedDisplayName)
+      .putString(KEY_AUTH_PASSWORD_HASH, passwordHash)
+      .putString(KEY_AUTH_RECOVERY_PIN_HASH, pinHash)
+      .putBoolean(KEY_AUTH_IS_LOGGED_IN, true)
+      .putBoolean(KEY_AUTH_IS_GUEST, false)
+      .putString(KEY_USER_NAME, cleanUsername)
+      .apply()
     syncToDeviceStorage(normalizedUsername)
+  }
+
+  fun getDisplayNameForUser(username: String): String {
+    val clean = username.trim()
+    val normalized = normalizeAccountKey(clean)
+    if (normalized.isEmpty() || normalized == GUEST_ACCOUNT_KEY) return GUEST_DISPLAY_NAME
+    val acct = getRegisteredAccountsMap()[normalized]
+    if (acct != null && acct.displayName.isNotBlank()) {
+      return acct.displayName
+    }
+    val primaryAuthUser = normalizeAccountKey(prefs.getString(KEY_AUTH_USERNAME, ""))
+    if (primaryAuthUser == normalized) {
+      val primaryDisplay = prefs.getString(KEY_AUTH_DISPLAY_NAME, "")?.trim().orEmpty()
+      if (primaryDisplay.isNotBlank()) return primaryDisplay
+    }
+    return clean
   }
 
   fun saveTasks(tasks: List<Task>, username: String = GUEST_ACCOUNT_KEY) {
@@ -2910,21 +3155,90 @@ class LocalStorageManager(context: Context) {
     editor.apply()
   }
 
-  fun saveUserProfile(username: String) {
+  fun isAuthLoggedIn(): Boolean {
+    return prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false)
+  }
+
+  fun isAuthGuest(): Boolean {
+    return prefs.getBoolean(KEY_AUTH_IS_GUEST, false)
+  }
+
+  fun hasActiveAuthSession(): Boolean {
+    if (prefs.contains(KEY_AUTH_IS_LOGGED_IN) || prefs.contains(KEY_AUTH_IS_GUEST)) {
+      return isAuthLoggedIn() || isAuthGuest()
+    }
+    return !prefs.getString(KEY_USER_NAME, "").isNullOrBlank()
+  }
+
+  fun saveUserProfile(username: String, displayName: String = "") {
     val clean = username.trim()
-    prefs.edit()
-      .putString(KEY_USER_NAME, clean)
-      .apply()
-    syncToDeviceStorage(clean)
+    val isGuest = clean.isEmpty() ||
+      clean.equals(GUEST_ACCOUNT_KEY, ignoreCase = true) ||
+      clean.equals(GUEST_DISPLAY_NAME, ignoreCase = true) ||
+      clean.equals("Offline Scholar", ignoreCase = true)
+
+    val editor = prefs.edit()
+    if (isGuest) {
+      editor
+        .putBoolean(KEY_AUTH_IS_GUEST, true)
+        .putBoolean(KEY_AUTH_IS_LOGGED_IN, false)
+        .putString(KEY_USER_NAME, GUEST_DISPLAY_NAME)
+        .apply()
+      syncToDeviceStorage(GUEST_ACCOUNT_KEY)
+    } else {
+      val norm = normalizeAccountKey(clean)
+      val acct = getRegisteredAccountsMap()[norm]
+      val resolvedDisplay = displayName.trim().ifBlank {
+        acct?.displayName?.ifBlank { getDisplayNameForUser(clean) } ?: getDisplayNameForUser(clean)
+      }
+      editor
+        .putString(KEY_AUTH_USERNAME, clean)
+        .putString(KEY_AUTH_DISPLAY_NAME, resolvedDisplay)
+        .putBoolean(KEY_AUTH_IS_LOGGED_IN, true)
+        .putBoolean(KEY_AUTH_IS_GUEST, false)
+        .putString(KEY_USER_NAME, clean)
+      if (acct != null) {
+        if (acct.passwordHash.isNotBlank()) {
+          editor.putString(KEY_AUTH_PASSWORD_HASH, acct.passwordHash)
+        }
+        if (acct.recoveryPinHash.isNotBlank()) {
+          editor.putString(KEY_AUTH_RECOVERY_PIN_HASH, acct.recoveryPinHash)
+        }
+      }
+      editor.apply()
+      syncToDeviceStorage(clean)
+    }
   }
 
   fun loadUserName(): String? {
+    if (prefs.contains(KEY_AUTH_IS_LOGGED_IN) || prefs.contains(KEY_AUTH_IS_GUEST)) {
+      val loggedIn = prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false)
+      val guest = prefs.getBoolean(KEY_AUTH_IS_GUEST, false)
+      if (loggedIn) {
+        val authUser = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty()
+        if (authUser.isNotBlank()) return authUser
+      } else if (guest) {
+        return GUEST_DISPLAY_NAME
+      } else {
+        return null
+      }
+    }
     val saved = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
     return saved.takeIf { it.isNotBlank() }
   }
 
+  fun loadDisplayName(): String {
+    if (isAuthGuest()) return GUEST_DISPLAY_NAME
+    val savedDisplay = prefs.getString(KEY_AUTH_DISPLAY_NAME, "")?.trim().orEmpty()
+    if (savedDisplay.isNotBlank()) return savedDisplay
+    val activeUser = loadUserName().orEmpty()
+    return if (activeUser.isNotBlank()) getDisplayNameForUser(activeUser) else GUEST_DISPLAY_NAME
+  }
+
   fun clearUserProfile() {
     prefs.edit()
+      .putBoolean(KEY_AUTH_IS_LOGGED_IN, false)
+      .putBoolean(KEY_AUTH_IS_GUEST, false)
       .remove(KEY_USER_NAME)
       .apply()
   }
@@ -2974,6 +3288,7 @@ class LocalStorageManager(context: Context) {
     val savedUser = prefs.getString(KEY_USER_NAME, "") ?: ""
     val darkMode = prefs.getBoolean(KEY_DARK_MODE, false)
     val registeredUsersJson = prefs.getString(KEY_REGISTERED_USERS, "{}") ?: "{}"
+    val registeredAccountsV2Json = prefs.getString(KEY_REGISTERED_ACCOUNTS_JSON, "{}") ?: "{}"
     val schedulesJson = prefs.getString(schedulesKeyFor(resolvedAccount), "[]") ?: "[]"
     val tasksJson = prefs.getString(tasksKeyFor(resolvedAccount), "[]") ?: "[]"
     val alarmsJson = prefs.getString(alarmsKeyFor(resolvedAccount), "[]") ?: "[]"
@@ -2994,7 +3309,14 @@ class LocalStorageManager(context: Context) {
       put("userProfile", savedUser)
       put("activeAccountKey", resolvedAccount)
       put("isDarkMode", darkMode)
+      put("auth_username", prefs.getString(KEY_AUTH_USERNAME, "") ?: "")
+      put("auth_display_name", prefs.getString(KEY_AUTH_DISPLAY_NAME, "") ?: "")
+      put("auth_password_hash", prefs.getString(KEY_AUTH_PASSWORD_HASH, "") ?: "")
+      put("auth_recovery_pin_hash", prefs.getString(KEY_AUTH_RECOVERY_PIN_HASH, "") ?: "")
+      put("auth_is_logged_in", prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false))
+      put("auth_is_guest", prefs.getBoolean(KEY_AUTH_IS_GUEST, false))
       put("registeredUsers", registeredUsersJson)
+      put("registeredAccountsV2", registeredAccountsV2Json)
       put("schedules", schedulesJson)
       put("tasks", tasksJson)
       put("alarms", alarmsJson)
@@ -3035,10 +3357,28 @@ class LocalStorageManager(context: Context) {
         }
       }
 
-      // 2. Restore User Profile & Dark Mode
+      // 2. Restore User Profile, Auth Schema, & Dark Mode
       val restoredUserProfile = rootObj.optString("userProfile", "").trim()
       if (restoredUserProfile.isNotEmpty()) {
         editor.putString(KEY_USER_NAME, restoredUserProfile)
+      }
+      if (rootObj.has("auth_username")) {
+        editor.putString(KEY_AUTH_USERNAME, rootObj.optString("auth_username", ""))
+      }
+      if (rootObj.has("auth_display_name")) {
+        editor.putString(KEY_AUTH_DISPLAY_NAME, rootObj.optString("auth_display_name", ""))
+      }
+      if (rootObj.has("auth_password_hash")) {
+        editor.putString(KEY_AUTH_PASSWORD_HASH, rootObj.optString("auth_password_hash", ""))
+      }
+      if (rootObj.has("auth_recovery_pin_hash")) {
+        editor.putString(KEY_AUTH_RECOVERY_PIN_HASH, rootObj.optString("auth_recovery_pin_hash", ""))
+      }
+      if (rootObj.has("auth_is_logged_in")) {
+        editor.putBoolean(KEY_AUTH_IS_LOGGED_IN, rootObj.optBoolean("auth_is_logged_in", false))
+      }
+      if (rootObj.has("auth_is_guest")) {
+        editor.putBoolean(KEY_AUTH_IS_GUEST, rootObj.optBoolean("auth_is_guest", false))
       }
       if (rootObj.has("isDarkMode")) {
         editor.putBoolean(KEY_DARK_MODE, rootObj.optBoolean("isDarkMode", false))
@@ -3048,6 +3388,12 @@ class LocalStorageManager(context: Context) {
         ?: rootObj.optString("registeredUsers", "").trim()
       if (regUsersRaw.isNotEmpty()) {
         editor.putString(KEY_REGISTERED_USERS, regUsersRaw)
+      }
+
+      val regAccountsV2Raw = rootObj.optJSONObject("registeredAccountsV2")?.toString()
+        ?: rootObj.optString("registeredAccountsV2", "").trim()
+      if (regAccountsV2Raw.isNotEmpty()) {
+        editor.putString(KEY_REGISTERED_ACCOUNTS_JSON, regAccountsV2Raw)
       }
 
       // 3. Determine target account key for Schedules, Tasks, Alarms, and Flashcards
@@ -3099,8 +3445,15 @@ class LocalStorageManager(context: Context) {
   companion object {
     const val GUEST_ACCOUNT_KEY = "guest"
     const val GUEST_DISPLAY_NAME = "Guest User"
+    const val KEY_AUTH_USERNAME = "auth_username"
+    const val KEY_AUTH_DISPLAY_NAME = "auth_display_name"
+    const val KEY_AUTH_PASSWORD_HASH = "auth_password_hash"
+    const val KEY_AUTH_RECOVERY_PIN_HASH = "auth_recovery_pin_hash"
+    const val KEY_AUTH_IS_LOGGED_IN = "auth_is_logged_in"
+    const val KEY_AUTH_IS_GUEST = "auth_is_guest"
     private const val PREFS_NAME = "sibil_app_offline_storage"
     private const val KEY_REGISTERED_USERS = "registered_users_json"
+    private const val KEY_REGISTERED_ACCOUNTS_JSON = "registered_accounts_v2_json"
     private const val KEY_TASKS_PREFIX = "tasks_"
     private const val KEY_SCHEDULES_PREFIX = "schedules_"
     private const val KEY_ALARMS_PREFIX = "alarms_"
@@ -3129,13 +3482,13 @@ class LocalStorageManager(context: Context) {
 /**
  * Shared ViewModel storing and managing:
  * 1. Global theme state (`isDarkMode`, default `false`).
- * 2. User session data (`username` and `hasSavedSession`, displaying `"Guest User"` when in guest mode).
+ * 2. User session data (`username`, `displayName`, and `hasSavedSession`).
  * 3. Live Open-Meteo weather summary (`weatherText`, starting at `"Fetching Weather..."`).
  * 4. Account-segregated coursework tasks shared across the Academic Dashboard and Task Manager (`tasks_[username]`).
  * 5. Today's Schedule list on the Dashboard.
  * 6. Account-segregated `ClassSchedule` items for the colored Week Timetable & Grid View (`schedules_[username]`).
  * 7. Account-segregated `FlashcardDeck` items for the Smart Flashcard reviewer (`flashcards_[username]`).
- * 8. Simulated Username Authentication, Device-Bound Auto-Persistence, & Guest Mode data wipe via `LocalStorageManager`.
+ * 8. SHA-256 Username + Password Authentication, 4-Digit Recovery PIN Reset, & Device-Bound Auto-Persistence via `LocalStorageManager`.
  */
 class TaskViewModel(
   private var storageManager: LocalStorageManager? = null
@@ -3170,6 +3523,9 @@ class TaskViewModel(
   var username by mutableStateOf(LocalStorageManager.GUEST_DISPLAY_NAME)
     private set
 
+  var displayName by mutableStateOf(LocalStorageManager.GUEST_DISPLAY_NAME)
+    private set
+
   val userName: String
     get() = displayUsername
 
@@ -3177,7 +3533,7 @@ class TaskViewModel(
     get() = if (isGuestMode) {
       LocalStorageManager.GUEST_DISPLAY_NAME
     } else {
-      username
+      displayName.trim().ifBlank { username }
     }
 
   var hasSavedSession by mutableStateOf(false)
@@ -3267,7 +3623,7 @@ class TaskViewModel(
     savedGeminiApiKey = manager.loadSavedGeminiApiKey()
 
     val savedUserName = manager.loadUserName()
-    if (!savedUserName.isNullOrBlank()) {
+    if (manager.hasActiveAuthSession() && !savedUserName.isNullOrBlank()) {
       username = if (
         savedUserName.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) ||
         savedUserName.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true)
@@ -3275,6 +3631,11 @@ class TaskViewModel(
         LocalStorageManager.GUEST_DISPLAY_NAME
       } else {
         savedUserName.trim()
+      }
+      displayName = if (isGuestMode) {
+        LocalStorageManager.GUEST_DISPLAY_NAME
+      } else {
+        manager.getDisplayNameForUser(username)
       }
       hasSavedSession = true
       loadAccountDataForKey(manager, currentAccountKey)
@@ -3486,15 +3847,15 @@ class TaskViewModel(
   }
 
   /**
-   * Validates `typedUsername` and `typedPassword` against the `SharedPreferences` registered users map.
-   * - Checks that the username is not blank and has at least 3 characters (`INVALID_USERNAME`).
+   * Validates `typedUsername` and `typedPassword` against the `SharedPreferences` SHA-256 credentials.
+   * - Checks that the username is not blank (`INVALID_USERNAME`).
    * - Returns `NO_ACCOUNT_FOUND` if the username is not registered.
-   * - Returns `INCORRECT_PASSWORD` if the username is registered but the password does not match.
-   * - Logs the user in and returns `SUCCESS` when valid.
+   * - Returns `INCORRECT_PASSWORD` if `hashSecret(typedPassword) != storedPasswordHash`.
+   * - Logs the user in (`auth_is_logged_in = true`) and returns `SUCCESS` when valid.
    */
   fun attemptLogin(typedUsername: String, typedPassword: String): LoginValidationResult {
     val cleanUsername = typedUsername.trim()
-    if (!isValidUsername(cleanUsername)) {
+    if (cleanUsername.isBlank()) {
       return LoginValidationResult.INVALID_USERNAME
     }
     val manager = storageManager
@@ -3516,60 +3877,80 @@ class TaskViewModel(
   }
 
   /**
-   * Saves a newly registered account (`username` -> `password`) to `SharedPreferences`
-   * and immediately logs the user in with their segregated storage keys (`tasks_[username]`).
+   * Verifies a user's 4-digit Recovery PIN (`hashSecret(enteredPin) == storedPinHash`).
    */
-  fun completeSignUp(usernameToRegister: String, password: String) {
-    val cleanUsername = usernameToRegister.trim()
-    storageManager?.registerUser(cleanUsername, password)
-    loginWithUsername(cleanUsername)
+  fun verifyRecoveryPin(username: String, enteredPin: String): Boolean {
+    return storageManager?.verifyRecoveryPin(username.trim(), enteredPin.trim()) == true
   }
 
-  fun loginWithUsername(typedUsername: String) {
+  /**
+   * Resets a user's password after verifying their 4-digit Recovery PIN without wiping flashcards or settings.
+   */
+  fun resetPasswordWithRecoveryPin(
+    username: String,
+    enteredPin: String,
+    newPassword: String
+  ): Boolean {
+    return storageManager?.resetPasswordWithRecoveryPin(
+      username = username.trim(),
+      enteredPin = enteredPin.trim(),
+      newPassword = newPassword
+    ) == true
+  }
+
+  /**
+   * Saves a newly registered account (`displayName`, `username`, SHA-256 `password`, SHA-256 `recoveryPin`)
+   * to `SharedPreferences` and immediately logs the user in (`auth_is_logged_in = true`).
+   */
+  fun completeSignUp(
+    usernameToRegister: String,
+    password: String,
+    displayNameToRegister: String = "",
+    recoveryPinToRegister: String = ""
+  ) {
+    val cleanUsername = usernameToRegister.trim()
+    val cleanDisplay = displayNameToRegister.trim().ifBlank { cleanUsername }
+    storageManager?.registerUser(
+      username = cleanUsername,
+      password = password,
+      displayName = cleanDisplay,
+      recoveryPin = recoveryPinToRegister.trim()
+    )
+    loginWithUsername(cleanUsername, cleanDisplay)
+  }
+
+  fun loginWithUsername(typedUsername: String, explicitDisplayName: String = "") {
     val cleanUsername = typedUsername.trim()
     username = if (cleanUsername.isEmpty()) LocalStorageManager.GUEST_DISPLAY_NAME else cleanUsername
+    val resolvedDisplay = explicitDisplayName.trim().ifBlank {
+      storageManager?.getDisplayNameForUser(username) ?: username
+    }
+    displayName = if (isGuestMode) LocalStorageManager.GUEST_DISPLAY_NAME else resolvedDisplay
     hasSavedSession = true
     storageManager?.let { manager ->
       loadAccountDataForKey(manager, currentAccountKey)
-      manager.saveUserProfile(username)
+      manager.saveUserProfile(username, displayName)
     }
   }
 
   fun loginAsGuest() {
     username = LocalStorageManager.GUEST_DISPLAY_NAME
+    displayName = LocalStorageManager.GUEST_DISPLAY_NAME
     hasSavedSession = true
     storageManager?.let { manager ->
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
-      manager.saveUserProfile(username)
+      manager.saveUserProfile(LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
   }
 
   /**
-   * Logs out the current user.
-   * - If logging out from Guest mode, explicitly deletes all temporary data associated with
-   *   the `"guest"` keys (`tasks_guest` and `schedules_guest`) in `SharedPreferences`.
-   * - Registered accounts logging out keep all of their saved Tasks and Schedules intact.
+   * Logs out the current user by clearing `auth_is_logged_in` and `auth_is_guest`,
+   * safely returning the user to the Login screen without deleting their created decks
+   * or formula favorites.
    */
   fun logout() {
-    val wasGuest = isGuestMode
     hasSavedSession = false
-    storageManager?.let { manager ->
-      if (wasGuest) {
-        manager.clearGuestData()
-      }
-      manager.clearUserProfile()
-    }
-    if (wasGuest) {
-      _tasks.clear()
-      _classSchedules.clear()
-      _alarms.clear()
-      _flashcardDecks.clear()
-      nextId = 1
-      nextScheduleId = 100
-      nextAlarmId = 1
-      nextDeckId = 1
-      nextCardId = 1000
-    }
+    storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
   }
 
@@ -3722,6 +4103,54 @@ class TaskViewModel(
       )
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
     }
+  }
+
+  /**
+   * Appends a formula or geometry property card directly into the dedicated "CE Formula Vault"
+   * deck in Smart Flashcards (creating the deck automatically if it does not yet exist).
+   */
+  fun addCardToFormulaVaultDeck(
+    question: String,
+    answer: String,
+    category: String = "MSTE"
+  ): Boolean {
+    val cleanQ = question.trim()
+    val cleanA = answer.trim()
+    if (cleanQ.isEmpty() || cleanA.isEmpty()) return false
+    val vaultDeckTitle = "CE Formula Vault"
+    val existingIndex = _flashcardDecks.indexOfFirst {
+      it.title.equals(vaultDeckTitle, ignoreCase = true)
+    }
+    if (existingIndex != -1) {
+      val existingDeck = _flashcardDecks[existingIndex]
+      val alreadyExists = existingDeck.cards.any {
+        it.question.equals(cleanQ, ignoreCase = true)
+      }
+      if (!alreadyExists) {
+        addCardToDeck(
+          deckId = existingDeck.id,
+          question = cleanQ,
+          answer = cleanA,
+          category = category
+        )
+      }
+    } else {
+      addFlashcardDeck(
+        title = vaultDeckTitle,
+        subjectTag = "MSTE",
+        initialCards = listOf(
+          FlashcardItem(
+            id = nextCardId++,
+            question = cleanQ,
+            answer = cleanA,
+            category = category,
+            masteryLevel = "New",
+            isMastered = false
+          )
+        )
+      )
+    }
+    return true
   }
 
   fun updateFlashcardMastery(
@@ -4229,8 +4658,9 @@ fun CivilEngineeringProductivityApp(
       colorScheme = dynamicColorScheme,
       typography = Typography
     ) {
-      // Top-level navigation state: if a userName is already saved in SharedPreferences,
-      // bypass the Login screen entirely and go straight to the Dashboard.
+      // App Launch Check:
+      // If auth_is_logged_in == true OR auth_is_guest == true, launch directly into the main app (Dashboard).
+      // If neither, show the Liquid Glass Auth Screen.
       var isLoggedIn by rememberSaveable { mutableStateOf(resolvedViewModel.hasSavedSession) }
 
       Crossfade(
@@ -4250,9 +4680,24 @@ fun CivilEngineeringProductivityApp(
             onCheckUsernameRegistered = { usernameToCheck ->
               resolvedViewModel.isUsernameRegistered(usernameToCheck)
             },
-            onCompleteSignUp = { registeredUsername, createdPassword ->
-              resolvedViewModel.completeSignUp(registeredUsername, createdPassword)
+            onCompleteSignUp = { registeredUsername, createdPassword, displayName, recoveryPin ->
+              resolvedViewModel.completeSignUp(
+                usernameToRegister = registeredUsername,
+                password = createdPassword,
+                displayNameToRegister = displayName,
+                recoveryPinToRegister = recoveryPin
+              )
               isLoggedIn = true
+            },
+            onVerifyRecoveryPin = { usernameToRecover, enteredPin ->
+              resolvedViewModel.verifyRecoveryPin(usernameToRecover, enteredPin)
+            },
+            onResetPasswordWithPin = { usernameToRecover, enteredPin, newPassword ->
+              resolvedViewModel.resetPasswordWithRecoveryPin(
+                username = usernameToRecover,
+                enteredPin = enteredPin,
+                newPassword = newPassword
+              )
             },
             onContinueAsGuest = {
               resolvedViewModel.loginAsGuest()
@@ -4274,390 +4719,761 @@ fun CivilEngineeringProductivityApp(
 }
 
 /**
- * Canva-Inspired Startup / Login Screen with Simulated Username Authentication & Sign-Up Flow:
- * - Validates "Log In" against `SharedPreferences` registered accounts:
- *   * Checks that the username is not blank and has at least 3 characters.
- *   * Displays bold red `"No account found"` if username is not in `SharedPreferences`.
- *   * Displays bold red `"Incorrect password"` if username exists but password does not match.
- * - Includes a `"Sign Up"` button opening the Sign-Up & Verification Dialog.
- * - Includes `"Continue as Guest"` which opens the Guest Mode Warning Dialog and loads segregated `tasks_guest` and `schedules_guest` keys.
+ * High-Depth Liquid Glass Login & Sign-Up Screen featuring:
+ * - SHA-256 password and 4-Digit Recovery PIN hashing (`hashSecret`).
+ * - Ambient radial mesh background with subtle indigo, violet, and dark slate tones.
+ * - Centered squircle card (`28.dp` corner radius) with soft drop shadow and specular glass rim.
+ * - App Header inside glowing glass pill: `"Sibil"` (Bold, `24.sp`) & `"Civil Engineering Board Examination Companion"` (`12.sp`).
+ * - Animated frosted pill switcher between `"Log In"` and `"Sign Up"` (`animateDpAsState`).
+ * - Elevated Glass Input Capsules (`14.dp` radius) with subtle glowing outline when focused.
+ * - Local Recovery Modal (`"Forgot Password?"`) using Username + 4-Digit Recovery PIN.
+ * - `"Continue as Offline Scholar →"` guest bypass.
  */
 @Composable
 fun StartupLoginScreen(
   onAttemptLogin: (String, String) -> LoginValidationResult,
   onCheckUsernameRegistered: (String) -> Boolean,
-  onCompleteSignUp: (String, String) -> Unit,
+  onCompleteSignUp: (username: String, password: String, displayName: String, recoveryPin: String) -> Unit,
+  onVerifyRecoveryPin: (username: String, pin: String) -> Boolean = { _, _ -> false },
+  onResetPasswordWithPin: (username: String, pin: String, newPassword: String) -> Boolean = { _, _, _ -> false },
   onContinueAsGuest: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+  val palette = currentGlassPalette()
   val metrics = rememberResponsiveMetrics()
+
+  // Mode toggle: false = "Log In", true = "Sign Up"
+  var isSignUpMode by rememberSaveable { mutableStateOf(false) }
+  var displayName by rememberSaveable { mutableStateOf("") }
   var username by rememberSaveable { mutableStateOf("") }
   var password by rememberSaveable { mutableStateOf("") }
+  var recoveryPin by rememberSaveable { mutableStateOf("") }
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
+  var isPinVisible by rememberSaveable { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var loginSuccessMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var isForgotPasswordModalOpen by rememberSaveable { mutableStateOf(false) }
   var isSignUpDialogOpen by rememberSaveable { mutableStateOf(false) }
   var isGuestWarningDialogOpen by rememberSaveable { mutableStateOf(false) }
 
-  val topGradientColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-  val baseBackground = MaterialTheme.colorScheme.background
+  // Focus states for elevated glass input capsules
+  var isDisplayNameFocused by remember { mutableStateOf(false) }
+  var isUsernameFocused by remember { mutableStateOf(false) }
+  var isPasswordFocused by remember { mutableStateOf(false) }
+  var isPinFocused by remember { mutableStateOf(false) }
 
-  fun handleLoginClick() {
-    if (!isValidUsername(username)) {
-      loginErrorMessage = "Username must be at least 3 characters"
-      return
+  // Primary button press-scale animation
+  val primaryButtonInteraction = remember { MutableInteractionSource() }
+  val isPrimaryPressed by primaryButtonInteraction.collectIsPressedAsState()
+  val pressScale by animateFloatAsState(
+    targetValue = if (isPrimaryPressed) 0.96f else 1.0f,
+    animationSpec = spring(
+      dampingRatio = Spring.DampingRatioMediumBouncy,
+      stiffness = Spring.StiffnessMediumLow
+    ),
+    label = "loginPrimaryPressScale"
+  )
+
+  fun handlePrimaryAuthAction() {
+    val cleanUsername = username.trim()
+    loginSuccessMessage = null
+    if (!isSignUpMode) {
+      if (cleanUsername.isBlank() || password.isEmpty()) {
+        loginErrorMessage = "Invalid username or password"
+        return
+      }
+      when (onAttemptLogin(cleanUsername, password)) {
+        LoginValidationResult.SUCCESS -> {
+          loginErrorMessage = null
+        }
+        LoginValidationResult.INVALID_USERNAME,
+        LoginValidationResult.NO_ACCOUNT_FOUND,
+        LoginValidationResult.INCORRECT_PASSWORD -> {
+          loginErrorMessage = "Invalid username or password"
+        }
+      }
+    } else {
+      val cleanDisplay = displayName.trim()
+      val cleanPin = recoveryPin.trim()
+      if (cleanDisplay.isBlank()) {
+        loginErrorMessage = "Please enter your Full Name / Nickname"
+        return
+      }
+      if (cleanUsername.isBlank()) {
+        loginErrorMessage = "Please enter a Username / Student ID"
+        return
+      }
+      if (onCheckUsernameRegistered(cleanUsername)) {
+        loginErrorMessage = "Username already exists. Please log in."
+        return
+      }
+      if (password.isBlank()) {
+        loginErrorMessage = "Please create a password"
+        return
+      }
+      if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
+        loginErrorMessage = "Please enter a 4-digit numeric Recovery PIN"
+        return
+      }
+      loginErrorMessage = null
+      onCompleteSignUp(cleanUsername, password, cleanDisplay, cleanPin)
     }
-    when (onAttemptLogin(username, password)) {
-      LoginValidationResult.INVALID_USERNAME -> {
-        loginErrorMessage = "Username must be at least 3 characters"
-      }
-      LoginValidationResult.NO_ACCOUNT_FOUND -> {
-        loginErrorMessage = "No account found"
-      }
-      LoginValidationResult.INCORRECT_PASSWORD -> {
-        loginErrorMessage = "Incorrect password"
-      }
-      LoginValidationResult.SUCCESS -> {
-        loginErrorMessage = null
-      }
-    }
+  }
+
+  val backdropColors = if (palette.isDark) {
+    listOf(
+      Color(0xFF0B1120),
+      Color(0xFF0F172A),
+      Color(0xFF1E1B4B)
+    )
+  } else {
+    palette.canvasColors
   }
 
   Box(
     modifier = modifier
       .fillMaxSize()
-      .background(
-        brush = Brush.verticalGradient(
-          colors = listOf(topGradientColor, baseBackground, baseBackground)
-        )
-      )
+      .background(Brush.verticalGradient(backdropColors))
       .testTag("startup_login_screen"),
     contentAlignment = Alignment.Center
   ) {
+    // Ambient radial mesh background with subtle indigo, violet, and dark slate tones
+    // to provide refraction depth behind the frosted glass container.
+    Canvas(modifier = Modifier.fillMaxSize()) {
+      val w = size.width
+      val h = size.height
+
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(
+            Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.36f else 0.25f),
+            Color(0xFF6366F1).copy(alpha = 0.08f),
+            Color.Transparent
+          ),
+          center = Offset(w * 0.16f, h * 0.18f),
+          radius = w * 0.75f
+        ),
+        radius = w * 0.75f,
+        center = Offset(w * 0.16f, h * 0.18f)
+      )
+
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(
+            Color(0xFF8B5CF6).copy(alpha = if (palette.isDark) 0.32f else 0.22f),
+            Color(0xFF7C3AED).copy(alpha = 0.08f),
+            Color.Transparent
+          ),
+          center = Offset(w * 0.88f, h * 0.44f),
+          radius = w * 0.70f
+        ),
+        radius = w * 0.70f,
+        center = Offset(w * 0.88f, h * 0.44f)
+      )
+
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(
+            Color(0xFF334155).copy(alpha = if (palette.isDark) 0.42f else 0.16f),
+            Color(0xFF06B6D4).copy(alpha = if (palette.isDark) 0.18f else 0.14f),
+            Color.Transparent
+          ),
+          center = Offset(w * 0.26f, h * 0.84f),
+          radius = w * 0.76f
+        ),
+        radius = w * 0.76f,
+        center = Offset(w * 0.26f, h * 0.84f)
+      )
+    }
+
     Column(
       modifier = Modifier
         .fillMaxWidth()
-        .widthIn(max = if (metrics.screenWidthDp > 600) 520.dp else 440.dp)
+        .widthIn(max = if (metrics.screenWidthDp > 600) 500.dp else 430.dp)
         .windowInsetsPadding(WindowInsets.safeDrawing)
         .verticalScroll(rememberScrollState())
         .padding(
-          horizontal = metrics.scaledDp(26),
-          vertical = metrics.scaledDp(32)
+          horizontal = metrics.scaledDp(20),
+          vertical = metrics.scaledDp(22)
         ),
-      horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(24))
+      horizontalAlignment = Alignment.CenterHorizontally
     ) {
-      // Brand Header: "Sibil App" + "CE Student Command Center"
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
-      ) {
-        Surface(
-          color = MaterialTheme.colorScheme.primaryContainer,
-          shape = RoundedCornerShape(22.dp),
-          shadowElevation = 6.dp,
-          modifier = Modifier.size(64.dp)
-        ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = Icons.Filled.Architecture,
-              contentDescription = stringResource(R.string.app_name),
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(32.dp)
-            )
-          }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-          text = stringResource(R.string.app_name),
-          style = MaterialTheme.typography.headlineLarge.copy(
-            fontSize = metrics.scaledSp(34),
-            lineHeight = metrics.scaledSp(40),
-            fontWeight = FontWeight.Bold
-          ),
-          color = MaterialTheme.colorScheme.onBackground,
-          textAlign = TextAlign.Center,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("login_app_title")
-        )
-
-        Text(
-          text = stringResource(R.string.login_subtitle),
-          style = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = metrics.scaledSp(16),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          textAlign = TextAlign.Center,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("login_app_slogan")
-        )
-      }
-
-      // Elevated, Floating Card Centered on Screen
-      Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(
-          containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+      // Main Glass Authentication Card:
+      // Centered squircle card (28.dp corner radius) with soft drop shadow and specular glass rim.
+      val cardShape = RoundedCornerShape(28.dp)
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .shadow(
+            elevation = 24.dp,
+            shape = cardShape,
+            ambientColor = Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.42f else 0.22f),
+            spotColor = Color(0xFF8B5CF6).copy(alpha = if (palette.isDark) 0.42f else 0.24f)
+          )
+          .clip(cardShape)
+          .background(palette.cardSurface.copy(alpha = if (palette.isDark) 0.88f else 0.86f))
+          .border(
+            width = 1.dp,
+            brush = Brush.linearGradient(
+              colors = listOf(
+                Color.White.copy(alpha = 0.45f),
+                Color.White.copy(alpha = 0.08f)
+              )
+            ),
+            shape = cardShape
+          )
       ) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
             .padding(
-              horizontal = metrics.scaledDp(24),
-              vertical = metrics.scaledDp(28)
+              horizontal = metrics.scaledDp(22),
+              vertical = metrics.scaledDp(24)
             ),
+          horizontalAlignment = Alignment.CenterHorizontally,
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
-          // Username OutlinedTextField
-          OutlinedTextField(
+          // App Header:
+          // Sibil brand icon/monogram inside a glowing glass pill + Title "Sibil" (24.sp Bold) + Subtitle (12.sp)
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .shadow(
+                  elevation = 12.dp,
+                  shape = CircleShape,
+                  ambientColor = Color(0xFF6366F1).copy(alpha = 0.45f),
+                  spotColor = Color(0xFF8B5CF6).copy(alpha = 0.45f)
+                )
+                .clip(CircleShape)
+                .background(
+                  brush = Brush.horizontalGradient(
+                    colors = listOf(
+                      Color(0xFF6366F1).copy(alpha = 0.22f),
+                      Color(0xFF8B5CF6).copy(alpha = 0.22f)
+                    )
+                  )
+                )
+                .border(
+                  width = 1.dp,
+                  brush = Brush.linearGradient(
+                    listOf(
+                      Color.White.copy(alpha = 0.55f),
+                      Color(0xFF6366F1).copy(alpha = 0.35f)
+                    )
+                  ),
+                  shape = CircleShape
+                )
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+              contentAlignment = Alignment.Center
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(
+                      Brush.linearGradient(
+                        listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+                      )
+                    ),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Architecture,
+                    contentDescription = "Sibil Monogram",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                  )
+                }
+                Text(
+                  text = "SIBIL CE",
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 1.2.sp
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+              text = "Sibil",
+              style = MaterialTheme.typography.headlineMedium.copy(
+                fontSize = 24.sp,
+                lineHeight = 30.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary,
+              textAlign = TextAlign.Center,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("login_app_title")
+            )
+
+            Text(
+              text = "Civil Engineering Board Examination Companion",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Medium
+              ),
+              color = palette.textSecondary.copy(alpha = 0.85f),
+              textAlign = TextAlign.Center,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("login_app_slogan")
+            )
+          }
+
+          // Animated Mode Switcher:
+          // Frosted pill toggle at top of the card switching between "Log In" and "Sign Up"
+          BoxWithConstraints(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(48.dp)
+              .clip(CircleShape)
+              .background(palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.72f else 0.65f))
+              .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                  listOf(
+                    Color.White.copy(alpha = 0.35f),
+                    Color.White.copy(alpha = 0.08f)
+                  )
+                ),
+                shape = CircleShape
+              )
+              .padding(4.dp)
+          ) {
+            val segmentWidth = maxWidth / 2f
+            val indicatorOffset by animateDpAsState(
+              targetValue = if (isSignUpMode) segmentWidth else 0.dp,
+              animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+              ),
+              label = "authSegmentSlideOffset"
+            )
+
+            Box(
+              modifier = Modifier
+                .offset(x = indicatorOffset)
+                .width(segmentWidth)
+                .fillMaxHeight()
+                .shadow(
+                  elevation = 6.dp,
+                  shape = CircleShape,
+                  ambientColor = Color(0xFF6366F1).copy(alpha = 0.35f),
+                  spotColor = Color(0xFF8B5CF6).copy(alpha = 0.35f)
+                )
+                .clip(CircleShape)
+                .background(
+                  brush = Brush.horizontalGradient(
+                    colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+                  )
+                )
+                .border(
+                  width = 1.dp,
+                  color = Color.White.copy(alpha = 0.45f),
+                  shape = CircleShape
+                )
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .clip(CircleShape)
+                  .clickable {
+                    isSignUpMode = false
+                    loginErrorMessage = null
+                    loginSuccessMessage = null
+                  }
+                  .testTag("auth_mode_login_tab"),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "Log In",
+                  style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = if (!isSignUpMode) Color.White else palette.textSecondary
+                )
+              }
+
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .fillMaxHeight()
+                  .clip(CircleShape)
+                  .clickable {
+                    isSignUpMode = true
+                    loginErrorMessage = null
+                    loginSuccessMessage = null
+                  }
+                  .testTag("sign_up_button"),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "Sign Up",
+                  style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = if (isSignUpMode) Color.White else palette.textSecondary
+                )
+              }
+            }
+          }
+
+          // Sign Up Field 1: Full Name / Nickname (Leading Icon: Icons.Default.Badge)
+          AnimatedVisibility(
+            visible = isSignUpMode,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+          ) {
+            GlassElevatedInputCapsule(
+              value = displayName,
+              onValueChange = {
+                displayName = it
+                if (loginErrorMessage != null) loginErrorMessage = null
+              },
+              label = "Full Name / Nickname",
+              placeholder = "Engr. Juan Dela Cruz",
+              leadingIcon = Icons.Default.Badge,
+              isFocused = isDisplayNameFocused,
+              onFocusChange = { isDisplayNameFocused = it },
+              keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.Words,
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Next
+              ),
+              metrics = metrics,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("signup_full_name_input")
+            )
+          }
+
+          // Username / Student ID Field
+          // Log In Leading Icon: Icons.Default.Person
+          // Sign Up Leading Icon: Icons.Default.AccountCircle
+          GlassElevatedInputCapsule(
             value = username,
             onValueChange = {
               username = it
               if (loginErrorMessage != null) loginErrorMessage = null
             },
-            label = {
-              Text(
-                text = stringResource(R.string.username_label),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            },
-            placeholder = {
-              Text(
-                text = stringResource(R.string.username_placeholder),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            },
-            leadingIcon = {
-              Icon(
-                imageVector = Icons.Outlined.Person,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-              )
-            },
-            textStyle = MaterialTheme.typography.bodyLarge.copy(
-              fontSize = metrics.scaledSp(16),
-              color = MaterialTheme.colorScheme.onSurface
-            ),
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-              focusedContainerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.5f),
-              unfocusedContainerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.5f),
-              cursorColor = MaterialTheme.colorScheme.primary
-            ),
+            label = "Username / Student ID",
+            placeholder = "Enter your username or student ID",
+            leadingIcon = if (isSignUpMode) Icons.Default.AccountCircle else Icons.Default.Person,
+            isFocused = isUsernameFocused,
+            onFocusChange = { isUsernameFocused = it },
             keyboardOptions = KeyboardOptions(
               keyboardType = KeyboardType.Text,
               imeAction = ImeAction.Next
             ),
+            metrics = metrics,
             modifier = Modifier
               .fillMaxWidth()
               .testTag("login_username_input")
           )
 
-          // Password OutlinedTextField (visually obscured)
-          OutlinedTextField(
+          // Password Field (Leading Icon: Icons.Default.Lock, Trailing Icon: Eye toggle)
+          GlassElevatedInputCapsule(
             value = password,
             onValueChange = {
               password = it
               if (loginErrorMessage != null) loginErrorMessage = null
             },
-            label = {
-              Text(
-                text = stringResource(R.string.password_label),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            },
-            placeholder = {
-              Text(
-                text = stringResource(R.string.password_placeholder),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            },
-            leadingIcon = {
-              Icon(
-                imageVector = Icons.Outlined.Lock,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-              )
-            },
-            trailingIcon = {
-              IconButton(
-                onClick = { isPasswordVisible = !isPasswordVisible },
-                modifier = Modifier
-                  .size(48.dp)
-                  .minimumInteractiveComponentSize()
-                  .testTag("toggle_password_visibility_button")
-              ) {
-                Icon(
-                  imageVector = if (isPasswordVisible) {
-                    Icons.Filled.VisibilityOff
-                  } else {
-                    Icons.Filled.Visibility
-                  },
-                  contentDescription = if (isPasswordVisible) {
-                    "Hide password"
-                  } else {
-                    "Show password"
-                  },
-                  tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                  modifier = Modifier.size(24.dp)
-                )
-              }
-            },
-            visualTransformation = if (isPasswordVisible) {
-              VisualTransformation.None
-            } else {
-              PasswordVisualTransformation()
-            },
-            textStyle = MaterialTheme.typography.bodyLarge.copy(
-              fontSize = metrics.scaledSp(16),
-              color = MaterialTheme.colorScheme.onSurface
-            ),
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-              focusedBorderColor = MaterialTheme.colorScheme.primary,
-              unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-              focusedContainerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.5f),
-              unfocusedContainerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.5f),
-              cursorColor = MaterialTheme.colorScheme.primary
-            ),
+            label = "Password",
+            placeholder = "Enter your password",
+            leadingIcon = Icons.Default.Lock,
+            isFocused = isPasswordFocused,
+            onFocusChange = { isPasswordFocused = it },
+            isPassword = true,
+            isPasswordVisible = isPasswordVisible,
+            onTogglePasswordVisibility = { isPasswordVisible = !isPasswordVisible },
             keyboardOptions = KeyboardOptions(
               keyboardType = KeyboardType.Password,
-              imeAction = ImeAction.Done
+              imeAction = if (isSignUpMode) ImeAction.Next else ImeAction.Done
             ),
             keyboardActions = KeyboardActions(
-              onDone = { handleLoginClick() }
+              onDone = {
+                if (!isSignUpMode) handlePrimaryAuthAction()
+              }
             ),
+            metrics = metrics,
             modifier = Modifier
               .fillMaxWidth()
               .testTag("login_password_input")
           )
 
-          // Bold, red validation error text below the fields ("No account found" / "Incorrect password")
+          // Forgot Password? trigger button on Login tab
+          AnimatedVisibility(
+            visible = !isSignUpMode,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+          ) {
+            Box(
+              modifier = Modifier.fillMaxWidth(),
+              contentAlignment = Alignment.CenterEnd
+            ) {
+              TextButton(
+                onClick = {
+                  loginErrorMessage = null
+                  loginSuccessMessage = null
+                  isForgotPasswordModalOpen = true
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.testTag("forgot_password_button")
+              ) {
+                Text(
+                  text = "Forgot Password?",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+            }
+          }
+
+          // Sign Up Field 4: 4-Digit Recovery PIN (Leading Icon: Icons.Default.Key, 4-digit numeric keyboard filter)
+          AnimatedVisibility(
+            visible = isSignUpMode,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+          ) {
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              GlassElevatedInputCapsule(
+                value = recoveryPin,
+                onValueChange = { rawPin ->
+                  val digitsOnly = rawPin.filter { it.isDigit() }.take(4)
+                  recoveryPin = digitsOnly
+                  if (loginErrorMessage != null) loginErrorMessage = null
+                },
+                label = "4-Digit Recovery PIN",
+                placeholder = "e.g., 2026",
+                leadingIcon = Icons.Default.Key,
+                isFocused = isPinFocused,
+                onFocusChange = { isPinFocused = it },
+                isPassword = true,
+                isPasswordVisible = isPinVisible,
+                onTogglePasswordVisibility = { isPinVisible = !isPinVisible },
+                keyboardOptions = KeyboardOptions(
+                  keyboardType = KeyboardType.NumberPassword,
+                  imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                  onDone = { handlePrimaryAuthAction() }
+                ),
+                metrics = metrics,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("signup_recovery_pin_input")
+              )
+
+              Text(
+                text = "Used to reset your password if you ever forget it.",
+                style = MaterialTheme.typography.bodySmall.copy(
+                  fontSize = 11.5.sp,
+                  fontWeight = FontWeight.Medium
+                ),
+                color = palette.textSecondary.copy(alpha = 0.85f),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 6.dp)
+              )
+            }
+          }
+
+          // Validation Error Badge
           loginErrorMessage?.let { errorText ->
-            Text(
-              text = errorText,
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.Bold
-              ),
-              color = Color(0xFFD32F2F),
-              textAlign = TextAlign.Center,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_error_text")
-            )
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = Color(0xFFEF4444).copy(alpha = 0.14f),
+              border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f)),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = errorText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = if (palette.isDark) Color(0xFFFCA5A5) else Color(0xFFD32F2F),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 12.dp, vertical = 9.dp)
+                  .testTag("login_error_text")
+              )
+            }
+          }
+
+          // Password Reset Confirmation Badge
+          loginSuccessMessage?.let { successText ->
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = Color(0xFF10B981).copy(alpha = 0.14f),
+              border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.45f)),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = successText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 12.dp, vertical = 9.dp)
+                  .testTag("login_success_text")
+              )
+            }
           }
 
           Spacer(modifier = Modifier.height(2.dp))
 
-          // Row of Primary "Log In" and Secondary "Sign Up" Buttons
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
-            verticalAlignment = Alignment.CenterVertically
+          // Primary Action Button:
+          // Gradient fill (Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFF8B5CF6)))) with press scale animation.
+          // Label: "Sign In to Sibil" or "Create Scholar Account"
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(metrics.scaledDp(54))
+              .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+              }
+              .shadow(
+                elevation = 12.dp,
+                shape = RoundedCornerShape(16.dp),
+                ambientColor = Color(0xFF6366F1).copy(alpha = 0.45f),
+                spotColor = Color(0xFF8B5CF6).copy(alpha = 0.45f)
+              )
+              .clip(RoundedCornerShape(16.dp))
+              .background(
+                brush = Brush.horizontalGradient(
+                  colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+                )
+              )
+              .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                  listOf(
+                    Color.White.copy(alpha = 0.50f),
+                    Color.White.copy(alpha = 0.12f)
+                  )
+                ),
+                shape = RoundedCornerShape(16.dp)
+              )
+              .clickable(
+                interactionSource = primaryButtonInteraction,
+                indication = null,
+                onClick = { handlePrimaryAuthAction() }
+              )
+              .testTag("login_submit_button"),
+            contentAlignment = Alignment.Center
           ) {
-            Button(
-              onClick = { handleLoginClick() },
-              shape = CircleShape,
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-              ),
-              elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
-              modifier = Modifier
-                .weight(1f)
-                .height(metrics.scaledDp(52))
-                .testTag("login_submit_button")
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
               Text(
-                text = stringResource(R.string.login_button),
+                text = if (isSignUpMode) "Create Scholar Account" else "Sign In to Sibil",
                 style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(16),
-                  fontWeight = FontWeight.Bold
+                  fontSize = 15.5.sp,
+                  fontWeight = FontWeight.ExtraBold
                 ),
+                color = Color.White,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
               )
-            }
-
-            OutlinedButton(
-              onClick = {
-                loginErrorMessage = null
-                isSignUpDialogOpen = true
-              },
-              shape = CircleShape,
-              border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
-              modifier = Modifier
-                .weight(1f)
-                .height(metrics.scaledDp(52))
-                .testTag("sign_up_button")
-            ) {
-              Text(
-                text = "Sign Up",
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(16),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+              Icon(
+                imageVector = Icons.Filled.ArrowForward,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
               )
             }
           }
 
-          // Pill-Shaped Secondary "Continue as Guest" TextButton (opens Guest Mode Warning Dialog)
+          // Offline Scholar / Guest Bypass:
+          // Text button at bottom: "Continue as Offline Scholar →"
+          // Sets auth_is_guest = true and navigates straight to Dashboard without credentials.
           TextButton(
             onClick = {
               loginErrorMessage = null
-              isGuestWarningDialogOpen = true
+              loginSuccessMessage = null
+              onContinueAsGuest()
             },
             shape = CircleShape,
             modifier = Modifier
               .fillMaxWidth()
-              .height(metrics.scaledDp(48))
+              .height(metrics.scaledDp(46))
               .testTag("continue_as_guest_button")
           ) {
             Text(
-              text = stringResource(R.string.continue_guest_button),
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = metrics.scaledSp(16),
-                fontWeight = FontWeight.Bold
+              text = "Continue as Offline Scholar →",
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold
               ),
-              color = MaterialTheme.colorScheme.secondary,
+              color = palette.textSecondary,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
           }
         }
       }
+    }
+
+    if (isForgotPasswordModalOpen) {
+      ForgotPasswordRecoveryModal(
+        initialUsername = username,
+        onCheckUsernameRegistered = onCheckUsernameRegistered,
+        onVerifyRecoveryPin = onVerifyRecoveryPin,
+        onResetPasswordWithPin = onResetPasswordWithPin,
+        onDismiss = { isForgotPasswordModalOpen = false },
+        onPasswordResetSuccess = { recoveredUsername ->
+          isForgotPasswordModalOpen = false
+          isSignUpMode = false
+          username = recoveredUsername
+          password = ""
+          loginErrorMessage = null
+          loginSuccessMessage = "Password reset successful! Sign in with your new password."
+          Toast.makeText(
+            context,
+            "Password updated successfully!",
+            Toast.LENGTH_SHORT
+          ).show()
+        }
+      )
     }
 
     if (isGuestWarningDialogOpen) {
@@ -4677,10 +5493,471 @@ fun StartupLoginScreen(
         onDismiss = { isSignUpDialogOpen = false },
         onCompleteSignUp = { registeredUsername, createdPassword ->
           isSignUpDialogOpen = false
-          onCompleteSignUp(registeredUsername, createdPassword)
+          onCompleteSignUp(registeredUsername, createdPassword, registeredUsername, "0000")
         }
       )
     }
+  }
+}
+
+/**
+ * Local Password Recovery Modal triggered by `"Forgot Password?"` on the Login tab:
+ * - Prompts for Username and 4-Digit Recovery PIN.
+ * - Verifies `hashSecret(enteredPin) == storedPinHash`.
+ * - Allows entering and confirming a new password, updating `auth_password_hash` without wiping flashcards or settings.
+ */
+@Composable
+private fun ForgotPasswordRecoveryModal(
+  initialUsername: String,
+  onCheckUsernameRegistered: (String) -> Boolean,
+  onVerifyRecoveryPin: (String, String) -> Boolean,
+  onResetPasswordWithPin: (String, String, String) -> Boolean,
+  onDismiss: () -> Unit,
+  onPasswordResetSuccess: (String) -> Unit
+) {
+  val palette = currentGlassPalette()
+  val metrics = rememberResponsiveMetrics()
+
+  var recoveryUsername by rememberSaveable { mutableStateOf(initialUsername.trim()) }
+  var recoveryPin by rememberSaveable { mutableStateOf("") }
+  var newPassword by rememberSaveable { mutableStateOf("") }
+  var confirmPassword by rememberSaveable { mutableStateOf("") }
+  var isPinVerified by rememberSaveable { mutableStateOf(false) }
+  var isPinVisible by rememberSaveable { mutableStateOf(false) }
+  var isNewPasswordVisible by rememberSaveable { mutableStateOf(false) }
+  var isConfirmPasswordVisible by rememberSaveable { mutableStateOf(false) }
+  var modalError by rememberSaveable { mutableStateOf<String?>(null) }
+
+  var isUserFocused by remember { mutableStateOf(false) }
+  var isPinFocused by remember { mutableStateOf(false) }
+  var isNewPassFocused by remember { mutableStateOf(false) }
+  var isConfirmPassFocused by remember { mutableStateOf(false) }
+
+  val cardShape = RoundedCornerShape(28.dp)
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxWidth(0.92f)
+        .widthIn(max = if (metrics.screenWidthDp > 600) 480.dp else 420.dp)
+        .shadow(
+          elevation = 24.dp,
+          shape = cardShape,
+          ambientColor = Color(0xFF6366F1).copy(alpha = 0.40f),
+          spotColor = Color(0xFF8B5CF6).copy(alpha = 0.40f)
+        )
+        .clip(cardShape)
+        .background(palette.cardSurface.copy(alpha = 0.96f))
+        .border(
+          width = 1.dp,
+          brush = Brush.linearGradient(
+            colors = listOf(
+              Color.White.copy(alpha = 0.45f),
+              Color.White.copy(alpha = 0.08f)
+            )
+          ),
+          shape = cardShape
+        )
+        .testTag("forgot_password_recovery_modal")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(horizontal = 22.dp, vertical = 22.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+          ) {
+            Text(
+              text = "Reset Scholar Password",
+              style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary
+            )
+            Text(
+              text = "4-DIGIT RECOVERY PIN VERIFICATION",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.0.sp
+              ),
+              color = palette.accentIndigo
+            )
+          }
+
+          IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+              .size(40.dp)
+              .clip(CircleShape)
+              .background(palette.nestedCardFill)
+              .testTag("close_forgot_password_modal_button")
+          ) {
+            Icon(
+              imageVector = Icons.Default.Close,
+              contentDescription = "Close Recovery Modal",
+              tint = palette.textPrimary,
+              modifier = Modifier.size(18.dp)
+            )
+          }
+        }
+
+        HorizontalDivider(color = palette.dividerColor)
+
+        // Username / Student ID
+        GlassElevatedInputCapsule(
+          value = recoveryUsername,
+          onValueChange = {
+            recoveryUsername = it
+            isPinVerified = false
+            modalError = null
+          },
+          label = "Username / Student ID",
+          placeholder = "Enter your registered username",
+          leadingIcon = Icons.Default.Person,
+          isFocused = isUserFocused,
+          onFocusChange = { isUserFocused = it },
+          keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Next
+          ),
+          metrics = metrics,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("recovery_username_input")
+        )
+
+        // 4-Digit Recovery PIN
+        GlassElevatedInputCapsule(
+          value = recoveryPin,
+          onValueChange = { raw ->
+            recoveryPin = raw.filter { it.isDigit() }.take(4)
+            isPinVerified = false
+            modalError = null
+          },
+          label = "4-Digit Recovery PIN",
+          placeholder = "Enter your 4-digit PIN",
+          leadingIcon = Icons.Default.Key,
+          isFocused = isPinFocused,
+          onFocusChange = { isPinFocused = it },
+          isPassword = true,
+          isPasswordVisible = isPinVisible,
+          onTogglePasswordVisibility = { isPinVisible = !isPinVisible },
+          keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.NumberPassword,
+            imeAction = if (isPinVerified) ImeAction.Next else ImeAction.Done
+          ),
+          metrics = metrics,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("recovery_pin_input")
+        )
+
+        AnimatedVisibility(
+          visible = isPinVerified,
+          enter = expandVertically() + fadeIn(),
+          exit = shrinkVertically() + fadeOut()
+        ) {
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            GlassElevatedInputCapsule(
+              value = newPassword,
+              onValueChange = {
+                newPassword = it
+                modalError = null
+              },
+              label = "New Password",
+              placeholder = "Enter new password",
+              leadingIcon = Icons.Default.Lock,
+              isFocused = isNewPassFocused,
+              onFocusChange = { isNewPassFocused = it },
+              isPassword = true,
+              isPasswordVisible = isNewPasswordVisible,
+              onTogglePasswordVisibility = { isNewPasswordVisible = !isNewPasswordVisible },
+              keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Next
+              ),
+              metrics = metrics,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("recovery_new_password_input")
+            )
+
+            GlassElevatedInputCapsule(
+              value = confirmPassword,
+              onValueChange = {
+                confirmPassword = it
+                modalError = null
+              },
+              label = "Confirm New Password",
+              placeholder = "Re-enter new password",
+              leadingIcon = Icons.Default.Lock,
+              isFocused = isConfirmPassFocused,
+              onFocusChange = { isConfirmPassFocused = it },
+              isPassword = true,
+              isPasswordVisible = isConfirmPasswordVisible,
+              onTogglePasswordVisibility = { isConfirmPasswordVisible = !isConfirmPasswordVisible },
+              keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done
+              ),
+              metrics = metrics,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("recovery_confirm_password_input")
+            )
+          }
+        }
+
+        modalError?.let { err ->
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFFEF4444).copy(alpha = 0.14f),
+            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = err,
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = if (palette.isDark) Color(0xFFFCA5A5) else Color(0xFFD32F2F),
+              textAlign = TextAlign.Center,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .testTag("recovery_error_text")
+            )
+          }
+        }
+
+        // Action Button: Verify PIN -> Update Password
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .shadow(
+              elevation = 10.dp,
+              shape = RoundedCornerShape(14.dp),
+              ambientColor = Color(0xFF6366F1).copy(alpha = 0.4f),
+              spotColor = Color(0xFF8B5CF6).copy(alpha = 0.4f)
+            )
+            .clip(RoundedCornerShape(14.dp))
+            .background(
+              Brush.horizontalGradient(
+                listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+              )
+            )
+            .clickable {
+              val cleanUser = recoveryUsername.trim()
+              val cleanPin = recoveryPin.trim()
+              if (cleanUser.isBlank()) {
+                modalError = "Please enter your Username / Student ID"
+                return@clickable
+              }
+              if (!onCheckUsernameRegistered(cleanUser)) {
+                modalError = "No scholar account found for that username"
+                return@clickable
+              }
+              if (cleanPin.length != 4) {
+                modalError = "Please enter your 4-digit Recovery PIN"
+                return@clickable
+              }
+              if (!onVerifyRecoveryPin(cleanUser, cleanPin)) {
+                modalError = "Invalid 4-Digit Recovery PIN"
+                return@clickable
+              }
+              if (!isPinVerified) {
+                isPinVerified = true
+                modalError = null
+              } else {
+                if (newPassword.isBlank()) {
+                  modalError = "Please enter a new password"
+                  return@clickable
+                }
+                if (newPassword != confirmPassword) {
+                  modalError = "Passwords do not match"
+                  return@clickable
+                }
+                val updated = onResetPasswordWithPin(cleanUser, cleanPin, newPassword)
+                if (updated) {
+                  modalError = null
+                  onPasswordResetSuccess(cleanUser)
+                } else {
+                  modalError = "Unable to update password. Please verify your PIN."
+                }
+              }
+            }
+            .testTag("recovery_submit_button"),
+          contentAlignment = Alignment.Center
+        ) {
+          Text(
+            text = if (isPinVerified) "Update Password" else "Verify Recovery PIN",
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = 15.sp,
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = Color.White
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun GlassElevatedInputCapsule(
+  value: String,
+  onValueChange: (String) -> Unit,
+  label: String,
+  placeholder: String,
+  leadingIcon: ImageVector,
+  isFocused: Boolean,
+  onFocusChange: (Boolean) -> Unit,
+  metrics: ResponsiveMetrics,
+  modifier: Modifier = Modifier,
+  isPassword: Boolean = false,
+  isPasswordVisible: Boolean = false,
+  onTogglePasswordVisibility: (() -> Unit)? = null,
+  keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+  keyboardActions: KeyboardActions = KeyboardActions.Default
+) {
+  val palette = currentGlassPalette()
+  val focusGlowColor = Color(0xFF6366F1)
+  val capsuleShape = RoundedCornerShape(14.dp)
+
+  Box(
+    modifier = modifier
+      .shadow(
+        elevation = if (isFocused) 10.dp else 4.dp,
+        shape = capsuleShape,
+        ambientColor = if (isFocused) focusGlowColor.copy(alpha = 0.35f) else palette.shadowAmbient,
+        spotColor = if (isFocused) focusGlowColor.copy(alpha = 0.35f) else palette.shadowSpot
+      )
+      .clip(capsuleShape)
+      .background(
+        color = if (isFocused) {
+          palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.90f else 0.92f)
+        } else {
+          palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.72f else 0.75f)
+        }
+      )
+      .border(
+        width = if (isFocused) 1.6.dp else 1.dp,
+        brush = if (isFocused) {
+          Brush.linearGradient(
+            listOf(
+              focusGlowColor,
+              Color(0xFF8B5CF6).copy(alpha = 0.85f)
+            )
+          )
+        } else {
+          Brush.linearGradient(
+            listOf(
+              Color.White.copy(alpha = if (palette.isDark) 0.22f else 0.55f),
+              Color.White.copy(alpha = 0.08f)
+            )
+          )
+        },
+        shape = capsuleShape
+      )
+  ) {
+    OutlinedTextField(
+      value = value,
+      onValueChange = onValueChange,
+      label = {
+        Text(
+          text = label,
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontWeight = FontWeight.SemiBold
+          ),
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+      },
+      placeholder = {
+        Text(
+          text = placeholder,
+          style = MaterialTheme.typography.bodyMedium,
+          color = palette.textSecondary.copy(alpha = 0.65f),
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+      },
+      leadingIcon = {
+        Icon(
+          imageVector = leadingIcon,
+          contentDescription = null,
+          tint = if (isFocused) focusGlowColor else palette.accentIndigo,
+          modifier = Modifier.size(22.dp)
+        )
+      },
+      trailingIcon = if (isPassword && onTogglePasswordVisibility != null) {
+        {
+          IconButton(
+            onClick = onTogglePasswordVisibility,
+            modifier = Modifier
+              .size(48.dp)
+              .minimumInteractiveComponentSize()
+              .testTag("toggle_password_visibility_button")
+          ) {
+            Icon(
+              imageVector = if (isPasswordVisible) {
+                Icons.Filled.VisibilityOff
+              } else {
+                Icons.Filled.Visibility
+              },
+              contentDescription = if (isPasswordVisible) "Hide password" else "Show password",
+              tint = palette.textSecondary,
+              modifier = Modifier.size(22.dp)
+            )
+          }
+        }
+      } else null,
+      visualTransformation = if (isPassword && !isPasswordVisible) {
+        PasswordVisualTransformation()
+      } else {
+        VisualTransformation.None
+      },
+      textStyle = MaterialTheme.typography.bodyLarge.copy(
+        fontSize = metrics.scaledSp(15),
+        color = palette.textPrimary,
+        fontWeight = FontWeight.Medium
+      ),
+      singleLine = true,
+      shape = capsuleShape,
+      colors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = Color.Transparent,
+        unfocusedBorderColor = Color.Transparent,
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
+        focusedLabelColor = focusGlowColor,
+        unfocusedLabelColor = palette.textSecondary,
+        cursorColor = focusGlowColor
+      ),
+      keyboardOptions = keyboardOptions,
+      keyboardActions = keyboardActions,
+      modifier = Modifier
+        .fillMaxWidth()
+        .onFocusChanged { onFocusChange(it.isFocused) }
+    )
   }
 }
 
@@ -5899,23 +7176,6 @@ fun DashboardScreen(
     }
   }
 
-  val currentVersionCode = remember(context) {
-    try {
-      val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-      val rawCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        pkgInfo.longVersionCode.toInt()
-      } else {
-        @Suppress("DEPRECATION")
-        pkgInfo.versionCode
-      }
-      maxOf(APP_VERSION_CODE, rawCode)
-    } catch (_: Exception) {
-      APP_VERSION_CODE
-    }
-  }
-  var showWhatsNewModal by rememberSaveable {
-    mutableStateOf(LocalStorageManager.shouldShowWhatsNew(context, currentVersionCode))
-  }
   var availableUpdateRelease by remember {
     mutableStateOf(cachedSessionUpdateRelease)
   }
@@ -6153,16 +7413,6 @@ fun DashboardScreen(
       }
     }
 
-    if (showWhatsNewModal) {
-      WhatsNewDialog(
-        metrics = metrics,
-        onExploreUpdates = {
-          LocalStorageManager.markWhatsNewSeen(context, currentVersionCode)
-          showWhatsNewModal = false
-        }
-      )
-    }
-
     val activeUpdateRelease = availableUpdateRelease
     if (showUpdateDialog && activeUpdateRelease != null && !hasDismissedUpdateForSession) {
       UpdateAvailableDialog(
@@ -6205,8 +7455,12 @@ data class GitHubReleaseUpdateInfo(
   val tagName: String,
   val versionBadgeText: String,
   val releaseNotes: String,
-  val downloadUrl: String
+  val downloadUrl: String,
+  val body: String = releaseNotes
 )
+
+private const val DEFAULT_FALLBACK_RELEASE_NOTES =
+  "• Bug fixes and system stability improvements\n• Updated formula reference manual\n• Performance optimizations"
 
 private var hasDismissedUpdateForSession by mutableStateOf(false)
 private var cachedSessionUpdateRelease by mutableStateOf<GitHubReleaseUpdateInfo?>(null)
@@ -6261,6 +7515,37 @@ fun isNewerVersion(remoteTag: String, localVersion: String): Boolean {
 }
 
 /**
+ * Formats raw GitHub markdown release notes (`release.body`) into clean bulleted items.
+ * Converts markdown bullet prefixes (`- ` or `* `) into `• ` and falls back to the standard
+ * release notes summary if blank.
+ */
+fun formatGitHubReleaseChangelogLines(rawBody: String?): List<String> {
+  val source = rawBody?.trim().orEmpty().ifEmpty { DEFAULT_FALLBACK_RELEASE_NOTES }
+  val parsedLines = source
+    .lines()
+    .map { line ->
+      val trimmed = line.trim()
+        .removePrefix("### ")
+        .removePrefix("## ")
+        .removePrefix("# ")
+        .trim()
+      when {
+        trimmed.startsWith("- ") -> "• " + trimmed.removePrefix("- ").trim()
+        trimmed.startsWith("* ") -> "• " + trimmed.removePrefix("* ").trim()
+        trimmed.startsWith("• ") -> "• " + trimmed.removePrefix("• ").trim()
+        else -> trimmed
+      }
+    }
+    .filter { it.isNotEmpty() }
+
+  return if (parsedLines.isEmpty()) {
+    DEFAULT_FALLBACK_RELEASE_NOTES.lines()
+  } else {
+    parsedLines
+  }
+}
+
+/**
  * In-App GitHub Auto-Update Checker:
  * Queries `https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest`
  * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`app-debug.apk`),
@@ -6312,7 +7597,7 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
     }
 
     val releaseBody = root.optString("body", "").trim().ifEmpty {
-      "A new Sibil update is available with the latest improvements and fixes."
+      DEFAULT_FALLBACK_RELEASE_NOTES
     }
 
     var resolvedDownloadUrl = defaultDownloadUrl
@@ -6329,17 +7614,12 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
       }
     }
 
-    val displayTag = if (!tag_name.startsWith("v", ignoreCase = true) && tag_name.firstOrNull()?.isDigit() == true) {
-      "v$tag_name"
-    } else {
-      tag_name
-    }
-
     GitHubReleaseUpdateInfo(
       tagName = tag_name,
-      versionBadgeText = "$displayTag Ready",
+      versionBadgeText = tag_name,
       releaseNotes = releaseBody,
-      downloadUrl = resolvedDownloadUrl
+      downloadUrl = resolvedDownloadUrl,
+      body = releaseBody
     )
   } catch (_: Exception) {
     null
@@ -6349,13 +7629,15 @@ suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = with
 }
 
 /**
- * "Update Ready" Liquid Glass Modal (`UpdateAvailableDialog`):
- * - Backdrop: Frosted modal scrim.
- * - Container: Opaque gradient glass card (`palette.cardSurface`) with specular rim border (`palette.glassBorder`) and elevation shadow.
- * - Header: Glowing rocket/download badge icon (`36.dp` rounded squircle, indigo gradient),
- *   "New Update Available!" (`fontSize = 20.sp`, bold, `palette.textPrimary`), and frosted version badge capsule.
- * - Changelog Container: Scrollable box (`Modifier.heightIn(max = 200.dp).verticalScroll(...)`) displaying GitHub release notes.
- * - Action Buttons: "Update Now" (Full-width vibrant indigo gradient button) and "Remind Me Later" (subtle text button).
+ * Dynamic "What's New in Sibil" / Update Available Liquid Glass Modal (`UpdateAvailableDialog`):
+ * - Uses dynamic data fetched from GitHub's Releases API (`body`, `tag_name`):
+ *   - Tag badge: Displays the actual incoming `tag_name` (`release.tagName`).
+ *   - Title: "What's New in Sibil"
+ *   - Body / Changelog: Renders the actual GitHub release notes (`release.body`), parsing markdown
+ *     bullet points (`- ` or `* `) into clean bulleted items, with fallback to standard release notes if empty.
+ * - Action Buttons:
+ *   - Primary Button: "Update Now" (Opens browser directly to `browser_download_url` / release APK).
+ *   - Dismiss Button: "Remind Me Later" (Stores `tag_name` in SharedPreferences to prevent re-prompting).
  */
 @Composable
 fun UpdateAvailableDialog(
@@ -6373,6 +7655,11 @@ fun UpdateAvailableDialog(
         palette.cardBottomSheen
       )
     )
+  }
+
+  val formattedChangelogItems = remember(releaseInfo.body, releaseInfo.releaseNotes) {
+    val rawNotes = releaseInfo.body.ifBlank { releaseInfo.releaseNotes }
+    formatGitHubReleaseChangelogLines(rawNotes)
   }
 
   Dialog(
@@ -6408,7 +7695,7 @@ fun UpdateAvailableDialog(
             .padding(metrics.scaledDp(22)),
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
         ) {
-          // Header: Glowing rocket/download badge icon (36.dp squircle) + Title + Version Badge
+          // Header: Glowing rocket/sparkle badge icon + "What's New in Sibil" + dynamic tag_name badge
           Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -6416,26 +7703,26 @@ fun UpdateAvailableDialog(
           ) {
             Box(
               modifier = Modifier
-                .size(36.dp)
+                .size(42.dp)
                 .shadow(
                   elevation = 8.dp,
-                  shape = RoundedCornerShape(12.dp),
+                  shape = RoundedCornerShape(14.dp),
                   ambientColor = Color(0x334338CA),
                   spotColor = Color(0x554F46E5)
                 )
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(14.dp))
                 .background(brush = LiquidOrbBrush)
                 .border(
                   BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)),
-                  RoundedCornerShape(12.dp)
+                  RoundedCornerShape(14.dp)
                 ),
               contentAlignment = Alignment.Center
             ) {
               Icon(
-                imageVector = Icons.Filled.RocketLaunch,
-                contentDescription = "Update Available",
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = "What's New in Sibil",
                 tint = Color.White,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(22.dp)
               )
             }
 
@@ -6444,10 +7731,10 @@ fun UpdateAvailableDialog(
               verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
               Text(
-                text = "New Update Available!",
+                text = "What's New in Sibil",
                 style = MaterialTheme.typography.headlineSmall.copy(
                   fontSize = 20.sp,
-                  fontWeight = FontWeight.Bold
+                  fontWeight = FontWeight.ExtraBold
                 ),
                 color = palette.textPrimary,
                 modifier = Modifier.testTag("update_dialog_title")
@@ -6459,8 +7746,9 @@ fun UpdateAvailableDialog(
                 border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
               ) {
                 Text(
-                  text = releaseInfo.versionBadgeText,
+                  text = releaseInfo.tagName,
                   style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                   ),
@@ -6473,34 +7761,37 @@ fun UpdateAvailableDialog(
             }
           }
 
-          // Scrollable Changelog Container
+          // Dynamic Scrollable Changelog Container
           Surface(
             shape = RoundedCornerShape(16.dp),
             color = palette.nestedCardFill,
             border = palette.nestedBorder,
             modifier = Modifier.fillMaxWidth()
           ) {
-            Box(
+            Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 200.dp)
+                .heightIn(max = 220.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp, vertical = 12.dp)
-                .testTag("update_dialog_changelog_scroll")
+                .testTag("update_dialog_changelog_scroll"),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-              Text(
-                text = releaseInfo.releaseNotes,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                  fontSize = metrics.scaledSp(13),
-                  lineHeight = metrics.scaledSp(19),
-                  fontWeight = FontWeight.Medium
-                ),
-                color = palette.textPrimary
-              )
+              formattedChangelogItems.forEach { itemText ->
+                Text(
+                  text = itemText,
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = metrics.scaledSp(13),
+                    lineHeight = metrics.scaledSp(19),
+                    fontWeight = FontWeight.Medium
+                  ),
+                  color = palette.textPrimary
+                )
+              }
             }
           }
 
-          // Action Buttons: "Update Now" (Full-width vibrant indigo gradient button) + "Remind Me Later"
+          // Action Buttons: "Update Now" + "Remind Me Later"
           Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -7337,6 +8628,7 @@ fun ExtrasScreen(
     FormulaVaultMainView(
       metrics = metrics,
       onBackToExtras = { isFormulaVaultOpen = false },
+      viewModel = viewModel,
       modifier = modifier
     )
     return
@@ -7588,7 +8880,7 @@ fun ExtrasScreen(
         tool = ExtraToolItem(
           id = "ce_formula_vault",
           title = "CE Formula Vault",
-          subtitle = "Interactive structural, hydraulics, geotech & MSTE solvers",
+          subtitle = "Interactive mathematics cheat sheets, visual geometry inspector & CE reference vault",
           icon = Icons.Filled.Functions
         ),
         metrics = metrics,
@@ -7703,448 +8995,3056 @@ fun ExtrasScreen(
   }
 }
 
-private data class CeFormulaEntry(
+// ============================================================================
+// REBUILT CE FORMULA VAULT (REFERENCE-ONLY CHEAT SHEETS + SHAPE INSPECTOR)
+// ============================================================================
+
+private const val PREF_STARRED_FORMULAS_KEY = "ce_formula_vault_starred_ids"
+private const val PREF_CUSTOM_FORMULAS_JSON_KEY = "ce_formula_vault_custom_formulas_json"
+
+private data class FormulaVariableNote(
+  val symbol: String,
+  val meaning: String,
+  val unit: String
+)
+
+private data class ReferenceFormulaCardData(
   val id: String,
   val title: String,
-  val category: String,
-  val equationDisplay: String,
-  val description: String,
-  val param1Label: String,
-  val param1Default: String,
-  val param2Label: String,
-  val param2Default: String,
-  val param3Label: String,
-  val param3Default: String,
-  val outputUnit: String,
-  val compute: (Double, Double, Double) -> Double
+  val categoryTab: String, // "Mathematics", "PSAD", "HPGE"
+  val mathSubTab: String,  // "Algebra", "Trigonometry", "Geometry", "Analytic Geometry", "Custom"
+  val equationBanner: String,
+  val summaryTag: String,
+  val variableNotes: List<FormulaVariableNote>,
+  val isCustom: Boolean = false
+)
+
+private data class GeometryShapeEntry(
+  val id: String,
+  val title: String,
+  val subtitle: String,
+  val is3DSolid: Boolean,
+  val areaFormula: String,
+  val perimeterOrCircumferenceLabel: String,
+  val perimeterOrCircumferenceFormula: String,
+  val volumeFormula: String?,
+  val surfaceAreaFormula: String?,
+  val centroidFromBase: String,
+  val momentOfInertiaIx: String,
+  val momentOfInertiaIy: String,
+  val variableLegend: String
+)
+
+private fun loadStarredFormulaIds(context: Context): Set<String> {
+  val prefs = context.getSharedPreferences("sibil_app_prefs", Context.MODE_PRIVATE)
+  return prefs.getStringSet(PREF_STARRED_FORMULAS_KEY, emptySet())?.toSet() ?: emptySet()
+}
+
+private fun saveStarredFormulaIds(context: Context, ids: Set<String>) {
+  val prefs = context.getSharedPreferences("sibil_app_prefs", Context.MODE_PRIVATE)
+  prefs.edit().putStringSet(PREF_STARRED_FORMULAS_KEY, ids).apply()
+}
+
+private fun loadCustomFormulas(context: Context): List<ReferenceFormulaCardData> {
+  val prefs = context.getSharedPreferences("sibil_app_prefs", Context.MODE_PRIVATE)
+  val rawJson = prefs.getString(PREF_CUSTOM_FORMULAS_JSON_KEY, null) ?: return emptyList()
+  return try {
+    val array = JSONArray(rawJson)
+    val result = mutableListOf<ReferenceFormulaCardData>()
+    for (i in 0 until array.length()) {
+      val obj = array.optJSONObject(i) ?: continue
+      val id = obj.optString("id").ifBlank { "custom_$i" }
+      val title = obj.optString("title").trim()
+      val categoryTab = obj.optString("categoryTab", "Mathematics").trim()
+      val mathSubTab = obj.optString("mathSubTab", "Algebra").trim()
+      val equationBanner = obj.optString("equationBanner").trim()
+      val variableNotesRaw = obj.optString("variableNotesRaw").trim()
+      if (title.isNotEmpty() && equationBanner.isNotEmpty()) {
+        val parsedNotes = variableNotesRaw
+          .lines()
+          .map { it.trim() }
+          .filter { it.isNotEmpty() }
+          .map { line ->
+            val parts = line.split(":", "-", "=").map { it.trim() }
+            if (parts.size >= 2) {
+              FormulaVariableNote(
+                symbol = parts[0],
+                meaning = parts.drop(1).joinToString(" - "),
+                unit = "SI / Metric"
+              )
+            } else {
+              FormulaVariableNote(
+                symbol = "•",
+                meaning = line,
+                unit = "Reference"
+              )
+            }
+          }
+          .ifEmpty {
+            listOf(
+              FormulaVariableNote(
+                symbol = "Note",
+                meaning = "Custom scholar formula entry",
+                unit = "Standard units"
+              )
+            )
+          }
+        result.add(
+          ReferenceFormulaCardData(
+            id = id,
+            title = title,
+            categoryTab = categoryTab,
+            mathSubTab = mathSubTab,
+            equationBanner = equationBanner,
+            summaryTag = "Custom Scholar Formula • $mathSubTab",
+            variableNotes = parsedNotes,
+            isCustom = true
+          )
+        )
+      }
+    }
+    result
+  } catch (_: Exception) {
+    emptyList()
+  }
+}
+
+private fun saveCustomFormulas(context: Context, customList: List<ReferenceFormulaCardData>) {
+  val prefs = context.getSharedPreferences("sibil_app_prefs", Context.MODE_PRIVATE)
+  val array = JSONArray()
+  customList.forEach { item ->
+    val obj = JSONObject()
+    obj.put("id", item.id)
+    obj.put("title", item.title)
+    obj.put("categoryTab", item.categoryTab)
+    obj.put("mathSubTab", item.mathSubTab)
+    obj.put("equationBanner", item.equationBanner)
+    val rawLines = item.variableNotes.joinToString("\n") { "${it.symbol}: ${it.meaning}" }
+    obj.put("variableNotesRaw", rawLines)
+    array.put(obj)
+  }
+  prefs.edit().putString(PREF_CUSTOM_FORMULAS_JSON_KEY, array.toString()).apply()
+}
+
+private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listOf(
+  // =========================================================================
+  // B. ALGEBRA (Interactive Formula Cards)
+  // =========================================================================
+  ReferenceFormulaCardData(
+    id = "alg_quadratic_discriminant",
+    title = "Quadratic Equation & Discriminant",
+    categoryTab = "Mathematics",
+    mathSubTab = "Algebra",
+    equationBanner = "x = [-b ± √(b² - 4ac)] / (2a)\nΔ = b² - 4ac",
+    summaryTag = "Roots of ax² + bx + c = 0 & Nature of Roots",
+    variableNotes = listOf(
+      FormulaVariableNote("a, b, c", "Real quadratic, linear, and constant coefficients (a ≠ 0)", "dimensionless"),
+      FormulaVariableNote("Δ > 0", "Two distinct real roots (unequal real roots)", "real"),
+      FormulaVariableNote("Δ = 0", "One repeated real root (double root / tangent to x-axis)", "real"),
+      FormulaVariableNote("Δ < 0", "Two complex conjugate roots (no real intersection)", "complex"),
+      FormulaVariableNote("x₁ + x₂ = -b/a", "Vieta's sum of roots relationship", "ratio"),
+      FormulaVariableNote("x₁ · x₂ = c/a", "Vieta's product of roots relationship", "ratio")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "alg_logarithmic_laws",
+    title = "Logarithmic Laws & Change of Base",
+    categoryTab = "Mathematics",
+    mathSubTab = "Algebra",
+    equationBanner = "log_b(xy) = log_b(x) + log_b(y)\nlog_b(x/y) = log_b(x) - log_b(y)\nlog_b(xⁿ) = n · log_b(x)\nlog_b(a) = ln(a) / ln(b)",
+    summaryTag = "Product, Quotient, Power & Base Conversion Identities",
+    variableNotes = listOf(
+      FormulaVariableNote("b", "Logarithmic base (b > 0, b ≠ 1)", "base"),
+      FormulaVariableNote("x, y, a", "Positive real arguments (x > 0, y > 0, a > 0)", "real"),
+      FormulaVariableNote("ln(a)", "Natural logarithm with Euler base e ≈ 2.71828", "rad / nat"),
+      FormulaVariableNote("log₁₀(a)", "Common (Briggsian) logarithm base 10", "decadic")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "alg_arithmetic_progression",
+    title = "Arithmetic Progression (AP)",
+    categoryTab = "Mathematics",
+    mathSubTab = "Algebra",
+    equationBanner = "a_n = a₁ + (n - 1)d\nS_n = (n / 2) · [2a₁ + (n - 1)d] = (n / 2)(a₁ + a_n)",
+    summaryTag = "Constant Common Difference Sequence & Series Sum",
+    variableNotes = listOf(
+      FormulaVariableNote("a₁", "First term of the arithmetic sequence", "units"),
+      FormulaVariableNote("a_n", "n-th term of the arithmetic sequence", "units"),
+      FormulaVariableNote("d", "Common difference between consecutive terms (a_k - a_{k-1})", "units"),
+      FormulaVariableNote("n", "Number of terms in the progression", "integer"),
+      FormulaVariableNote("S_n", "Cumulative sum of the first n terms", "units"),
+      FormulaVariableNote("AM = (a + b)/2", "Arithmetic Mean between two quantities a and b", "units")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "alg_geometric_progression",
+    title = "Geometric Progression (GP) & Infinite Series",
+    categoryTab = "Mathematics",
+    mathSubTab = "Algebra",
+    equationBanner = "a_n = a₁ · r^(n - 1)\nS_n = a₁(1 - rⁿ) / (1 - r)\nS_∞ = a₁ / (1 - r)   for |r| < 1",
+    summaryTag = "Constant Common Ratio Sequence, Finite Sum & Infinite Sum",
+    variableNotes = listOf(
+      FormulaVariableNote("a₁", "First term of the geometric progression", "units"),
+      FormulaVariableNote("r", "Common ratio between consecutive terms (a_k / a_{k-1})", "ratio"),
+      FormulaVariableNote("n", "Total number of terms", "integer"),
+      FormulaVariableNote("S_n", "Sum of the first n terms (r ≠ 1)", "units"),
+      FormulaVariableNote("S_∞", "Convergent sum of infinite GP when |r| < 1", "units"),
+      FormulaVariableNote("GM = √(a·b)", "Geometric Mean between two positive numbers a and b", "units")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "alg_binomial_theorem",
+    title = "Binomial Theorem & r-th Term Formula",
+    categoryTab = "Mathematics",
+    mathSubTab = "Algebra",
+    equationBanner = "(x + y)ⁿ = Σ C(n, k) · x^(n-k) · y^k\nr-th Term = C(n, r - 1) · x^(n - r + 1) · y^(r - 1)",
+    summaryTag = "Binomial Expansion, Combinatorial Coefficient & General r-th Term",
+    variableNotes = listOf(
+      FormulaVariableNote("n", "Non-negative integer exponent of the binomial power", "integer"),
+      FormulaVariableNote("r", "1-indexed position of the desired term in expansion", "integer"),
+      FormulaVariableNote("C(n, r-1)", "Binomial coefficient n! / [(r - 1)!(n - r + 1)!]", "combinations"),
+      FormulaVariableNote("x, y", "First and second terms of the binomial expression", "algebraic"),
+      FormulaVariableNote("Σ Coeff", "Sum of all coefficients obtained by substituting x = 1, y = 1 → 2ⁿ", "scalar")
+    )
+  ),
+
+  // =========================================================================
+  // C. TRIGONOMETRY
+  // =========================================================================
+  ReferenceFormulaCardData(
+    id = "trig_pythagorean_identities",
+    title = "Fundamental & Pythagorean Identities",
+    categoryTab = "Mathematics",
+    mathSubTab = "Trigonometry",
+    equationBanner = "sin²θ + cos²θ = 1\n1 + tan²θ = sec²θ\n1 + cot²θ = csc²θ",
+    summaryTag = "Core Circular & Reciprocal Trigonometric Relations",
+    variableNotes = listOf(
+      FormulaVariableNote("θ", "Plane angle in degrees (°) or radians (rad)", "deg / rad"),
+      FormulaVariableNote("tan θ", "sin θ / cos θ (Opposite / Adjacent)", "ratio"),
+      FormulaVariableNote("sec θ", "1 / cos θ (Hypotenuse / Adjacent)", "ratio"),
+      FormulaVariableNote("csc θ", "1 / sin θ (Hypotenuse / Opposite)", "ratio"),
+      FormulaVariableNote("cot θ", "cos θ / sin θ = 1 / tan θ", "ratio")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "trig_double_half_angle",
+    title = "Double-Angle & Half-Angle Formulas",
+    categoryTab = "Mathematics",
+    mathSubTab = "Trigonometry",
+    equationBanner = "sin(2θ) = 2 sin θ cos θ\ncos(2θ) = cos²θ - sin²θ = 2cos²θ - 1 = 1 - 2sin²θ\ntan(2θ) = (2 tan θ) / (1 - tan²θ)\nsin(θ/2) = ±√[(1 - cos θ)/2]  •  cos(θ/2) = ±√[(1 + cos θ)/2]",
+    summaryTag = "2θ Stress Transformation & θ/2 Reduction Identities",
+    variableNotes = listOf(
+      FormulaVariableNote("θ", "Reference angle (frequently principal stress plane angle in Mohr's Circle)", "deg / rad"),
+      FormulaVariableNote("2θ", "Double angle used in Mohr's Circle principal stress & product of inertia equations", "deg / rad"),
+      FormulaVariableNote("sin²θ", "(1 - cos 2θ) / 2 (Power-reduction identity)", "ratio"),
+      FormulaVariableNote("cos²θ", "(1 + cos 2θ) / 2 (Power-reduction identity)", "ratio")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "trig_oblique_triangles",
+    title = "Oblique Triangles: Law of Sines & Law of Cosines",
+    categoryTab = "Mathematics",
+    mathSubTab = "Trigonometry",
+    equationBanner = "a / sin A = b / sin B = c / sin C = 2R\nc² = a² + b² - 2ab cos C",
+    summaryTag = "Force Polygon Resolution, Surveying Traverse & Truss Geometry",
+    variableNotes = listOf(
+      FormulaVariableNote("a, b, c", "Side lengths opposite to interior angles A, B, and C", "m / mm"),
+      FormulaVariableNote("A, B, C", "Interior angles of the oblique triangle (A + B + C = 180°)", "degrees (°)"),
+      FormulaVariableNote("R", "Radius of the circumscribed circle (circumradius) passing through all 3 vertices", "m")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "trig_triangle_area_formulations",
+    title = "Triangle Area Formulations (Standard, Heron, Inradius, Circumradius)",
+    categoryTab = "Mathematics",
+    mathSubTab = "Trigonometry",
+    equationBanner = "A = ½ ab sin C\nA = √[s(s - a)(s - b)(s - c)]   where s = (a + b + c)/2\nA = r · s   (Inradius)  •  A = (a · b · c) / (4R)   (Circumradius)",
+    summaryTag = "Surveying Lot Area & Cross-Sectional Area Formulations",
+    variableNotes = listOf(
+      FormulaVariableNote("A", "Total enclosed planar area of the triangle", "m²"),
+      FormulaVariableNote("s", "Semi-perimeter of the triangle: s = (a + b + c) / 2", "m"),
+      FormulaVariableNote("r", "Inradius (radius of inscribed circle tangent to all three sides)", "m"),
+      FormulaVariableNote("R", "Circumradius (radius of circumscribed circle through all three vertices)", "m")
+    )
+  ),
+
+  // =========================================================================
+  // D. ANALYTIC GEOMETRY
+  // =========================================================================
+  ReferenceFormulaCardData(
+    id = "analytic_lines_and_distance",
+    title = "Lines: Distance, Slope, Forms & Point-to-Line Distance",
+    categoryTab = "Mathematics",
+    mathSubTab = "Analytic Geometry",
+    equationBanner = "d = √[(x₂ - x₁)² + (y₂ - y₁)²]  •  m = (y₂ - y₁) / (x₂ - x₁)\ny - y₁ = m(x - x₁)  •  Ax + By + C = 0\nd_⊥ = |Ax₁ + By₁ + C| / √(A² + B²)",
+    summaryTag = "Two-Point Distance, Gradient, Point-Slope, General Form & Perpendicular Offset",
+    variableNotes = listOf(
+      FormulaVariableNote("(x₁, y₁), (x₂, y₂)", "Cartesian coordinates of points P₁ and P₂", "m"),
+      FormulaVariableNote("m", "Slope / grade of the line (m = tan θ); parallel: m₁ = m₂, perpendicular: m₁·m₂ = -1", "m/m"),
+      FormulaVariableNote("A, B, C", "Coefficients of the General Linear Equation Ax + By + C = 0", "constants"),
+      FormulaVariableNote("d_⊥", "Shortest perpendicular distance from point (x₁, y₁) to line Ax + By + C = 0", "m")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "analytic_conic_circle",
+    title = "Conic Sections: Circle",
+    categoryTab = "Mathematics",
+    mathSubTab = "Analytic Geometry",
+    equationBanner = "(x - h)² + (y - k)² = r²\nx² + y² + Dx + Ey + F = 0   (e = 0)",
+    summaryTag = "Center-Radius Form & General Second-Degree Equation",
+    variableNotes = listOf(
+      FormulaVariableNote("(h, k)", "Center coordinates of the circle: h = -D/2, k = -E/2", "m"),
+      FormulaVariableNote("r", "Radius of the circle: r = ½√(D² + E² - 4F)", "m"),
+      FormulaVariableNote("e = 0", "Eccentricity of a true circle is strictly zero", "dimensionless")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "analytic_conic_parabola",
+    title = "Conic Sections: Parabola (Arch & Cable Profile)",
+    categoryTab = "Mathematics",
+    mathSubTab = "Analytic Geometry",
+    equationBanner = "(x - h)² = ±4p(y - k)   [Vertical Axis]\n(y - k)² = ±4p(x - h)   [Horizontal Axis]\nLatus Rectum LR = |4p|  •  Eccentricity e = 1",
+    summaryTag = "Vertex, Focus, Directrix & Latus Rectum for Parabolic Arches/Cables",
+    variableNotes = listOf(
+      FormulaVariableNote("(h, k)", "Coordinates of the parabola vertex V", "m"),
+      FormulaVariableNote("p", "Directed focal distance from vertex V to focus F (and vertex to directrix)", "m"),
+      FormulaVariableNote("Focus F", "(h, k ± p) for vertical axis; (h ± p, k) for horizontal axis", "m"),
+      FormulaVariableNote("Directrix", "y = k ∓ p (vertical axis) or x = h ∓ p (horizontal axis)", "m"),
+      FormulaVariableNote("LR = |4p|", "Length of latus rectum (focal chord perpendicular to axis)", "m")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "analytic_conic_ellipse",
+    title = "Conic Sections: Ellipse",
+    categoryTab = "Mathematics",
+    mathSubTab = "Analytic Geometry",
+    equationBanner = "(x - h)² / a² + (y - k)² / b² = 1\na² = b² + c²  •  e = c / a < 1  •  LR = 2b² / a",
+    summaryTag = "Semi-Major/Minor Axes, Focal Relation & Eccentricity (e < 1)",
+    variableNotes = listOf(
+      FormulaVariableNote("(h, k)", "Center coordinates of the ellipse", "m"),
+      FormulaVariableNote("a", "Semi-major axis length (major axis = 2a, always a > b)", "m"),
+      FormulaVariableNote("b", "Semi-minor axis length (minor axis = 2b)", "m"),
+      FormulaVariableNote("c", "Center-to-focus distance: c = √(a² - b²)", "m"),
+      FormulaVariableNote("e = c/a", "Eccentricity (0 < e < 1); Directrix distance from center d = a / e", "ratio")
+    )
+  ),
+  ReferenceFormulaCardData(
+    id = "analytic_conic_hyperbola",
+    title = "Conic Sections: Hyperbola",
+    categoryTab = "Mathematics",
+    mathSubTab = "Analytic Geometry",
+    equationBanner = "(x - h)² / a² - (y - k)² / b² = 1\nc² = a² + b²  •  e = c / a > 1\nAsymptotes: y - k = ±(b / a)(x - h)",
+    summaryTag = "Transverse/Conjugate Axes, Asymptotes & Eccentricity (e > 1)",
+    variableNotes = listOf(
+      FormulaVariableNote("(h, k)", "Center coordinates of the hyperbola", "m"),
+      FormulaVariableNote("a", "Semi-transverse axis length (distance from center to vertex)", "m"),
+      FormulaVariableNote("b", "Semi-conjugate axis length", "m"),
+      FormulaVariableNote("c", "Center-to-focus distance: c = √(a² + b²)", "m"),
+      FormulaVariableNote("e = c/a", "Eccentricity (strictly e > 1); Latus Rectum LR = 2b² / a", "ratio")
+    )
+  )
+)
+
+private fun buildGeometryShapesCatalog(): List<GeometryShapeEntry> = listOf(
+  GeometryShapeEntry(
+    id = "circle",
+    title = "Circle",
+    subtitle = "2D Circular Cross-Section",
+    is3DSolid = false,
+    areaFormula = "A = πr² = (πd²) / 4",
+    perimeterOrCircumferenceLabel = "Circumference (C)",
+    perimeterOrCircumferenceFormula = "C = 2πr = πd",
+    volumeFormula = null,
+    surfaceAreaFormula = null,
+    centroidFromBase = "ȳ = r = d / 2  (from bottom tangent)",
+    momentOfInertiaIx = "I_x = (πr⁴) / 4 = (πd⁴) / 64",
+    momentOfInertiaIy = "I_y = (πr⁴) / 4 = (πd⁴) / 64  •  J = (πr⁴) / 2",
+    variableLegend = "r = radius, d = diameter, J = polar moment of inertia"
+  ),
+  GeometryShapeEntry(
+    id = "right_triangle",
+    title = "Right Triangle",
+    subtitle = "2D Wedge / Load Distribution",
+    is3DSolid = false,
+    areaFormula = "A = ½ · b · h",
+    perimeterOrCircumferenceLabel = "Perimeter (P)",
+    perimeterOrCircumferenceFormula = "P = b + h + √(b² + h²)",
+    volumeFormula = null,
+    surfaceAreaFormula = null,
+    centroidFromBase = "ȳ = h / 3  (from base b)  •  x̄ = b / 3  (from vertical leg h)",
+    momentOfInertiaIx = "I_x(centroid) = (b · h³) / 36  •  I_x(base) = (b · h³) / 12",
+    momentOfInertiaIy = "I_y(centroid) = (h · b³) / 36",
+    variableLegend = "b = base width, h = perpendicular altitude"
+  ),
+  GeometryShapeEntry(
+    id = "isosceles_triangle",
+    title = "Isosceles Triangle",
+    subtitle = "2D Symmetric Triangular Section",
+    is3DSolid = false,
+    areaFormula = "A = ½ · b · h",
+    perimeterOrCircumferenceLabel = "Perimeter (P)",
+    perimeterOrCircumferenceFormula = "P = b + 2√[(b/2)² + h²]",
+    volumeFormula = null,
+    surfaceAreaFormula = null,
+    centroidFromBase = "ȳ = h / 3  (above base b)  •  x̄ = b / 2  (axis of symmetry)",
+    momentOfInertiaIx = "I_x(centroid) = (b · h³) / 36  •  I_x(base) = (b · h³) / 12",
+    momentOfInertiaIy = "I_y(centroid) = (h · b³) / 48",
+    variableLegend = "b = base width, h = altitude from base to apex"
+  ),
+  GeometryShapeEntry(
+    id = "trapezoid",
+    title = "Trapezoid",
+    subtitle = "2D Open Channel / Retaining Wall",
+    is3DSolid = false,
+    areaFormula = "A = ½ · (a + b) · h",
+    perimeterOrCircumferenceLabel = "Perimeter (P)",
+    perimeterOrCircumferenceFormula = "P = a + b + s₁ + s₂",
+    volumeFormula = null,
+    surfaceAreaFormula = null,
+    centroidFromBase = "ȳ = [h · (2a + b)] / [3 · (a + b)]  (measured from bottom base b)",
+    momentOfInertiaIx = "I_x(centroid) = [h³ · (a² + 4ab + b²)] / [36 · (a + b)]",
+    momentOfInertiaIy = "I_x(base) = [h³ · (3a + b)] / 12",
+    variableLegend = "b = bottom base width, a = top parallel width, h = vertical height, s₁,s₂ = side slopes"
+  ),
+  GeometryShapeEntry(
+    id = "parallelogram",
+    title = "Parallelogram",
+    subtitle = "2D Skewed Structural Section",
+    is3DSolid = false,
+    areaFormula = "A = b · h = a · b · sin θ",
+    perimeterOrCircumferenceLabel = "Perimeter (P)",
+    perimeterOrCircumferenceFormula = "P = 2(a + b)",
+    volumeFormula = null,
+    surfaceAreaFormula = null,
+    centroidFromBase = "ȳ = h / 2  (from bottom base b)",
+    momentOfInertiaIx = "I_x(centroid) = (b · h³) / 12  •  I_x(base) = (b · h³) / 3",
+    momentOfInertiaIy = "I_y(centroid) = (h · b / 12) · (b² + a² cos²θ)",
+    variableLegend = "b = base length, a = inclined side length, h = perpendicular height, θ = skew angle"
+  ),
+  GeometryShapeEntry(
+    id = "cylinder",
+    title = "Cylinder",
+    subtitle = "3D Pier / Concrete Test Cylinder",
+    is3DSolid = true,
+    areaFormula = "A_cross = πr² = (πd²) / 4",
+    perimeterOrCircumferenceLabel = "Base Circumference (C)",
+    perimeterOrCircumferenceFormula = "C = 2πr = πd",
+    volumeFormula = "V = πr²h = (πd²h) / 4",
+    surfaceAreaFormula = "A_lateral = 2πrh  •  A_total = 2πr(r + h)",
+    centroidFromBase = "ȳ = h / 2  (from circular base)",
+    momentOfInertiaIx = "I_x(section) = (πr⁴) / 4  •  I_mass,x = (1/12)m(3r² + h²)",
+    momentOfInertiaIy = "I_polar,z = ½ · m · r²",
+    variableLegend = "r = radius, d = diameter, h = cylinder height"
+  ),
+  GeometryShapeEntry(
+    id = "sphere",
+    title = "Sphere",
+    subtitle = "3D Tank /Dome Geometry",
+    is3DSolid = true,
+    areaFormula = "A_great_circle = πr²",
+    perimeterOrCircumferenceLabel = "Great Circle Circumference (C)",
+    perimeterOrCircumferenceFormula = "C = 2πr",
+    volumeFormula = "V = (4/3)πr³ = (πd³) / 6",
+    surfaceAreaFormula = "A_s = 4πr² = πd²",
+    centroidFromBase = "ȳ = r  (from bottom pole)  •  Hemisphere: ȳ = (3/8)r from flat base",
+    momentOfInertiaIx = "I_diametral = (2/5) · m · r²  (solid sphere)",
+    momentOfInertiaIy = "I_shell = (2/3) · m · r²  (thin spherical shell)",
+    variableLegend = "r = sphere radius, d = diameter, m = mass"
+  ),
+  GeometryShapeEntry(
+    id = "cone",
+    title = "Cone",
+    subtitle = "3D Aggregate Stockpile / Hopper",
+    is3DSolid = true,
+    areaFormula = "A_base = πr²   •   Slant s = √(r² + h²)",
+    perimeterOrCircumferenceLabel = "Base Circumference (C)",
+    perimeterOrCircumferenceFormula = "C = 2πr",
+    volumeFormula = "V = (1/3)πr²h",
+    surfaceAreaFormula = "A_lateral = πrs = πr√(r² + h²)  •  A_total = πr(r + s)",
+    centroidFromBase = "ȳ = h / 4  (solid cone from base)  •  ȳ_shell = h / 3  (conical shell)",
+    momentOfInertiaIx = "I_z(axis) = (3/10) · m · r²",
+    momentOfInertiaIy = "I_x(base) = m · [(3/20)r² + (1/10)h²]",
+    variableLegend = "r = base radius, h = vertical height, s = slant height"
+  ),
+  GeometryShapeEntry(
+    id = "frustum",
+    title = "Frustum",
+    subtitle = "3D Slump Cone / Tapered Pier",
+    is3DSolid = true,
+    areaFormula = "A₁ = πR² (bottom)  •  A₂ = πr² (top)  •  s = √[(R - r)² + h²]",
+    perimeterOrCircumferenceLabel = "Circumferences (C₁, C₂)",
+    perimeterOrCircumferenceFormula = "C₁ = 2πR   •   C₂ = 2πr",
+    volumeFormula = "V = (πh / 3) · (R² + R·r + r²) = (h / 3)(A₁ + A₂ + √(A₁A₂))",
+    surfaceAreaFormula = "A_lateral = π(R + r)s  •  A_total = π[(R + r)s + R² + r²]",
+    centroidFromBase = "ȳ = [h · (R² + 2Rr + 3r²)] / [4 · (R² + Rr + r²)]  (from bottom base R)",
+    momentOfInertiaIx = "I_section(top/bottom) = (π/4)(R⁴ or r⁴)",
+    momentOfInertiaIy = "Prismoidal Equivalent: V = (h / 6)(A₁ + 4A_m + A₂)",
+    variableLegend = "R = bottom base radius, r = top radius, h = frustum altitude, s = slant height"
+  )
+)
+
+private enum class FormulaVaultTier {
+  MASTER_VOLUMES,
+  MSTE_SUB_SHELF,
+  ALGEBRA_A4_SHEET
+}
+
+private data class EngineeringNotebookSpec(
+  val id: String,
+  val title: String,
+  val fullTitle: String,
+  val subtitle: String,
+  val departmentCode: String,
+  val pageBadge: String,
+  val isActive: Boolean,
+  val spineAccentColor: Color,
+  val secondaryAccentColor: Color
+)
+
+private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
+  EngineeringNotebookSpec(
+    id = "mste",
+    title = "MSTE",
+    fullTitle = "Mathematics, Surveying & Transportation Engineering",
+    subtitle = "Algebra, Trigonometry, Geometry, Analytic Geometry & Engineering Math",
+    departmentCode = "PRC BOARD PILLAR I • MSTE",
+    pageBadge = "ACTIVE • 4 SUB-VOLUMES",
+    isActive = true,
+    spineAccentColor = Color(0xFF6366F1),
+    secondaryAccentColor = Color(0xFF8B5CF6)
+  ),
+  EngineeringNotebookSpec(
+    id = "psad",
+    title = "PSAD",
+    fullTitle = "Structural Analysis & Design",
+    subtitle = "Theory of Structures, Concrete, Steel & Timber Design",
+    departmentCode = "PRC BOARD PILLAR II • PSAD",
+    pageBadge = "COMING SOON",
+    isActive = false,
+    spineAccentColor = Color(0xFFF59E0B),
+    secondaryAccentColor = Color(0xFFEF4444)
+  ),
+  EngineeringNotebookSpec(
+    id = "hpge",
+    title = "HPGE",
+    fullTitle = "Hydraulics & Geotechnical Engineering",
+    subtitle = "Fluid Mechanics, Hydraulics & Foundation Engineering",
+    departmentCode = "PRC BOARD PILLAR III • HPGE",
+    pageBadge = "COMING SOON",
+    isActive = false,
+    spineAccentColor = Color(0xFF06B6D4),
+    secondaryAccentColor = Color(0xFF3B82F6)
+  )
+)
+
+private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
+  EngineeringNotebookSpec(
+    id = "algebra",
+    title = "Algebra",
+    fullTitle = "Engineering Algebra & Number Theory",
+    subtitle = "Natural Numbers, Equalities, Inequalities, Exponents, Radicals, Logarithms & Polynomials",
+    departmentCode = "MSTE / CE-01",
+    pageBadge = "ACTIVE • A4 FORMULA SHEET",
+    isActive = true,
+    spineAccentColor = Color(0xFF6366F1),
+    secondaryAccentColor = Color(0xFF8B5CF6)
+  ),
+  EngineeringNotebookSpec(
+    id = "trigonometry",
+    title = "Trigonometry",
+    fullTitle = "Plane & Spherical Trigonometry",
+    subtitle = "Pythagorean, Double/Half-Angle, Oblique Triangles & Spherical Identities • Coming Soon",
+    departmentCode = "MSTE / CE-02",
+    pageBadge = "COMING SOON",
+    isActive = false,
+    spineAccentColor = Color(0xFF3B82F6),
+    secondaryAccentColor = Color(0xFF06B6D4)
+  ),
+  EngineeringNotebookSpec(
+    id = "geometry",
+    title = "Geometry",
+    fullTitle = "Plane & Solid Mensuration",
+    subtitle = "Cross-Section Areas, Volumes, Centroids & Moments of Inertia • Coming Soon",
+    departmentCode = "MSTE / CE-03",
+    pageBadge = "COMING SOON",
+    isActive = false,
+    spineAccentColor = Color(0xFF10B981),
+    secondaryAccentColor = Color(0xFF14B8A6)
+  ),
+  EngineeringNotebookSpec(
+    id = "analytic_geometry",
+    title = "Analytic Geometry",
+    fullTitle = "Cartesian & Conic Sections",
+    subtitle = "Lines, Circles, Parabolas, Ellipses, Hyperbolas & Polar Coordinates • Coming Soon",
+    departmentCode = "MSTE / CE-04",
+    pageBadge = "COMING SOON",
+    isActive = false,
+    spineAccentColor = Color(0xFF8B5CF6),
+    secondaryAccentColor = Color(0xFFEC4899)
+  )
 )
 
 @Composable
 fun FormulaVaultMainView(
   metrics: ResponsiveMetrics,
   onBackToExtras: () -> Unit,
+  viewModel: TaskViewModel? = null,
   modifier: Modifier = Modifier
 ) {
-  BackHandler {
-    onBackToExtras()
-  }
-
+  val context = LocalContext.current
+  val localView = LocalView.current
   val palette = currentGlassPalette()
-  val formulas = remember {
-    listOf(
-      CeFormulaEntry(
-        id = "beam_bending_moment",
-        title = "Simply Supported Beam Max Moment",
-        category = "Structural",
-        equationDisplay = "M_max = (w · L²) / 8",
-        description = "Calculates maximum midspan bending moment under uniform distributed load w over span L.",
-        param1Label = "Uniform Load w (kN/m)",
-        param1Default = "24.0",
-        param2Label = "Span Length L (m)",
-        param2Default = "6.0",
-        param3Label = "Load Factor γ (optional, 1.0 = service)",
-        param3Default = "1.0",
-        outputUnit = "kN·m",
-        compute = { w, l, gamma -> (w * l.pow(2.0) / 8.0) * gamma }
-      ),
-      CeFormulaEntry(
-        id = "manning_open_channel",
-        title = "Manning's Open Channel Velocity",
-        category = "Hydraulics",
-        equationDisplay = "V = (1 / n) · R^(2/3) · S^(1/2)",
-        description = "Determines uniform flow velocity in open channels and storm drainage conduits.",
-        param1Label = "Manning Roughness n",
-        param1Default = "0.013",
-        param2Label = "Hydraulic Radius R (m)",
-        param2Default = "0.85",
-        param3Label = "Channel Slope S (m/m)",
-        param3Default = "0.004",
-        outputUnit = "m/s",
-        compute = { n, r, s ->
-          if (n <= 0.0 || r < 0.0 || s < 0.0) 0.0
-          else (1.0 / n) * r.pow(2.0 / 3.0) * sqrt(s)
-        }
-      ),
-      CeFormulaEntry(
-        id = "terzaghi_effective_stress",
-        title = "Terzaghi Vertical Effective Stress",
-        category = "Geotech",
-        equationDisplay = "σ'_v = (γ_sat · z) - (γ_w · h_w)",
-        description = "Computes effective intergranular soil stress at depth z with piezometric head h_w.",
-        param1Label = "Unit Weight γ_sat (kN/m³)",
-        param1Default = "19.5",
-        param2Label = "Soil Depth z (m)",
-        param2Default = "5.0",
-        param3Label = "Pore Water Head h_w (m)",
-        param3Default = "3.0",
-        outputUnit = "kPa",
-        compute = { gammaSat, z, hw -> (gammaSat * z) - (9.81 * hw) }
-      ),
-      CeFormulaEntry(
-        id = "aci_concrete_modulus",
-        title = "ACI 318 Concrete Elastic Modulus",
-        category = "Concrete",
-        equationDisplay = "E_c = 4700 · √f'_c  (MPa)",
-        description = "Normal-weight concrete secant modulus of elasticity per ACI 318 / NSCP 2015.",
-        param1Label = "Specified Strength f'_c (MPa)",
-        param1Default = "28.0",
-        param2Label = "Unit Weight Factor (1.0 normal)",
-        param2Default = "1.0",
-        param3Label = "Safety Multiplier (1.0 nominal)",
-        param3Default = "1.0",
-        outputUnit = "MPa",
-        compute = { fc, factor, mult ->
-          if (fc <= 0.0) 0.0 else 4700.0 * sqrt(fc) * factor * mult
-        }
-      ),
-      CeFormulaEntry(
-        id = "mohr_coulomb_shear",
-        title = "Mohr-Coulomb Soil Shear Strength",
-        category = "Geotech",
-        equationDisplay = "τ_f = c' + σ'_n · tan(φ')",
-        description = "Drained shear strength envelope along failure plane given cohesion c' and friction angle φ'.",
-        param1Label = "Effective Cohesion c' (kPa)",
-        param1Default = "15.0",
-        param2Label = "Effective Normal Stress σ'_n (kPa)",
-        param2Default = "120.0",
-        param3Label = "Friction Angle φ' (degrees)",
-        param3Default = "32.0",
-        outputUnit = "kPa",
-        compute = { c, sigma, phiDeg ->
-          c + sigma * tan(phiDeg * PI / 180.0)
-        }
-      ),
-      CeFormulaEntry(
-        id = "euler_buckling_load",
-        title = "Euler Critical Column Buckling",
-        category = "Structural",
-        equationDisplay = "P_cr = (π² · E · I) / (K · L)²",
-        description = "Elastic buckling capacity for slender compression members (output in kN).",
-        param1Label = "Flexural Rigidity E·I (kN·m²)",
-        param1Default = "12500.0",
-        param2Label = "Unbraced Length L (m)",
-        param2Default = "4.5",
-        param3Label = "Effective Length Factor K",
-        param3Default = "1.0",
-        outputUnit = "kN",
-        compute = { ei, l, k ->
-          val kl = k * l
-          if (kl <= 0.0) 0.0 else (PI.pow(2.0) * ei) / kl.pow(2.0)
-        }
-      )
-    )
+  val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+
+  // 3-Tier PRC Board Exam Hierarchy State:
+  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET"
+  var currentTierName by rememberSaveable { mutableStateOf(FormulaVaultTier.MASTER_VOLUMES.name) }
+  val currentTier = remember(currentTierName) {
+    runCatching { FormulaVaultTier.valueOf(currentTierName) }.getOrDefault(FormulaVaultTier.MASTER_VOLUMES)
   }
 
-  val categories = remember { listOf("All", "Structural", "Hydraulics", "Geotech", "Concrete") }
-  var selectedCategory by rememberSaveable { mutableStateOf("All") }
+  var isSearchExpanded by rememberSaveable { mutableStateOf(false) }
   var searchQuery by rememberSaveable { mutableStateOf("") }
-  var activeQuickSolveFormulaId by rememberSaveable { mutableStateOf<String?>(null) }
+  var isAddCustomDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var showTocSheet by rememberSaveable { mutableStateOf(false) }
+  var highlightedSectionIndex by remember { mutableStateOf<Int?>(null) }
 
-  val filteredFormulas = remember(formulas, selectedCategory, searchQuery) {
-    formulas.filter { entry ->
-      val matchesCategory = selectedCategory == "All" || entry.category.equals(selectedCategory, ignoreCase = true)
-      val q = searchQuery.trim()
-      val matchesSearch = q.isEmpty() ||
-        entry.title.contains(q, ignoreCase = true) ||
-        entry.equationDisplay.contains(q, ignoreCase = true) ||
-        entry.description.contains(q, ignoreCase = true) ||
-        entry.category.contains(q, ignoreCase = true)
-      matchesCategory && matchesSearch
+  val a4LazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+  // Automatically clear the arrival pulse glow after 1.8 seconds
+  androidx.compose.runtime.LaunchedEffect(highlightedSectionIndex) {
+    if (highlightedSectionIndex != null) {
+      kotlinx.coroutines.delay(1800L)
+      highlightedSectionIndex = null
     }
   }
 
-  val activeFormula = formulas.firstOrNull { it.id == activeQuickSolveFormulaId }
+  var starredIds by remember { mutableStateOf(loadStarredFormulaIds(context)) }
+  var customFormulas by remember { mutableStateOf(loadCustomFormulas(context)) }
 
-  Column(
+  val masterVolumes = remember { buildMasterBoardVolumes() }
+  val msteSubNotebooks = remember { buildMsteSubNotebooks() }
+  val algebraSections = remember { buildAlgebraHandbookSections() }
+
+  fun navigateBackOneTier() {
+    playCardHapticSound(context, localView)
+    when (currentTier) {
+      FormulaVaultTier.ALGEBRA_A4_SHEET -> {
+        currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+      }
+      FormulaVaultTier.MSTE_SUB_SHELF -> {
+        currentTierName = FormulaVaultTier.MASTER_VOLUMES.name
+      }
+      FormulaVaultTier.MASTER_VOLUMES -> {
+        onBackToExtras()
+      }
+    }
+  }
+
+  BackHandler {
+    if (showTocSheet) {
+      showTocSheet = false
+    } else if (isSearchExpanded && searchQuery.isNotEmpty()) {
+      searchQuery = ""
+      isSearchExpanded = false
+    } else {
+      navigateBackOneTier()
+    }
+  }
+
+  fun toggleStarFormula(formulaId: String) {
+    playCardHapticSound(context, localView)
+    val updated = if (starredIds.contains(formulaId)) {
+      starredIds - formulaId
+    } else {
+      starredIds + formulaId
+    }
+    starredIds = updated
+    saveStarredFormulaIds(context, updated)
+  }
+
+  val topBarTitle = when (currentTier) {
+    FormulaVaultTier.MASTER_VOLUMES -> "CE Formula Vault"
+    FormulaVaultTier.MSTE_SUB_SHELF -> "MSTE Library"
+    FormulaVaultTier.ALGEBRA_A4_SHEET -> "MSTE • Algebra"
+  }
+
+  val trimmedQuery = searchQuery.trim()
+  val algebraMatchesQuery = remember(trimmedQuery, algebraSections) {
+    if (trimmedQuery.isEmpty()) false
+    else algebraSections.any { sec ->
+      sec.sectionTitle.contains(trimmedQuery, ignoreCase = true) ||
+        sec.items.any { item ->
+          item.title.contains(trimmedQuery, ignoreCase = true) ||
+            item.formulaOrStatement.contains(trimmedQuery, ignoreCase = true) ||
+            item.note.contains(trimmedQuery, ignoreCase = true) ||
+            item.subItems.any { it.contains(trimmedQuery, ignoreCase = true) }
+        }
+    }
+  }
+
+  val showA4DirectlyFromSearch = trimmedQuery.isNotEmpty() &&
+    algebraMatchesQuery &&
+    masterVolumes.none {
+      it.title.contains(trimmedQuery, ignoreCase = true) ||
+        it.fullTitle.contains(trimmedQuery, ignoreCase = true)
+    } &&
+    msteSubNotebooks.none {
+      it.title.contains(trimmedQuery, ignoreCase = true)
+    }
+
+  val isShowingA4Sheet = currentTier == FormulaVaultTier.ALGEBRA_A4_SHEET || showA4DirectlyFromSearch
+
+  Box(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = metrics.maxContentWidth)
-      .verticalScroll(rememberScrollState())
-      .padding(horizontal = metrics.scaledDp(20), vertical = metrics.scaledDp(20))
-      .testTag("formula_vault_screen"),
-    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+      .testTag("formula_vault_screen")
   ) {
-    // Top Header
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .widthIn(max = metrics.maxContentWidth)
+        .padding(
+          start = metrics.scaledDp(18),
+          end = metrics.scaledDp(18),
+          top = metrics.scaledDp(16)
+        ),
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
     ) {
-      Surface(
-        onClick = onBackToExtras,
-        shape = CircleShape,
-        color = palette.cardFill,
-        border = palette.glassBorder,
-        shadowElevation = 6.dp,
-        modifier = Modifier
-          .size(48.dp)
-          .testTag("formula_vault_back_button")
+      // ====================================================================
+      // 1. MINIMAL HEADER & TOP BAR (WITH TOC, +, AND SEARCH ACTIONS)
+      // ====================================================================
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
       ) {
-        Box(contentAlignment = Alignment.Center) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-            contentDescription = "Back to Extras",
-            tint = palette.textPrimary,
-            modifier = Modifier.size(26.dp)
-          )
-        }
-      }
-
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = "CE Formula Vault",
-          style = MaterialTheme.typography.headlineSmall.copy(
-            fontSize = metrics.scaledSp(22),
-            fontWeight = FontWeight.ExtraBold
-          ),
-          color = palette.textPrimary
-        )
-        Text(
-          text = "Frosted Reference & Instant Quick-Solve Engine",
-          style = MaterialTheme.typography.bodySmall.copy(
-            fontSize = metrics.scaledSp(12),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = palette.accentIndigo
-        )
-      }
-    }
-
-    // Frosted Glass Search Bar
-    LiquidGlassCard(
-      shape = RoundedCornerShape(22.dp),
-      elevation = 6.dp,
-      modifier = Modifier.fillMaxWidth()
-    ) {
-      OutlinedTextField(
-        value = searchQuery,
-        onValueChange = { searchQuery = it },
-        placeholder = {
-          Text(
-            text = "Search beam, Manning, Terzaghi, ACI...",
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = metrics.scaledSp(14)),
-            color = palette.textSecondary
-          )
-        },
-        leadingIcon = {
-          Icon(
-            imageVector = Icons.Filled.Search,
-            contentDescription = "Search formulas",
-            tint = palette.accentIndigo
-          )
-        },
-        trailingIcon = {
-          if (searchQuery.isNotEmpty()) {
-            IconButton(onClick = { searchQuery = "" }) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          modifier = Modifier.weight(1f)
+        ) {
+          // Left: Circular glass Back navigation button
+          Surface(
+            onClick = { navigateBackOneTier() },
+            shape = CircleShape,
+            color = palette.cardFill,
+            border = palette.glassBorder,
+            shadowElevation = 6.dp,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("formula_vault_back_button")
+          ) {
+            Box(contentAlignment = Alignment.Center) {
               Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "Clear search",
-                tint = palette.textSecondary
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = when (currentTier) {
+                  FormulaVaultTier.ALGEBRA_A4_SHEET -> "Back to MSTE Library"
+                  FormulaVaultTier.MSTE_SUB_SHELF -> "Back to Master Volumes"
+                  FormulaVaultTier.MASTER_VOLUMES -> "Back to Extras"
+                },
+                tint = palette.textPrimary,
+                modifier = Modifier.size(26.dp)
               )
             }
           }
-        },
-        singleLine = true,
-        shape = RoundedCornerShape(22.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-          focusedTextColor = palette.textPrimary,
-          unfocusedTextColor = palette.textPrimary,
-          focusedContainerColor = Color.Transparent,
-          unfocusedContainerColor = Color.Transparent,
-          focusedBorderColor = Color.Transparent,
-          unfocusedBorderColor = Color.Transparent,
-          cursorColor = palette.accentIndigo
-        ),
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("formula_vault_search_input")
-      )
-    }
 
-    // Floating Glass Category Chips
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-      categories.forEach { category ->
-        val isSelected = selectedCategory == category
-        Box(
-          modifier = Modifier
-            .clip(CircleShape)
-            .background(
-              brush = if (isSelected) {
-                LiquidVioletChipGradient
-              } else {
-                Brush.linearGradient(
-                  listOf(
-                    palette.nestedCardFill,
-                    palette.cardFill
-                  )
-                )
-              }
-            )
-            .border(
-              border = if (isSelected) {
-                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f))
-              } else {
-                palette.nestedBorder
-              },
-              shape = CircleShape
-            )
-            .clickable { selectedCategory = category }
-            .padding(horizontal = 16.dp, vertical = 9.dp)
-            .testTag("formula_category_chip_$category")
-        ) {
+          // Dynamic Single-Line Title ("CE Formula Vault" / "MSTE Library" / "MSTE • Algebra")
           Text(
-            text = category,
-            style = MaterialTheme.typography.labelLarge.copy(
-              fontSize = metrics.scaledSp(12),
+            text = topBarTitle,
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = 20.sp,
               fontWeight = FontWeight.Bold
             ),
-            color = if (isSelected) Color.White else palette.textPrimary
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+
+        // Right: Table of Contents (TOC) button, + Custom Formula button, & Search button
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          // Dedicated Table of Contents (TOC) Top Bar Button
+          Surface(
+            onClick = {
+              playCardHapticSound(context, localView)
+              showTocSheet = true
+            },
+            shape = CircleShape,
+            color = if (showTocSheet) Color(0xFF6366F1).copy(alpha = 0.18f) else palette.cardFill,
+            border = if (showTocSheet) {
+              BorderStroke(1.2.dp, Color(0xFF6366F1).copy(alpha = 0.65f))
+            } else {
+              palette.glassBorder
+            },
+            shadowElevation = 4.dp,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("formula_vault_toc_top_button")
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ViewList,
+                contentDescription = "Table of Contents",
+                tint = if (showTocSheet) palette.accentIndigo else palette.textPrimary,
+                modifier = Modifier.size(22.dp)
+              )
+            }
+          }
+
+          Surface(
+            onClick = {
+              playCardHapticSound(context, localView)
+              isAddCustomDialogOpen = true
+            },
+            shape = CircleShape,
+            color = palette.cardFill,
+            border = palette.glassBorder,
+            shadowElevation = 4.dp,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("add_custom_formula_top_button")
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Add Custom Formula",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(22.dp)
+              )
+            }
+          }
+
+          Surface(
+            onClick = {
+              playCardHapticSound(context, localView)
+              isSearchExpanded = !isSearchExpanded
+              if (!isSearchExpanded) {
+                searchQuery = ""
+              }
+            },
+            shape = CircleShape,
+            color = if (isSearchExpanded) Color(0xFF6366F1).copy(alpha = 0.18f) else palette.cardFill,
+            border = if (isSearchExpanded) {
+              BorderStroke(1.2.dp, Color(0xFF6366F1).copy(alpha = 0.65f))
+            } else {
+              palette.glassBorder
+            },
+            shadowElevation = 4.dp,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("formula_vault_search_toggle_button")
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = if (isSearchExpanded) Icons.Default.Close else Icons.Default.Search,
+                contentDescription = if (isSearchExpanded) "Close Search" else "Search Formulas",
+                tint = if (isSearchExpanded) palette.accentIndigo else palette.textPrimary,
+                modifier = Modifier.size(22.dp)
+              )
+            }
+          }
+        }
+      }
+
+      // Smoothly expanding inline search bar when Search icon is tapped
+      AnimatedVisibility(
+        visible = isSearchExpanded,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut()
+      ) {
+        LiquidGlassCard(
+          shape = RoundedCornerShape(18.dp),
+          elevation = 4.dp,
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = {
+              Text(
+                text = when (currentTier) {
+                  FormulaVaultTier.ALGEBRA_A4_SHEET ->
+                    "Filter Algebra laws, equations, or symbols (e.g., quadratic, log, radical)..."
+                  FormulaVaultTier.MSTE_SUB_SHELF ->
+                    "Search MSTE sub-volumes or Algebra laws..."
+                  FormulaVaultTier.MASTER_VOLUMES ->
+                    "Search PRC board subjects (MSTE, PSAD, HPGE) or Algebra laws..."
+                },
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                color = palette.textSecondary
+              )
+            },
+            leadingIcon = {
+              Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = null,
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(20.dp)
+              )
+            },
+            trailingIcon = {
+              if (searchQuery.isNotEmpty()) {
+                IconButton(onClick = { searchQuery = "" }) {
+                  Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Clear search",
+                    tint = palette.textSecondary,
+                    modifier = Modifier.size(18.dp)
+                  )
+                }
+              }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedTextColor = palette.textPrimary,
+              unfocusedTextColor = palette.textPrimary,
+              focusedContainerColor = Color.Transparent,
+              unfocusedContainerColor = Color.Transparent,
+              focusedBorderColor = Color.Transparent,
+              unfocusedBorderColor = Color.Transparent,
+              cursorColor = palette.accentIndigo
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("formula_vault_search_input")
+          )
+        }
+      }
+
+      // ====================================================================
+      // 2. 3-TIER HIERARCHY VIEW SWITCHER
+      // ====================================================================
+      when {
+        isShowingA4Sheet -> {
+          val customAlgebraFormulas = customFormulas.filter {
+            it.categoryTab.equals("Mathematics", ignoreCase = true) &&
+              it.mathSubTab.equals("Algebra", ignoreCase = true)
+          }
+          AlgebraA4PaperViewer(
+            metrics = metrics,
+            lazyListState = a4LazyListState,
+            highlightedSectionIndex = highlightedSectionIndex,
+            searchQuery = trimmedQuery,
+            customFormulas = customAlgebraFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            onBackToShelf = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+            },
+            onOpenToc = {
+              playCardHapticSound(context, localView)
+              showTocSheet = true
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        currentTier == FormulaVaultTier.MSTE_SUB_SHELF -> {
+          NotebookShelfLibraryView(
+            shelfHeaderTitle = "MSTE SUB-NOTEBOOK SHELF",
+            shelfCountBadge = "4 SUB-VOLUMES",
+            notebooks = msteSubNotebooks,
+            searchQuery = trimmedQuery,
+            customFormulasCount = customFormulas.size,
+            metrics = metrics,
+            breadcrumbLabel = "All PRC Board Pillars (MSTE • PSAD • HPGE)",
+            onBreadcrumbClick = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MASTER_VOLUMES.name
+            },
+            onOpenNotebook = { notebook ->
+              playCardHapticSound(context, localView)
+              if (notebook.isActive && notebook.id == "algebra") {
+                currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+              } else {
+                Toast.makeText(
+                  context,
+                  "${notebook.title} (${notebook.departmentCode}) reference sheet is coming soon!",
+                  Toast.LENGTH_SHORT
+                ).show()
+              }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        else -> {
+          NotebookShelfLibraryView(
+            shelfHeaderTitle = "PRC CE LICENSURE EXAM PILLARS",
+            shelfCountBadge = "3 MASTER VOLUMES",
+            notebooks = masterVolumes,
+            searchQuery = trimmedQuery,
+            customFormulasCount = customFormulas.size,
+            metrics = metrics,
+            breadcrumbLabel = null,
+            onBreadcrumbClick = null,
+            onOpenNotebook = { volume ->
+              playCardHapticSound(context, localView)
+              if (volume.isActive && volume.id == "mste") {
+                currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+              } else {
+                Toast.makeText(
+                  context,
+                  "${volume.title} — ${volume.fullTitle} master volume is coming soon!",
+                  Toast.LENGTH_SHORT
+                ).show()
+              }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
           )
         }
       }
     }
 
-    // Formula Cards List
-    filteredFormulas.forEach { formula ->
-      LiquidGlassCard(
-        onClick = { activeQuickSolveFormulaId = formula.id },
-        shape = RoundedCornerShape(26.dp),
-        elevation = 8.dp,
+    // Floating Quick-Jump Pill ("Contents") at bottom-right when viewing the A4 Algebra Sheet
+    if (isShowingA4Sheet) {
+      Surface(
+        onClick = {
+          playCardHapticSound(context, localView)
+          showTocSheet = true
+        },
+        shape = CircleShape,
+        color = palette.cardSurface.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f)),
+        shadowElevation = 8.dp,
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(bottom = 96.dp, end = 16.dp)
+          .testTag("formula_vault_floating_toc_pill")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.ViewList,
+            contentDescription = "Table of Contents",
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(17.dp)
+          )
+          Text(
+            text = "Contents",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textPrimary
+          )
+        }
+      }
+    }
+
+    // Frosted Glass Table of Contents (TOC) Quick-Jump Sheet
+    if (showTocSheet) {
+      FormulaVaultTocGlassSheet(
+        sections = algebraSections,
+        onDismiss = { showTocSheet = false },
+        onSelectSection = { sectionZeroBasedIndex ->
+          playCardHapticSound(context, localView)
+          showTocSheet = false
+          if (searchQuery.isNotEmpty()) {
+            searchQuery = ""
+            isSearchExpanded = false
+          }
+          currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+          highlightedSectionIndex = sectionZeroBasedIndex
+          // Item 0 is the A4 Running Header & Title ("ALGEBRA");
+          // Items 1..7 are the 7 Algebra reference sections
+          val targetIndex = sectionZeroBasedIndex + 1
+          coroutineScope.launch {
+            kotlinx.coroutines.delay(60L)
+            a4LazyListState.animateScrollToItem(index = targetIndex)
+          }
+        }
+      )
+    }
+
+    if (isAddCustomDialogOpen) {
+      AddCustomFormulaGlassDialog(
+        metrics = metrics,
+        onDismiss = { isAddCustomDialogOpen = false },
+        onSaveFormula = { title, categoryTab, mathSubTab, equation, variableNotesRaw ->
+          val parsedNotes = variableNotesRaw
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { line ->
+              val parts = line.split(":", "-", "=").map { it.trim() }
+              if (parts.size >= 2) {
+                FormulaVariableNote(
+                  symbol = parts[0],
+                  meaning = parts.drop(1).joinToString(" - "),
+                  unit = "SI / Metric"
+                )
+              } else {
+                FormulaVariableNote(
+                  symbol = "•",
+                  meaning = line,
+                  unit = "Reference"
+                )
+              }
+            }
+            .ifEmpty {
+              listOf(
+                FormulaVariableNote(
+                  symbol = "Note",
+                  meaning = "Custom scholar formula entry",
+                  unit = "Standard units"
+                )
+              )
+            }
+          val newEntry = ReferenceFormulaCardData(
+            id = "custom_${System.currentTimeMillis()}",
+            title = title,
+            categoryTab = categoryTab,
+            mathSubTab = mathSubTab,
+            equationBanner = equation,
+            summaryTag = "Custom Scholar Formula • $mathSubTab",
+            variableNotes = parsedNotes,
+            isCustom = true
+          )
+          val updatedList = listOf(newEntry) + customFormulas
+          customFormulas = updatedList
+          saveCustomFormulas(context, updatedList)
+          isAddCustomDialogOpen = false
+          currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+          Toast.makeText(context, "Saved \"$title\" to Formula Vault!", Toast.LENGTH_SHORT).show()
+        }
+      )
+    }
+  }
+}
+
+@Composable
+private fun FormulaVaultTocGlassSheet(
+  sections: List<AlgebraHandbookSection>,
+  onDismiss: () -> Unit,
+  onSelectSection: (Int) -> Unit
+) {
+  val palette = currentGlassPalette()
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = 0.42f))
+        .clickable(
+          interactionSource = remember { MutableInteractionSource() },
+          indication = null,
+          onClick = onDismiss
+        ),
+      contentAlignment = Alignment.BottomCenter
+    ) {
+      Surface(
+        onClick = {},
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = palette.dialogSurface.copy(alpha = 0.96f),
+        border = BorderStroke(
+          width = 1.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              Color.White.copy(alpha = if (palette.isDark) 0.35f else 0.75f),
+              Color(0xFF6366F1).copy(alpha = 0.25f)
+            )
+          )
+        ),
+        shadowElevation = 24.dp,
         modifier = Modifier
           .fillMaxWidth()
-          .testTag("formula_card_${formula.id}")
+          .widthIn(max = 560.dp)
+          .testTag("formula_vault_toc_sheet")
       ) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(metrics.scaledDp(18)),
-          verticalArrangement = Arrangement.spacedBy(10.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp)
+            .navigationBarsPadding(),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+          // Subtle Drag Handle Indicator
+          Box(
+            modifier = Modifier
+              .align(Alignment.CenterHorizontally)
+              .width(42.dp)
+              .height(4.dp)
+              .clip(CircleShape)
+              .background(palette.textSecondary.copy(alpha = 0.35f))
+          )
+
+          // Header Row: Title, Subtitle, Close Button
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
           ) {
-            Box(
-              modifier = Modifier
-                .clip(CircleShape)
-                .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
-                .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
-                .padding(horizontal = 10.dp, vertical = 4.dp)
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
               Text(
-                text = formula.category.uppercase(),
+                text = "Table of Contents",
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = 18.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary
+              )
+              Text(
+                text = "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET",
                 style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = JetBrainsMonoFamily,
-                  fontSize = metrics.scaledSp(10),
-                  fontWeight = FontWeight.ExtraBold
+                  fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 1.2.sp
                 ),
                 color = palette.accentIndigo
               )
             }
 
-            Text(
-              text = "Tap to Quick-Solve →",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = metrics.scaledSp(11),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.accentIndigo
-            )
+            Surface(
+              onClick = onDismiss,
+              shape = CircleShape,
+              color = palette.nestedCardFill,
+              border = palette.nestedBorder,
+              modifier = Modifier
+                .size(38.dp)
+                .testTag("formula_vault_toc_close_button")
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Close Table of Contents",
+                  tint = palette.textSecondary,
+                  modifier = Modifier.size(18.dp)
+                )
+              }
+            }
           }
 
+          HorizontalDivider(
+            thickness = 1.dp,
+            color = Color(0xFF6366F1).copy(alpha = 0.22f)
+          )
+
+          // 7 Itemized Clickable Chapter Cards
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            sections.forEachIndexed { index, section ->
+              val chapterNumberText = String.format(Locale.ROOT, "[%02d]", index + 1)
+              Surface(
+                onClick = { onSelectSection(index) },
+                shape = RoundedCornerShape(12.dp),
+                color = palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.82f else 0.92f),
+                border = BorderStroke(
+                  width = 1.dp,
+                  color = Color(0xFF6366F1).copy(alpha = 0.25f)
+                ),
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("toc_section_item_${index + 1}")
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                  ) {
+                    // Chapter Indicator Chip on the left: "[01]", "[02]", ...
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                      border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
+                    ) {
+                      Text(
+                        text = chapterNumberText,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                          fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.ExtraBold
+                        ),
+                        color = palette.accentIndigo,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                      )
+                    }
+
+                    // Topic Title + Formula count badge
+                    Column(
+                      modifier = Modifier.weight(1f),
+                      verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                      Text(
+                        text = section.sectionTitle,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                          fontSize = 14.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.textPrimary
+                      )
+                      Text(
+                        text = "${section.items.size} reference laws & equations",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.Medium
+                        ),
+                        color = palette.textSecondary
+                      )
+                    }
+                  }
+
+                  Icon(
+                    imageVector = Icons.Default.ArrowForward,
+                    contentDescription = "Jump to ${section.sectionTitle}",
+                    tint = palette.accentIndigo,
+                    modifier = Modifier.size(18.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun NotebookShelfLibraryView(
+  shelfHeaderTitle: String,
+  shelfCountBadge: String,
+  notebooks: List<EngineeringNotebookSpec>,
+  searchQuery: String,
+  customFormulasCount: Int,
+  metrics: ResponsiveMetrics,
+  breadcrumbLabel: String?,
+  onBreadcrumbClick: (() -> Unit)?,
+  onOpenNotebook: (EngineeringNotebookSpec) -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val palette = currentGlassPalette()
+  val filteredNotebooks = remember(notebooks, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      notebooks
+    } else {
+      notebooks.filter { nb ->
+        nb.title.contains(searchQuery, ignoreCase = true) ||
+          nb.fullTitle.contains(searchQuery, ignoreCase = true) ||
+          nb.subtitle.contains(searchQuery, ignoreCase = true) ||
+          nb.departmentCode.contains(searchQuery, ignoreCase = true) ||
+          ((nb.id == "algebra" || nb.id == "mste") &&
+            "algebra exponents logarithms radicals polynomials quadratic inequalities mste".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            ))
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .verticalScroll(rememberScrollState())
+      .padding(bottom = 96.dp),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    if (breadcrumbLabel != null && onBreadcrumbClick != null) {
+      Surface(
+        onClick = onBreadcrumbClick,
+        shape = RoundedCornerShape(10.dp),
+        color = palette.cardFill,
+        border = palette.glassBorder,
+        modifier = Modifier.testTag("back_to_master_volumes_chip")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to Master Volumes",
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(16.dp)
+          )
           Text(
-            text = formula.title,
+            text = breadcrumbLabel,
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.5.sp
+            ),
+            color = palette.accentIndigo
+          )
+        }
+      }
+    }
+
+    // Shelf Section Header
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 2.dp, bottom = 2.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = shelfHeaderTitle,
+        style = MaterialTheme.typography.labelMedium.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.ExtraBold,
+          letterSpacing = 1.3.sp
+        ),
+        color = palette.textSecondary
+      )
+
+      Text(
+        text = shelfCountBadge,
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 10.5.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 1.sp
+        ),
+        color = palette.accentIndigo
+      )
+    }
+
+    // Styled Engineering Subject Notebooks
+    filteredNotebooks.forEach { notebook ->
+      EngineeringNotebookBinderCard(
+        notebook = notebook,
+        customFormulasCount = if (notebook.id == "algebra") customFormulasCount else 0,
+        metrics = metrics,
+        onClick = { onOpenNotebook(notebook) }
+      )
+    }
+  }
+}
+
+@Composable
+private fun EngineeringNotebookBinderCard(
+  notebook: EngineeringNotebookSpec,
+  customFormulasCount: Int,
+  metrics: ResponsiveMetrics,
+  onClick: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  val cardShape = RoundedCornerShape(
+    topStart = 12.dp,
+    bottomStart = 12.dp,
+    topEnd = 22.dp,
+    bottomEnd = 22.dp
+  )
+
+  Surface(
+    onClick = onClick,
+    shape = cardShape,
+    color = if (palette.isDark) {
+      Color(0xFF1A1F2C).copy(alpha = if (notebook.isActive) 0.94f else 0.78f)
+    } else {
+      Color(0xFFFFFFFF).copy(alpha = if (notebook.isActive) 0.94f else 0.82f)
+    },
+    border = BorderStroke(
+      width = if (notebook.isActive) 1.3.dp else 1.dp,
+      brush = Brush.linearGradient(
+        if (notebook.isActive) {
+          listOf(
+            notebook.spineAccentColor.copy(alpha = 0.65f),
+            Color.White.copy(alpha = if (palette.isDark) 0.22f else 0.70f)
+          )
+        } else {
+          listOf(
+            Color.White.copy(alpha = if (palette.isDark) 0.18f else 0.55f),
+            palette.textSecondary.copy(alpha = 0.18f)
+          )
+        }
+      )
+    ),
+    shadowElevation = if (notebook.isActive) 8.dp else 3.dp,
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("notebook_card_${notebook.id}")
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      // Physical Engineering Pocket Reference Binder Spine on the Left Border
+      Box(
+        modifier = Modifier
+          .width(12.dp)
+          .fillMaxHeight()
+          .background(
+            brush = Brush.verticalGradient(
+              listOf(
+                notebook.spineAccentColor,
+                notebook.secondaryAccentColor
+              )
+            )
+          )
+      ) {
+        // Subtle binder spine groove line
+        Box(
+          modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .width(1.5.dp)
+            .fillMaxHeight()
+            .background(Color.Black.copy(alpha = 0.18f))
+        )
+      }
+
+      // Main Binder Cover Content
+      Row(
+        modifier = Modifier
+          .weight(1f)
+          .padding(horizontal = 18.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(
+          modifier = Modifier.weight(1f),
+          verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+          // Department Code & Status Pill Row
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = notebook.departmentCode,
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 1.sp
+              ),
+              color = notebook.spineAccentColor
+            )
+
+            Surface(
+              shape = RoundedCornerShape(6.dp),
+              color = if (notebook.isActive) {
+                notebook.spineAccentColor.copy(alpha = 0.15f)
+              } else {
+                palette.textSecondary.copy(alpha = 0.12f)
+              },
+              border = BorderStroke(
+                width = 0.8.dp,
+                color = if (notebook.isActive) {
+                  notebook.spineAccentColor.copy(alpha = 0.45f)
+                } else {
+                  palette.textSecondary.copy(alpha = 0.25f)
+                }
+              )
+            ) {
+              Text(
+                text = if (customFormulasCount > 0) {
+                  "${notebook.pageBadge} + $customFormulasCount CUSTOM"
+                } else {
+                  notebook.pageBadge
+                },
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 9.5.sp,
+                  fontWeight = FontWeight.ExtraBold,
+                  letterSpacing = 0.6.sp
+                ),
+                color = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary,
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+              )
+            }
+          }
+
+          // Subject Title & Full Title
+          Text(
+            text = notebook.title,
             style = MaterialTheme.typography.titleMedium.copy(
-              fontSize = metrics.scaledSp(17),
-              fontWeight = FontWeight.Bold
+              fontSize = metrics.scaledSp(19),
+              fontWeight = FontWeight.ExtraBold
             ),
             color = palette.textPrimary
           )
 
-          LiquidGlassContainer(
-            shape = RoundedCornerShape(16.dp),
-            fillAlpha = 0.75f,
-            elevation = 2.dp,
-            modifier = Modifier.fillMaxWidth()
-          ) {
+          if (notebook.fullTitle.isNotEmpty() && notebook.fullTitle != notebook.title) {
             Text(
-              text = formula.equationDisplay,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = metrics.scaledSp(15),
-                fontWeight = FontWeight.ExtraBold
+              text = notebook.fullTitle,
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Bold
               ),
-              color = palette.accentIndigo,
-              modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+              color = notebook.spineAccentColor
             )
           }
 
+          // Subject Description / Subtitle
           Text(
-            text = formula.description,
+            text = notebook.subtitle,
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12),
-              lineHeight = metrics.scaledSp(17),
-              fontWeight = FontWeight.Medium
+              fontWeight = FontWeight.Medium,
+              lineHeight = 16.sp
             ),
-            color = palette.textSecondary
+            color = if (notebook.isActive) palette.textPrimary.copy(alpha = 0.80f) else palette.textSecondary
           )
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // Right Binder Open Affordance
+        Surface(
+          shape = CircleShape,
+          color = if (notebook.isActive) {
+            notebook.spineAccentColor.copy(alpha = 0.14f)
+          } else {
+            palette.nestedCardFill
+          },
+          border = BorderStroke(
+            width = 1.dp,
+            color = if (notebook.isActive) {
+              notebook.spineAccentColor.copy(alpha = 0.35f)
+            } else {
+              palette.textSecondary.copy(alpha = 0.18f)
+            }
+          ),
+          modifier = Modifier.size(38.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = if (notebook.isActive) {
+                Icons.Default.Description
+              } else {
+                Icons.Outlined.Lock
+              },
+              contentDescription = if (notebook.isActive) "Open ${notebook.title}" else "Coming Soon",
+              tint = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary.copy(alpha = 0.65f),
+              modifier = Modifier.size(18.dp)
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+private data class AlgebraHandbookRuleItem(
+  val number: Int,
+  val title: String,
+  val formulaOrStatement: String,
+  val note: String = "",
+  val subItems: List<String> = emptyList()
+)
+
+private data class AlgebraHandbookSection(
+  val sectionTitle: String,
+  val items: List<AlgebraHandbookRuleItem>
+)
+
+private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listOf(
+  AlgebraHandbookSection(
+    sectionTitle = "Basic Laws of Natural Numbers",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Closure Law of Addition", "a + b ∈ ℕ"),
+      AlgebraHandbookRuleItem(2, "Closure Law of Multiplication", "a · b ∈ ℕ"),
+      AlgebraHandbookRuleItem(3, "Commutative Law of Addition", "a + b = b + a"),
+      AlgebraHandbookRuleItem(4, "Commutative Law of Multiplication", "a · b = b · a"),
+      AlgebraHandbookRuleItem(5, "Associative Law of Addition", "(a + b) + c = a + (b + c)"),
+      AlgebraHandbookRuleItem(6, "Associative Law of Multiplication", "(a · b) · c = a · (b · c)"),
+      AlgebraHandbookRuleItem(7, "Distributive Law of Multiplication over Addition", "a(b + c) = ab + ac"),
+      AlgebraHandbookRuleItem(8, "Identity Law of Addition", "a + 0 = a", "(0 is additive identity)"),
+      AlgebraHandbookRuleItem(9, "Identity Law of Multiplication", "a · 1 = a", "(1 is multiplicative identity)"),
+      AlgebraHandbookRuleItem(10, "Inverse Law of Addition", "a + (-a) = 0"),
+      AlgebraHandbookRuleItem(11, "Inverse Law of Multiplication", "a · (1/a) = 1", "(where a ≠ 0)")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Basic Laws of Equality & Inequality",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Reflexive Property", "a = a"),
+      AlgebraHandbookRuleItem(2, "Symmetric Property", "If a = b, then b = a"),
+      AlgebraHandbookRuleItem(3, "Transitive Property", "If a = b and b = c, then a = c"),
+      AlgebraHandbookRuleItem(4, "Addition / Subtraction Property", "If a = b, then a ± c = b ± c"),
+      AlgebraHandbookRuleItem(5, "Multiplication / Division Property", "If a = b, then ac = bc and a/c = b/c", "(c ≠ 0)"),
+      AlgebraHandbookRuleItem(6, "Substitution Property", "If a = b, a may be substituted for b in any expression"),
+      AlgebraHandbookRuleItem(7, "Trichotomy Property", "Exactly one is true: a < b, a = b, or a > b")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Theorems on Inequalities",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Sense Preservation", "If a > b and c > 0, then ac > bc and a/c > b/c"),
+      AlgebraHandbookRuleItem(2, "Sense Reversal", "If a > b and c < 0, then ac < bc and a/c < b/c"),
+      AlgebraHandbookRuleItem(3, "Addition of Inequalities", "If a > b and c > d, then (a + c) > (b + d)"),
+      AlgebraHandbookRuleItem(4, "Transitivity of Inequalities", "If a > b and b > c, then a > c"),
+      AlgebraHandbookRuleItem(5, "Reciprocal Reversal", "If a > b > 0, then 1/a < 1/b"),
+      AlgebraHandbookRuleItem(6, "Non-Negative Square", "For any real number a, a² ≥ 0"),
+      AlgebraHandbookRuleItem(7, "Absolute Value Inequality", "|x| < k  ⇔  -k < x < k ;   |x| > k  ⇔  x < -k or x > k", "(k > 0)")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Laws of Exponents",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Product Rule", "aᵐ · aⁿ = aᵐ⁺ⁿ"),
+      AlgebraHandbookRuleItem(2, "Quotient Rule", "aᵐ / aⁿ = aᵐ⁻ⁿ", "(a ≠ 0)"),
+      AlgebraHandbookRuleItem(3, "Power of a Power Rule", "(aᵐ)ⁿ = aᵐⁿ"),
+      AlgebraHandbookRuleItem(4, "Power of a Product Rule", "(ab)ⁿ = aⁿbⁿ"),
+      AlgebraHandbookRuleItem(5, "Power of a Quotient Rule", "(a / b)ⁿ = aⁿ / bⁿ", "(b ≠ 0)"),
+      AlgebraHandbookRuleItem(6, "Zero Exponent Rule", "a⁰ = 1", "(a ≠ 0)"),
+      AlgebraHandbookRuleItem(7, "Negative Exponent Rule", "a⁻ⁿ = 1 / aⁿ and (a / b)⁻ⁿ = (b / a)ⁿ"),
+      AlgebraHandbookRuleItem(8, "Fractional Exponent Rule", "aᵐ/ⁿ = ⁿ√(aᵐ) = (ⁿ√a)ᵐ")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Properties of Radicals",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Equivalence & Root-Power Identity", "ⁿ√a = b ⇔ bⁿ = a ;   (ⁿ√a)ⁿ = a"),
+      AlgebraHandbookRuleItem(2, "Product of Radicals", "ⁿ√a · ⁿ√b = ⁿ√(ab)"),
+      AlgebraHandbookRuleItem(3, "Quotient of Radicals", "ⁿ√a / ⁿ√b = ⁿ√(a / b)", "(b ≠ 0)"),
+      AlgebraHandbookRuleItem(4, "Nested / Index Multiplication", "ᵐ√(ⁿ√a) = ᵐⁿ√a"),
+      AlgebraHandbookRuleItem(5, "Index Cancellation (Even vs. Odd)", "ⁿ√(aⁿ) = |a| (if n is even) ;   ⁿ√(aⁿ) = a (if n is odd)"),
+      AlgebraHandbookRuleItem(6, "Conjugate Rationalization", "1 / (√a ± √b) = (√a ∓ √b) / (a - b)")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Properties of Logarithms",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Fundamental Definition", "y = log_b(x)  ⇔  bʸ = x", "(b > 0, b ≠ 1, x > 0)"),
+      AlgebraHandbookRuleItem(2, "Natural & Common Logarithms", "ln(x) = log_e(x) ;   log(x) = log₁₀(x)"),
+      AlgebraHandbookRuleItem(3, "Product Property", "log_b(MN) = log_b(M) + log_b(N)"),
+      AlgebraHandbookRuleItem(4, "Quotient Property", "log_b(M / N) = log_b(M) - log_b(N)"),
+      AlgebraHandbookRuleItem(5, "Power Property", "log_b(Mᵏ) = k · log_b(M)"),
+      AlgebraHandbookRuleItem(6, "Identity & Base Properties", "log_b(1) = 0 ;   log_b(b) = 1 ;   log_b(bˣ) = x ;   b^(log_b x) = x"),
+      AlgebraHandbookRuleItem(7, "Change of Base & Reciprocal", "log_b(M) = ln(M) / ln(b) = log₁₀(M) / log₁₀(b) ;   log_b(a) = 1 / log_a(b)")
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Polynomials & Factoring",
+    items = listOf(
+      AlgebraHandbookRuleItem(1, "Standard Polynomial Form", "P(x) = aₙxⁿ + aₙ₋₁xⁿ⁻¹ + ... + a₁x + a₀"),
+      AlgebraHandbookRuleItem(2, "Difference of Two Squares", "a² - b² = (a - b)(a + b)"),
+      AlgebraHandbookRuleItem(3, "Square of a Binomial", "(a ± b)² = a² ± 2ab + b²"),
+      AlgebraHandbookRuleItem(4, "Cube of a Binomial", "(a ± b)³ = a³ ± 3a²b + 3ab² ± b³"),
+      AlgebraHandbookRuleItem(5, "Sum & Difference of Two Cubes", "a³ ± b³ = (a ± b)(a² ∓ ab + b²)"),
+      AlgebraHandbookRuleItem(6, "Square of a Trinomial", "(a + b + c)² = a² + b² + c² + 2(ab + bc + ca)"),
+      AlgebraHandbookRuleItem(7, "Remainder & Factor Theorems", "Remainder R = P(c) when divided by (x - c) ;   (x - c) is a factor ⇔ P(c) = 0"),
+      AlgebraHandbookRuleItem(
+        number = 8,
+        title = "Quadratic Formula & Discriminant Analysis (ax² + bx + c = 0)",
+        formulaOrStatement = "x = (-b ± √(b² - 4ac)) / (2a)",
+        subItems = listOf(
+          "Discriminant: D = b² - 4ac",
+          "Roots Nature: D > 0 (Real & Unequal), D = 0 (Real & Equal), D < 0 (Complex Conjugates)",
+          "Vieta's Relations: r₁ + r₂ = -b/a ;   r₁ · r₂ = c/a"
+        )
+      )
+    )
+  )
+)
+
+@Composable
+private fun AlgebraA4PaperViewer(
+  metrics: ResponsiveMetrics,
+  lazyListState: androidx.compose.foundation.lazy.LazyListState,
+  highlightedSectionIndex: Int?,
+  searchQuery: String,
+  customFormulas: List<ReferenceFormulaCardData>,
+  starredIds: Set<String>,
+  onToggleStar: (String) -> Unit,
+  onBackToShelf: () -> Unit,
+  onOpenToc: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val palette = currentGlassPalette()
+  val allSections = remember { buildAlgebraHandbookSections() }
+
+  val filteredSections = remember(allSections, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      allSections.mapIndexed { idx, sec -> idx to sec }
+    } else {
+      allSections.mapIndexedNotNull { idx, section ->
+        if (section.sectionTitle.contains(searchQuery, ignoreCase = true)) {
+          idx to section
+        } else {
+          val matchingItems = section.items.filter { item ->
+            item.title.contains(searchQuery, ignoreCase = true) ||
+              item.formulaOrStatement.contains(searchQuery, ignoreCase = true) ||
+              item.note.contains(searchQuery, ignoreCase = true) ||
+              item.subItems.any { it.contains(searchQuery, ignoreCase = true) }
+          }
+          if (matchingItems.isNotEmpty()) {
+            idx to section.copy(items = matchingItems)
+          } else {
+            null
+          }
         }
       }
     }
   }
 
-  // Quick-Solve Translucent Modal Sheet
-  if (activeFormula != null) {
-    FormulaQuickSolveModalSheet(
-      formula = activeFormula,
-      metrics = metrics,
-      onDismiss = { activeQuickSolveFormulaId = null }
-    )
+  // Crisp paper background (Color(0xFFFAFAFC) in Light Mode, deep slate paper Color(0xFF1E222B) in Dark Mode)
+  val a4PaperColor = if (palette.isDark) Color(0xFF1E222B) else Color(0xFFFAFAFC)
+  val a4BorderColor = if (palette.isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFCBD5E1)
+  val a4HeadingColor = if (palette.isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+  val a4SubtleTextColor = if (palette.isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+
+  // Soft tinted glass fill & 1.dp Color(0xFF6366F1).copy(alpha = 0.25f) hairline border for formula callouts
+  val mathCalloutBg = if (palette.isDark) {
+    palette.cardSurface.copy(alpha = 0.9f)
+  } else {
+    Color(0xFFEEF2FF).copy(alpha = 0.92f)
+  }
+  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.25f)
+  // High-contrast primary accent (deep indigo/violet in light mode, bright electric violet in dark mode)
+  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+
+  LazyColumn(
+    state = lazyListState,
+    contentPadding = PaddingValues(bottom = 120.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    modifier = modifier
+      .fillMaxSize()
+      .testTag("algebra_a4_paper_sheet")
+  ) {
+    // ====================================================================
+    // ITEM 0: Breadcrumb Bar + A4 Running Header & Title ("ALGEBRA")
+    // ====================================================================
+    item(key = "a4_header_item_0") {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        // Subtle Breadcrumb Bar to return to MSTE Sub-Topics Shelf + Quick TOC Chip
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Surface(
+            onClick = onBackToShelf,
+            shape = RoundedCornerShape(10.dp),
+            color = palette.cardFill,
+            border = palette.glassBorder,
+            modifier = Modifier.testTag("back_to_notebook_shelf_chip")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                contentDescription = "Back to MSTE Library",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(16.dp)
+              )
+              Text(
+                text = "MSTE Library",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.5.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+
+          Surface(
+            onClick = onOpenToc,
+            shape = RoundedCornerShape(10.dp),
+            color = palette.cardFill,
+            border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.30f))
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.ViewList,
+                contentDescription = "Table of Contents",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(14.dp)
+              )
+              Text(
+                text = "MSTE / CE-01 • TOC",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = 0.8.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+        }
+
+        // Top of the A4 Paper Sheet
+        Surface(
+          shape = if (filteredSections.isEmpty()) {
+            RoundedCornerShape(6.dp)
+          } else {
+            RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
+          },
+          color = a4PaperColor,
+          border = BorderStroke(1.dp, a4BorderColor),
+          shadowElevation = 4.dp,
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER I: ALGEBRA",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.2.sp
+              ),
+              color = palette.accentIndigo
+            )
+
+            HorizontalDivider(
+              thickness = 1.5.dp,
+              color = palette.accentIndigo.copy(alpha = 0.45f)
+            )
+
+            Text(
+              text = "ALGEBRA",
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+              ),
+              color = a4HeadingColor
+            )
+
+            if (filteredSections.isEmpty()) {
+              Text(
+                text = "No Algebra laws match \"$searchQuery\".",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = a4SubtleTextColor,
+                modifier = Modifier.padding(vertical = 16.dp)
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // ====================================================================
+    // ITEMS 1..7: Each Algebra Section + All Numbered Bold Formula Callouts
+    // ====================================================================
+    items(
+      count = filteredSections.size,
+      key = { idx -> "a4_section_item_${filteredSections[idx].first + 1}" }
+    ) { listIdx ->
+      val (originalSectionIndex, section) = filteredSections[listIdx]
+      val isLastSection = listIdx == filteredSections.lastIndex
+      val isHighlighted = highlightedSectionIndex == originalSectionIndex
+
+      val sectionHeaderBgAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.24f else 0f,
+        animationSpec = tween(durationMillis = 420),
+        label = "toc_arrival_glow_alpha"
+      )
+      val sectionHeaderBorderAlpha by animateFloatAsState(
+        targetValue = if (isHighlighted) 0.75f else 0f,
+        animationSpec = tween(durationMillis = 420),
+        label = "toc_arrival_border_alpha"
+      )
+
+      Surface(
+        shape = if (isLastSection) {
+          RoundedCornerShape(bottomStart = 6.dp, bottomEnd = 6.dp)
+        } else {
+          RoundedCornerShape(0.dp)
+        },
+        color = a4PaperColor,
+        border = BorderStroke(1.dp, a4BorderColor),
+        shadowElevation = 4.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .testTag("algebra_section_${originalSectionIndex + 1}")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+              start = 22.dp,
+              end = 22.dp,
+              top = 14.dp,
+              bottom = if (isLastSection) 24.dp else 14.dp
+            ),
+          verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+          // Section Bullet Heading with Subtle Arrival Highlight Glow
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(10.dp))
+              .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
+              .border(
+                width = 1.dp,
+                color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
+                shape = RoundedCornerShape(10.dp)
+              )
+              .padding(
+                horizontal = if (isHighlighted) 10.dp else 0.dp,
+                vertical = if (isHighlighted) 6.dp else 2.dp
+              ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "•",
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 19.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.accentIndigo
+            )
+            Text(
+              text = section.sectionTitle,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 16.5.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = a4HeadingColor
+            )
+          }
+
+          // Indented Highlighted Math Callout Blocks (1., 2., 3., ...)
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(start = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            section.items.forEach { rule ->
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                // Law Title with Number Prefix + Optional Note placed ABOVE the formula container
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Text(
+                    text = "${rule.number}. ${rule.title}",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontSize = 14.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = a4HeadingColor
+                  )
+                  if (rule.note.isNotEmpty()) {
+                    Text(
+                      text = rule.note,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = a4SubtleTextColor
+                    )
+                  }
+                }
+
+                // Elevated Rounded Formula Callout Capsule (8.dp radius, 12.dp horizontal / 8.dp vertical padding, 0.25f border)
+                Surface(
+                  shape = RoundedCornerShape(8.dp),
+                  color = mathCalloutBg,
+                  border = BorderStroke(1.dp, mathCalloutBorder),
+                  shadowElevation = 2.dp,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp)
+                ) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Text(
+                      text = rule.formulaOrStatement,
+                      style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontSize = 17.5.sp,
+                        lineHeight = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.2.sp
+                      ),
+                      color = mathTextColor
+                    )
+
+                    if (rule.subItems.isNotEmpty()) {
+                      HorizontalDivider(
+                        thickness = 1.dp,
+                        color = mathCalloutBorder
+                      )
+                      Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                      ) {
+                        rule.subItems.forEach { subLine ->
+                          Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                          ) {
+                            Text(
+                              text = "•",
+                              style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                              ),
+                              color = palette.accentIndigo
+                            )
+                            Text(
+                              text = subLine,
+                              style = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontSize = 15.5.sp,
+                                lineHeight = 22.sp,
+                                fontWeight = FontWeight.Bold
+                              ),
+                              color = mathTextColor,
+                              modifier = Modifier.weight(1f)
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (!isLastSection) {
+            HorizontalDivider(
+              thickness = 0.8.dp,
+              color = a4BorderColor.copy(alpha = 0.55f),
+              modifier = Modifier.padding(top = 6.dp)
+            )
+          }
+        }
+      }
+    }
+
+    // Custom scholar formulas below the A4 paper sheet
+    if (customFormulas.isNotEmpty()) {
+      item(key = "a4_custom_formulas_footer") {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 680.dp)
+            .padding(top = 16.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          customFormulas.forEach { formula ->
+            InteractiveReferenceFormulaCard(
+              formula = formula,
+              isStarred = starredIds.contains(formula.id),
+              onToggleStar = { onToggleStar(formula.id) },
+              metrics = metrics
+            )
+          }
+        }
+      }
+    }
   }
 }
 
 @Composable
-private fun FormulaQuickSolveModalSheet(
-  formula: CeFormulaEntry,
-  metrics: ResponsiveMetrics,
-  onDismiss: () -> Unit
+private fun InteractiveReferenceFormulaCard(
+  formula: ReferenceFormulaCardData,
+  isStarred: Boolean,
+  onToggleStar: () -> Unit,
+  metrics: ResponsiveMetrics
 ) {
   val palette = currentGlassPalette()
-  var param1Text by rememberSaveable(formula.id) { mutableStateOf(formula.param1Default) }
-  var param2Text by rememberSaveable(formula.id) { mutableStateOf(formula.param2Default) }
-  var param3Text by rememberSaveable(formula.id) { mutableStateOf(formula.param3Default) }
+  var isExpanded by rememberSaveable(formula.id) { mutableStateOf(false) }
 
-  val p1 = param1Text.toDoubleOrNull() ?: 0.0
-  val p2 = param2Text.toDoubleOrNull() ?: 0.0
-  val p3 = param3Text.toDoubleOrNull() ?: 0.0
-  val computedResult = remember(formula, p1, p2, p3) {
-    formula.compute(p1, p2, p3)
+  LiquidGlassCard(
+    onClick = { isExpanded = !isExpanded },
+    shape = RoundedCornerShape(26.dp),
+    elevation = 8.dp,
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("formula_card_${formula.id}")
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(metrics.scaledDp(18)),
+      verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      // Top Tag + Star Favorite Toggle Icon
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Box(
+            modifier = Modifier
+              .clip(CircleShape)
+              .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
+              .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
+              .padding(horizontal = 10.dp, vertical = 4.dp)
+          ) {
+            Text(
+              text = formula.mathSubTab.uppercase(Locale.ROOT),
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = metrics.scaledSp(10),
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.accentIndigo
+            )
+          }
+
+          if (formula.isCustom) {
+            Box(
+              modifier = Modifier
+                .clip(CircleShape)
+                .background(Color(0xFF10B981).copy(alpha = 0.16f))
+                .border(BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.40f)), CircleShape)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+              Text(
+                text = "CUSTOM",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 9.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color(0xFF10B981)
+              )
+            }
+          }
+        }
+
+        IconButton(
+          onClick = onToggleStar,
+          modifier = Modifier
+            .size(40.dp)
+            .testTag("star_formula_button_${formula.id}")
+        ) {
+          Icon(
+            imageVector = if (isStarred) Icons.Filled.Star else Icons.Outlined.StarBorder,
+            contentDescription = if (isStarred) "Remove from Starred" else "Star formula",
+            tint = if (isStarred) Color(0xFFFBBF24) else palette.textSecondary,
+            modifier = Modifier.size(22.dp)
+          )
+        }
+      }
+
+      // Formula Title & Summary Tag
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+          text = formula.title,
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontSize = metrics.scaledSp(17),
+            fontWeight = FontWeight.ExtraBold
+          ),
+          color = palette.textPrimary
+        )
+        Text(
+          text = formula.summaryTag,
+          style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.Medium
+          ),
+          color = palette.textSecondary
+        )
+      }
+
+      // High-Contrast Equation Banner (JetBrainsMonoFamily)
+      LiquidGlassContainer(
+        shape = RoundedCornerShape(16.dp),
+        fillAlpha = 0.82f,
+        elevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Text(
+          text = formula.equationBanner,
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = metrics.scaledSp(14),
+            lineHeight = metrics.scaledSp(20),
+            fontWeight = FontWeight.ExtraBold
+          ),
+          color = palette.accentIndigo,
+          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+        )
+      }
+
+      // Expandable "Where:" Variable Breakdown Header (clean, without cluttered side buttons)
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = if (isExpanded) "Hide \"Where:\" Variable Breakdown" else "Tap for \"Where:\" Variable Breakdown",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.accentIndigo
+        )
+        Icon(
+          imageVector = if (isExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+          contentDescription = null,
+          tint = palette.accentIndigo,
+          modifier = Modifier.size(18.dp)
+        )
+      }
+
+      // Collapsible "Where:" Variable Breakdown Section
+      AnimatedVisibility(
+        visible = isExpanded,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut()
+      ) {
+        Surface(
+          shape = RoundedCornerShape(16.dp),
+          color = palette.nestedCardFill.copy(alpha = 0.72f),
+          border = palette.nestedBorder,
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "WHERE (PHYSICAL MEANING & METRIC UNITS):",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.8.sp
+              ),
+              color = palette.accentIndigo
+            )
+            formula.variableNotes.forEach { note ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top
+              ) {
+                Text(
+                  text = note.symbol,
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp
+                  ),
+                  color = palette.textPrimary,
+                  modifier = Modifier.widthIn(min = 68.dp)
+                )
+                Text(
+                  text = "${note.meaning} (${note.unit})",
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Medium
+                  ),
+                  color = palette.textSecondary,
+                  modifier = Modifier.weight(1f)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
   }
+}
+
+@Composable
+private fun GeometryInteractiveShapeViewerSection(
+  shapes: List<GeometryShapeEntry>,
+  selectedShapeId: String,
+  onSelectShape: (String) -> Unit,
+  onSendShapeToFlashcards: (GeometryShapeEntry) -> Unit,
+  metrics: ResponsiveMetrics
+) {
+  val palette = currentGlassPalette()
+  val selectedShape = shapes.firstOrNull { it.id == selectedShapeId } ?: shapes.first()
+
+  Column(
+    modifier = Modifier.fillMaxWidth(),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    Text(
+      text = "INTERACTIVE VISUAL SHAPE VIEWER (TAP A SHAPE TO INSPECT)",
+      style = MaterialTheme.typography.labelSmall.copy(
+        fontFamily = JetBrainsMonoFamily,
+        fontSize = 10.5.sp,
+        fontWeight = FontWeight.ExtraBold,
+        letterSpacing = 0.9.sp
+      ),
+      color = palette.textSecondary
+    )
+
+    // 3x3 Grid of 9 Shape Selector Cards
+    val rows = remember(shapes) { shapes.chunked(3) }
+    rows.forEach { rowShapes ->
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        rowShapes.forEach { shape ->
+          val isSelected = shape.id == selectedShape.id
+          Surface(
+            onClick = { onSelectShape(shape.id) },
+            shape = RoundedCornerShape(20.dp),
+            color = if (isSelected) {
+              Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.30f else 0.16f)
+            } else {
+              palette.cardSurface.copy(alpha = 0.82f)
+            },
+            border = BorderStroke(
+              width = if (isSelected) 1.6.dp else 1.dp,
+              color = if (isSelected) Color(0xFF6366F1) else Color.White.copy(alpha = 0.25f)
+            ),
+            shadowElevation = if (isSelected) 10.dp else 4.dp,
+            modifier = Modifier
+              .weight(1f)
+              .testTag("geometry_shape_card_${shape.id}")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              GeometryShapeCanvasOutline(
+                shapeId = shape.id,
+                strokeColor = if (isSelected) palette.accentIndigo else palette.textPrimary,
+                accentColor = palette.accentIndigo,
+                modifier = Modifier.size(46.dp)
+              )
+              Text(
+                text = shape.title,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = 11.5.sp,
+                  fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                ),
+                color = if (isSelected) palette.accentIndigo else palette.textPrimary,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // Expanded Interactive Inspector Sheet for the selected shape
+    AnimatedContent(
+      targetState = selectedShape,
+      transitionSpec = {
+        (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.96f))
+          .togetherWith(fadeOut(animationSpec = tween(150)))
+      },
+      label = "geometryInspectorSheetTransition"
+    ) { activeShape ->
+      GeometryInspectorSheetCard(
+        shape = activeShape,
+        metrics = metrics,
+        onSendToFlashcards = { onSendShapeToFlashcards(activeShape) }
+      )
+    }
+  }
+}
+
+@Composable
+private fun GeometryInspectorSheetCard(
+  shape: GeometryShapeEntry,
+  metrics: ResponsiveMetrics,
+  onSendToFlashcards: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  LiquidGlassCard(
+    shape = RoundedCornerShape(26.dp),
+    elevation = 10.dp,
+    borderStroke = BorderStroke(1.4.dp, Color(0xFF6366F1).copy(alpha = 0.55f)),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("geometry_inspector_sheet_${shape.id}")
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(metrics.scaledDp(18)),
+      verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.weight(1f)
+        ) {
+          Box(
+            modifier = Modifier
+              .size(56.dp)
+              .clip(RoundedCornerShape(16.dp))
+              .background(Color(0xFF6366F1).copy(alpha = 0.14f))
+              .border(BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f)), RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center
+          ) {
+            GeometryShapeCanvasOutline(
+              shapeId = shape.id,
+              strokeColor = palette.accentIndigo,
+              accentColor = Color(0xFF06B6D4),
+              modifier = Modifier.size(38.dp)
+            )
+          }
+
+          Column {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Text(
+                text = shape.title,
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(19),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary
+              )
+              Box(
+                modifier = Modifier
+                  .clip(CircleShape)
+                  .background(
+                    if (shape.is3DSolid) Color(0xFF8B5CF6).copy(alpha = 0.18f)
+                    else Color(0xFF06B6D4).copy(alpha = 0.18f)
+                  )
+                  .padding(horizontal = 8.dp, vertical = 2.dp)
+              ) {
+                Text(
+                  text = if (shape.is3DSolid) "3D SOLID" else "2D SECTION",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = if (shape.is3DSolid) Color(0xFF8B5CF6) else Color(0xFF06B6D4)
+                )
+              }
+            }
+            Text(
+              text = shape.subtitle,
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Medium
+              ),
+              color = palette.textSecondary
+            )
+          }
+        }
+      }
+
+      // Inspector Property Rows: Area, Perimeter/Circumference, Volume & Surface Area (3D), Centroid, Moment of Inertia
+      GeometryPropertyBannerRow(
+        label = "AREA (A)",
+        formula = shape.areaFormula
+      )
+      GeometryPropertyBannerRow(
+        label = shape.perimeterOrCircumferenceLabel.uppercase(Locale.ROOT),
+        formula = shape.perimeterOrCircumferenceFormula
+      )
+      if (shape.volumeFormula != null) {
+        GeometryPropertyBannerRow(
+          label = "VOLUME (V)",
+          formula = shape.volumeFormula
+        )
+      }
+      if (shape.surfaceAreaFormula != null) {
+        GeometryPropertyBannerRow(
+          label = "SURFACE AREA (A_s)",
+          formula = shape.surfaceAreaFormula
+        )
+      }
+      GeometryPropertyBannerRow(
+        label = "CENTROID LOCATION (ȳ FROM BASE)",
+        formula = shape.centroidFromBase
+      )
+      GeometryPropertyBannerRow(
+        label = "MOMENT OF INERTIA (I_x, I_y)",
+        formula = "${shape.momentOfInertiaIx}\n${shape.momentOfInertiaIy}"
+      )
+
+      Text(
+        text = "Where: ${shape.variableLegend}",
+        style = MaterialTheme.typography.bodySmall.copy(
+          fontSize = 11.5.sp,
+          fontWeight = FontWeight.Medium
+        ),
+        color = palette.textSecondary
+      )
+
+      // "Send to Flashcards" button
+      Button(
+        onClick = onSendToFlashcards,
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+          containerColor = Color(0xFF6366F1),
+          contentColor = Color.White
+        ),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("send_shape_to_flashcards_${shape.id}")
+      ) {
+        Icon(
+          imageVector = Icons.Filled.AutoAwesome,
+          contentDescription = null,
+          tint = Color.White,
+          modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+          text = "Send to Flashcards",
+          style = MaterialTheme.typography.labelLarge.copy(
+            fontSize = 13.sp,
+            fontWeight = FontWeight.ExtraBold
+          ),
+          color = Color.White
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun GeometryPropertyBannerRow(
+  label: String,
+  formula: String
+) {
+  val palette = currentGlassPalette()
+  Surface(
+    shape = RoundedCornerShape(14.dp),
+    color = palette.nestedCardFill.copy(alpha = 0.78f),
+    border = palette.nestedBorder,
+    modifier = Modifier.fillMaxWidth()
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 12.dp, vertical = 9.dp),
+      verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+      Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 9.5.sp,
+          fontWeight = FontWeight.ExtraBold,
+          letterSpacing = 0.7.sp
+        ),
+        color = palette.textSecondary
+      )
+      Text(
+        text = formula,
+        style = MaterialTheme.typography.bodyMedium.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 12.5.sp,
+          lineHeight = 18.sp,
+          fontWeight = FontWeight.Bold
+        ),
+        color = palette.accentIndigo
+      )
+    }
+  }
+}
+
+@Composable
+private fun GeometryShapeCanvasOutline(
+  shapeId: String,
+  strokeColor: Color,
+  accentColor: Color,
+  modifier: Modifier = Modifier
+) {
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    val stroke = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+    val dashedAccent = Stroke(width = 1.3.dp.toPx(), cap = StrokeCap.Round)
+
+    when (shapeId) {
+      "circle" -> {
+        val r = minOf(w, h) * 0.38f
+        val centerPt = Offset(w / 2f, h / 2f)
+        drawCircle(color = strokeColor, radius = r, center = centerPt, style = stroke)
+        drawLine(
+          color = accentColor.copy(alpha = 0.75f),
+          start = centerPt,
+          end = Offset(centerPt.x + r, centerPt.y),
+          strokeWidth = 1.5.dp.toPx()
+        )
+      }
+      "right_triangle" -> {
+        val path = Path().apply {
+          moveTo(w * 0.18f, h * 0.82f)
+          lineTo(w * 0.84f, h * 0.82f)
+          lineTo(w * 0.18f, h * 0.18f)
+          close()
+        }
+        drawPath(path = path, color = strokeColor, style = stroke)
+        // Right-angle square marker
+        val sq = w * 0.12f
+        drawLine(accentColor, Offset(w * 0.18f + sq, h * 0.82f), Offset(w * 0.18f + sq, h * 0.82f - sq), 1.4.dp.toPx())
+        drawLine(accentColor, Offset(w * 0.18f, h * 0.82f - sq), Offset(w * 0.18f + sq, h * 0.82f - sq), 1.4.dp.toPx())
+      }
+      "isosceles_triangle" -> {
+        val path = Path().apply {
+          moveTo(w * 0.50f, h * 0.16f)
+          lineTo(w * 0.86f, h * 0.82f)
+          lineTo(w * 0.14f, h * 0.82f)
+          close()
+        }
+        drawPath(path = path, color = strokeColor, style = stroke)
+        drawLine(accentColor.copy(alpha = 0.7f), Offset(w * 0.50f, h * 0.16f), Offset(w * 0.50f, h * 0.82f), 1.3.dp.toPx())
+      }
+      "trapezoid" -> {
+        val path = Path().apply {
+          moveTo(w * 0.28f, h * 0.24f)
+          lineTo(w * 0.72f, h * 0.24f)
+          lineTo(w * 0.88f, h * 0.78f)
+          lineTo(w * 0.12f, h * 0.78f)
+          close()
+        }
+        drawPath(path = path, color = strokeColor, style = stroke)
+      }
+      "parallelogram" -> {
+        val path = Path().apply {
+          moveTo(w * 0.28f, h * 0.25f)
+          lineTo(w * 0.88f, h * 0.25f)
+          lineTo(w * 0.72f, h * 0.78f)
+          lineTo(w * 0.12f, h * 0.78f)
+          close()
+        }
+        drawPath(path = path, color = strokeColor, style = stroke)
+      }
+      "cylinder" -> {
+        val topRect = Size(w * 0.56f, h * 0.18f)
+        val leftX = w * 0.22f
+        val rightX = w * 0.78f
+        drawOval(
+          color = strokeColor,
+          topLeft = Offset(leftX, h * 0.14f),
+          size = topRect,
+          style = stroke
+        )
+        drawOval(
+          color = strokeColor,
+          topLeft = Offset(leftX, h * 0.68f),
+          size = topRect,
+          style = stroke
+        )
+        drawLine(strokeColor, Offset(leftX, h * 0.23f), Offset(leftX, h * 0.77f), stroke.width)
+        drawLine(strokeColor, Offset(rightX, h * 0.23f), Offset(rightX, h * 0.77f), stroke.width)
+      }
+      "sphere" -> {
+        val r = minOf(w, h) * 0.38f
+        val centerPt = Offset(w / 2f, h / 2f)
+        drawCircle(color = strokeColor, radius = r, center = centerPt, style = stroke)
+        drawOval(
+          color = accentColor.copy(alpha = 0.75f),
+          topLeft = Offset(centerPt.x - r, centerPt.y - r * 0.35f),
+          size = Size(r * 2f, r * 0.70f),
+          style = dashedAccent
+        )
+      }
+      "cone" -> {
+        val leftX = w * 0.20f
+        val rightX = w * 0.80f
+        val apex = Offset(w * 0.50f, h * 0.14f)
+        drawLine(strokeColor, apex, Offset(leftX, h * 0.75f), stroke.width)
+        drawLine(strokeColor, apex, Offset(rightX, h * 0.75f), stroke.width)
+        drawOval(
+          color = strokeColor,
+          topLeft = Offset(leftX, h * 0.66f),
+          size = Size(w * 0.60f, h * 0.18f),
+          style = stroke
+        )
+      }
+      "frustum" -> {
+        val topLeftX = w * 0.32f
+        val topRightX = w * 0.68f
+        val botLeftX = w * 0.16f
+        val botRightX = w * 0.84f
+        drawOval(
+          color = strokeColor,
+          topLeft = Offset(topLeftX, h * 0.18f),
+          size = Size(topRightX - topLeftX, h * 0.14f),
+          style = stroke
+        )
+        drawOval(
+          color = strokeColor,
+          topLeft = Offset(botLeftX, h * 0.68f),
+          size = Size(botRightX - botLeftX, h * 0.18f),
+          style = stroke
+        )
+        drawLine(strokeColor, Offset(topLeftX, h * 0.25f), Offset(botLeftX, h * 0.77f), stroke.width)
+        drawLine(strokeColor, Offset(topRightX, h * 0.25f), Offset(botRightX, h * 0.77f), stroke.width)
+      }
+    }
+  }
+}
+
+@Composable
+private fun VaultCategoryPlaceholderCard(
+  title: String,
+  subtitle: String,
+  badgeText: String,
+  isPsad: Boolean,
+  metrics: ResponsiveMetrics,
+  onRequestPriorityTopic: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  LiquidGlassCard(
+    shape = RoundedCornerShape(28.dp),
+    elevation = 10.dp,
+    borderStroke = BorderStroke(
+      width = 1.2.dp,
+      brush = Brush.linearGradient(
+        listOf(
+          Color.White.copy(alpha = 0.45f),
+          Color.White.copy(alpha = 0.10f)
+        )
+      )
+    ),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag(if (isPsad) "psad_placeholder_card" else "hpge_placeholder_card")
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(metrics.scaledDp(22)),
+      verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Box(
+          modifier = Modifier
+            .size(56.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+              brush = Brush.linearGradient(
+                if (isPsad) {
+                  listOf(Color(0xFF6366F1).copy(alpha = 0.25f), Color(0xFF8B5CF6).copy(alpha = 0.25f))
+                } else {
+                  listOf(Color(0xFF06B6D4).copy(alpha = 0.25f), Color(0xFF3B82F6).copy(alpha = 0.25f))
+                }
+              )
+            )
+            .border(
+              BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+              RoundedCornerShape(18.dp)
+            ),
+          contentAlignment = Alignment.Center
+        ) {
+          if (isPsad) {
+            Icon(
+              imageVector = Icons.Filled.Architecture,
+              contentDescription = title,
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(30.dp)
+            )
+          } else {
+            // Custom Water Wave + Soil Strata icon for HPGE
+            Canvas(modifier = Modifier.size(30.dp)) {
+              val w = size.width
+              val h = size.height
+              val wavePath = Path().apply {
+                moveTo(0f, h * 0.30f)
+                cubicTo(w * 0.25f, h * 0.10f, w * 0.35f, h * 0.50f, w * 0.55f, h * 0.30f)
+                cubicTo(w * 0.75f, h * 0.10f, w * 0.85f, h * 0.50f, w, h * 0.30f)
+              }
+              drawPath(wavePath, color = Color(0xFF06B6D4), style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
+              drawLine(Color(0xFF6366F1), Offset(0f, h * 0.62f), Offset(w, h * 0.62f), strokeWidth = 2.2.dp.toPx(), cap = StrokeCap.Round)
+              drawLine(Color(0xFF8B5CF6), Offset(w * 0.12f, h * 0.84f), Offset(w * 0.88f, h * 0.84f), strokeWidth = 2.2.dp.toPx(), cap = StrokeCap.Round)
+            }
+          }
+        }
+
+        Surface(
+          shape = CircleShape,
+          color = Color(0xFFF59E0B).copy(alpha = 0.16f),
+          border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f))
+        ) {
+          Text(
+            text = badgeText,
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = Color(0xFFF59E0B),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+          )
+        }
+      }
+
+      Text(
+        text = title,
+        style = MaterialTheme.typography.headlineSmall.copy(
+          fontSize = metrics.scaledSp(20),
+          fontWeight = FontWeight.ExtraBold
+        ),
+        color = palette.textPrimary
+      )
+
+      Text(
+        text = subtitle,
+        style = MaterialTheme.typography.bodyMedium.copy(
+          fontSize = metrics.scaledSp(14),
+          lineHeight = metrics.scaledSp(19),
+          fontWeight = FontWeight.Medium
+        ),
+        color = palette.textSecondary
+      )
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = "Plus (+) button below allows custom ${if (isPsad) "PSAD" else "HPGE"} entries",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = palette.textSecondary.copy(alpha = 0.8f),
+          modifier = Modifier.weight(1f)
+        )
+
+        OutlinedButton(
+          onClick = onRequestPriorityTopic,
+          shape = RoundedCornerShape(14.dp),
+          border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+          modifier = Modifier.testTag(if (isPsad) "psad_request_priority_button" else "hpge_request_priority_button")
+        ) {
+          Text(
+            text = "Request Priority Topic",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = 11.5.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.accentIndigo
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun AddCustomFormulaGlassDialog(
+  metrics: ResponsiveMetrics,
+  onDismiss: () -> Unit,
+  onSaveFormula: (
+    title: String,
+    categoryTab: String,
+    mathSubTab: String,
+    equation: String,
+    variableNotes: String
+  ) -> Unit
+) {
+  val palette = currentGlassPalette()
+  var title by rememberSaveable { mutableStateOf("") }
+  var selectedCategory by rememberSaveable { mutableStateOf("Mathematics") }
+  var selectedMathSubTab by rememberSaveable { mutableStateOf("Algebra") }
+  var equation by rememberSaveable { mutableStateOf("") }
+  var variableNotes by rememberSaveable { mutableStateOf("") }
+  var errorText by rememberSaveable { mutableStateOf<String?>(null) }
+
+  val categoryOptions = remember { listOf("Mathematics", "PSAD", "HPGE") }
+  val mathSubOptions = remember { listOf("Algebra", "Trigonometry", "Geometry", "Analytic Geometry") }
 
   Dialog(
     onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false)
   ) {
     Surface(
-      shape = RoundedCornerShape(30.dp),
+      shape = RoundedCornerShape(28.dp),
       color = palette.dialogSurface,
-      border = palette.glassBorder,
-      shadowElevation = 16.dp,
+      border = BorderStroke(
+        width = 1.dp,
+        brush = Brush.linearGradient(
+          listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.10f))
+        )
+      ),
+      shadowElevation = 20.dp,
       modifier = Modifier
         .fillMaxWidth(0.92f)
         .widthIn(max = 480.dp)
+        .testTag("add_custom_formula_dialog")
     ) {
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          .padding(horizontal = 22.dp, vertical = 18.dp),
+          .padding(horizontal = 22.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
       ) {
         Row(
@@ -8154,7 +12054,7 @@ private fun FormulaQuickSolveModalSheet(
         ) {
           Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = formula.title,
+              text = "Add Custom Formula",
               style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = metrics.scaledSp(19),
                 fontWeight = FontWeight.ExtraBold
@@ -8162,11 +12062,10 @@ private fun FormulaQuickSolveModalSheet(
               color = palette.textPrimary
             )
             Text(
-              text = formula.equationDisplay,
-              style = MaterialTheme.typography.labelLarge.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = metrics.scaledSp(13),
-                fontWeight = FontWeight.Bold
+              text = "Saved permanently to your Formula Vault JSON storage",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold
               ),
               color = palette.accentIndigo
             )
@@ -8175,80 +12074,174 @@ private fun FormulaQuickSolveModalSheet(
           IconButton(onClick = onDismiss) {
             Icon(
               imageVector = Icons.Filled.Close,
-              contentDescription = "Close quick solver",
+              contentDescription = "Close dialog",
               tint = palette.textSecondary
             )
           }
         }
 
         OutlinedTextField(
-          value = param1Text,
-          onValueChange = { param1Text = it },
-          label = { Text(formula.param1Label) },
+          value = title,
+          onValueChange = {
+            title = it
+            errorText = null
+          },
+          label = { Text("Formula Title") },
+          placeholder = { Text("e.g., Euler Buckling Stress") },
           singleLine = true,
           shape = RoundedCornerShape(16.dp),
           colors = sibilOutlinedTextFieldColors(),
-          modifier = Modifier.fillMaxWidth()
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_formula_title_input")
         )
 
-        OutlinedTextField(
-          value = param2Text,
-          onValueChange = { param2Text = it },
-          label = { Text(formula.param2Label) },
-          singleLine = true,
-          shape = RoundedCornerShape(16.dp),
-          colors = sibilOutlinedTextFieldColors(),
-          modifier = Modifier.fillMaxWidth()
+        Text(
+          text = "Category",
+          style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+          color = palette.textSecondary
         )
 
-        OutlinedTextField(
-          value = param3Text,
-          onValueChange = { param3Text = it },
-          label = { Text(formula.param3Label) },
-          singleLine = true,
-          shape = RoundedCornerShape(16.dp),
-          colors = sibilOutlinedTextFieldColors(),
-          modifier = Modifier.fillMaxWidth()
-        )
-
-        LiquidGlassContainer(
-          shape = RoundedCornerShape(22.dp),
-          fillAlpha = 0.78f,
-          elevation = 6.dp,
-          modifier = Modifier.fillMaxWidth()
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 18.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Column {
+          categoryOptions.forEach { cat ->
+            val isSelected = selectedCategory == cat
+            Surface(
+              onClick = { selectedCategory = cat },
+              shape = RoundedCornerShape(14.dp),
+              color = if (isSelected) Color(0xFF6366F1) else palette.nestedCardFill,
+              border = BorderStroke(
+                1.dp,
+                if (isSelected) Color.White.copy(alpha = 0.5f) else palette.textSecondary.copy(alpha = 0.25f)
+              ),
+              modifier = Modifier.weight(1f)
+            ) {
               Text(
-                text = "COMPUTED OUTPUT",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = JetBrainsMonoFamily,
-                  fontSize = metrics.scaledSp(10),
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = palette.textSecondary
-              )
-              Text(
-                text = String.format(Locale.US, "%.3f %s", computedResult, formula.outputUnit),
-                style = MaterialTheme.typography.headlineSmall.copy(
-                  fontFamily = JetBrainsMonoFamily,
-                  fontSize = metrics.scaledSp(22),
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = palette.accentIndigo,
-                modifier = Modifier.testTag("formula_quick_solve_output")
+                text = cat,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = if (isSelected) Color.White else palette.textPrimary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(vertical = 10.dp)
               )
             }
           }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (selectedCategory == "Mathematics") {
+          Text(
+            text = "Mathematics Topic",
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            color = palette.textSecondary
+          )
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            mathSubOptions.forEach { sub ->
+              val isSelected = selectedMathSubTab == sub
+              Surface(
+                onClick = { selectedMathSubTab = sub },
+                shape = RoundedCornerShape(12.dp),
+                color = if (isSelected) Color(0xFF6366F1).copy(alpha = 0.22f) else palette.nestedCardFill,
+                border = BorderStroke(
+                  1.dp,
+                  if (isSelected) Color(0xFF6366F1) else palette.textSecondary.copy(alpha = 0.22f)
+                )
+              ) {
+                Text(
+                  text = sub,
+                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                  color = if (isSelected) palette.accentIndigo else palette.textSecondary,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+              }
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = equation,
+          onValueChange = {
+            equation = it
+            errorText = null
+          },
+          label = { Text("Formula Equation") },
+          placeholder = { Text("e.g., σ_cr = π²E / (KL/r)²") },
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_formula_equation_input")
+        )
+
+        OutlinedTextField(
+          value = variableNotes,
+          onValueChange = { variableNotes = it },
+          label = { Text("Variable Notes (one per line, Symbol: Meaning)") },
+          placeholder = { Text("E: Modulus of elasticity (MPa)\nKL/r: Effective slenderness ratio") },
+          minLines = 3,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_formula_notes_input")
+        )
+
+        errorText?.let { err ->
+          Text(
+            text = err,
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+            color = Color(0xFFEF4444)
+          )
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          OutlinedButton(
+            onClick = onDismiss,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.weight(1f)
+          ) {
+            Text("Cancel")
+          }
+
+          Button(
+            onClick = {
+              if (title.trim().isEmpty()) {
+                errorText = "Please enter a formula title"
+              } else if (equation.trim().isEmpty()) {
+                errorText = "Please enter the formula equation"
+              } else {
+                onSaveFormula(
+                  title.trim(),
+                  selectedCategory,
+                  if (selectedCategory == "Mathematics") selectedMathSubTab else selectedCategory,
+                  equation.trim(),
+                  variableNotes.trim()
+                )
+              }
+            },
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color(0xFF6366F1),
+              contentColor = Color.White
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("save_custom_formula_button")
+          ) {
+            Text(
+              text = "Save Formula",
+              fontWeight = FontWeight.ExtraBold
+            )
+          }
+        }
       }
     }
   }
