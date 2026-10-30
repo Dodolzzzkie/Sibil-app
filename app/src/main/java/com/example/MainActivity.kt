@@ -8141,24 +8141,31 @@ fun getInstalledVersionName(context: Context): String {
 }
 
 /**
- * Parses a semantic version string (e.g., `"v1.0.4"`, `"1.0.4-beta"`) into integer components `[1, 0, 4]`.
+ * Extracts semantic version numbers (e.g., `[1, 0, 4]`) from any release tag, release title,
+ * or changelog string (such as `"v1.0.4"`, `"Debug APK Build #14 (v1.0.14)"`, or `"release-1.2"`).
+ */
+fun extractVersionNumbers(text: String): List<Int> {
+  val regex = Regex("""(\d+)\.(\d+)(?:\.(\d+))?""")
+  val match = regex.find(text) ?: return emptyList()
+  return match.groupValues.drop(1).filter { it.isNotEmpty() }.map { it.toInt() }
+}
+
+/**
+ * Parses a semantic version string into integer components `[1, 0, 4]` using [extractVersionNumbers].
  */
 fun parseVersionParts(raw: String): List<Int> {
-  return raw.trim()
-    .removePrefix("v").removePrefix("V")
-    .substringBefore("-")
-    .split(".")
-    .map { part -> part.filter { it.isDigit() }.toIntOrNull() ?: 0 }
+  return extractVersionNumbers(raw)
 }
 
 /**
  * Strict Semantic Version Comparison (`remoteTag` vs `localVersion`):
  * Returns `true` ONLY when `remoteTag` is strictly greater than `localVersion`.
- * If equal or older, NEVER flags as newer.
+ * If either string contains no recognizable version numbers, or if equal/older, NEVER flags as newer.
  */
 fun isStrictlyNewer(remoteTag: String, localVersion: String): Boolean {
-  val remote = parseVersionParts(remoteTag)
-  val local = parseVersionParts(localVersion)
+  val remote = extractVersionNumbers(remoteTag)
+  val local = extractVersionNumbers(localVersion)
+  if (remote.isEmpty() || local.isEmpty()) return false
   val maxLen = maxOf(remote.size, local.size)
   for (i in 0 until maxLen) {
     val r = remote.getOrElse(i) { 0 }
@@ -8207,8 +8214,9 @@ fun formatGitHubReleaseChangelogLines(rawBody: String?): List<String> {
 }
 
 /**
- * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest` on `Dispatchers.IO`
- * and evaluates `isStrictlyNewer(latestTag, localVersion)`.
+ * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest` on `Dispatchers.IO`,
+ * extracts the semantic version from `tag_name`, release `name` (title), or `body`, and evaluates
+ * `isStrictlyNewer(latestTag, localVersion)`.
  * Used by both the automatic startup check and the manual "Check for Updates" button in About Sibil.
  */
 suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult =
@@ -8238,21 +8246,36 @@ suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult 
       ).use { it.readText() }
 
       val root = JSONObject(responseBody)
-      val latestTag = root.optString("tag_name", "").trim()
+      val rawTag = root.optString("tag_name", "").trim()
+      val releaseTitle = root.optString("name", "").trim()
+      val rawBody = root.optString("body", "").trim()
       val localVersion = getInstalledVersionName(context).removePrefix("v").removePrefix("V")
-      if (latestTag.isBlank() || latestTag.equals("internal-keystore-vault", ignoreCase = true)) {
+      if ((rawTag.isBlank() && releaseTitle.isBlank()) || rawTag.equals("internal-keystore-vault", ignoreCase = true)) {
         return@withContext GitHubUpdateCheckResult.UpToDate(
           localVersion = localVersion,
           remoteTag = localVersion
         )
       }
 
+      // Extract semantic version numbers from tag_name first, then release title (name), then body
+      val extractedRemoteParts = extractVersionNumbers(rawTag)
+        .ifEmpty { extractVersionNumbers(releaseTitle) }
+        .ifEmpty { extractVersionNumbers(rawBody) }
+
+      if (extractedRemoteParts.isEmpty()) {
+        return@withContext GitHubUpdateCheckResult.UpToDate(
+          localVersion = localVersion,
+          remoteTag = localVersion
+        )
+      }
+
+      val latestTag = "v${extractedRemoteParts.joinToString(".")}"
+
       val prefs = context.applicationContext.getSharedPreferences(
         "sibil_app_offline_storage",
         Context.MODE_PRIVATE
       )
 
-      val rawBody = root.optString("body", "").trim()
       if (rawBody.isNotBlank()) {
         prefs.edit().putString("pending_release_notes", rawBody).apply()
       }
