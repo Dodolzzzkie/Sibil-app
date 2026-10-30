@@ -131,6 +131,15 @@ jobs:
             echo "No GEMINI_KEYS found. Continuing with empty pool."
           fi
 
+      - name: Ensure google-services.json is placed in app module
+        run: |
+          if [ -f "google-services.json" ] && [ ! -f "app/google-services.json" ]; then
+            cp -f "google-services.json" "app/google-services.json"
+            echo "Copied root google-services.json to app/google-services.json"
+          elif [ -f "app/google-services.json" ]; then
+            echo "Found app/google-services.json"
+          fi
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 

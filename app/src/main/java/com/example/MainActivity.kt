@@ -3802,7 +3802,7 @@ class TaskViewModel(
     }
 
     val savedUserName = manager.loadUserName()
-    if (firebaseUser != null) {
+    if (firebaseUser != null && firebaseUser.isEmailVerified) {
       val resolvedUser = extractUsernameFromFirebaseUser(
         user = firebaseUser,
         fallbackEmail = savedUserName.orEmpty()
@@ -4953,13 +4953,13 @@ fun CivilEngineeringProductivityApp(
     ) {
       // Cross-Device Persistence & Auto-Login:
       // 1. On app launch, check val user = FirebaseAuth.getInstance().currentUser.
-      // 2. If user != null OR isGuestMode == true: navigate straight to the Dashboard (bypassing Auth screen).
-      // 3. If user == null AND !isGuestMode: show the Liquid Glass Auth Screen.
+      // 2. If user != null (and user.isEmailVerified == true) OR isGuestMode == true: navigate straight to the Dashboard (bypassing Auth screen).
+      // 3. If user == null (or unverified) AND !isGuestMode: show the Liquid Glass Auth Screen.
       val initialFirebaseUser = remember {
         try {
-          FirebaseAuth.getInstance().currentUser
+          FirebaseAuth.getInstance().currentUser?.takeIf { it.isEmailVerified }
         } catch (_: Throwable) {
-          getFirebaseAuthOrNull(context)?.currentUser
+          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { it.isEmailVerified }
         }
       }
       var isGuestMode by rememberSaveable {
@@ -4975,10 +4975,16 @@ fun CivilEngineeringProductivityApp(
         } catch (_: Throwable) {
           getFirebaseAuthOrNull(context)?.currentUser
         }
-        if (user != null) {
+        if (user != null && user.isEmailVerified) {
           isGuestMode = false
           resolvedViewModel.restoreSessionFromFirebaseUser(user)
           isLoggedIn = true
+        } else if (user != null && !user.isEmailVerified) {
+          try {
+            FirebaseAuth.getInstance().signOut()
+          } catch (_: Throwable) {
+          }
+          isLoggedIn = false
         } else if (resolvedViewModel.isGuestMode || isGuestMode) {
           isGuestMode = true
           isLoggedIn = true
@@ -5096,6 +5102,8 @@ fun StartupLoginScreen(
   var isPasswordVisible by rememberSaveable { mutableStateOf(false) }
   var isLoading by remember { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var loginSuccessMessage by rememberSaveable { mutableStateOf<String?>(null) }
+  var showResendVerification by rememberSaveable { mutableStateOf(false) }
 
   // Focus states for elevated glass input capsules
   var isFullNameFocused by remember { mutableStateOf(false) }
@@ -5114,18 +5122,61 @@ fun StartupLoginScreen(
     label = "loginPrimaryPressScale"
   )
 
+  fun handleResendVerificationEmail() {
+    val trimmedEmail = email.trim()
+    if (trimmedEmail.isBlank() || password.isEmpty()) {
+      Toast.makeText(
+        context,
+        "Please enter your email and password to resend verification.",
+        Toast.LENGTH_SHORT
+      ).show()
+      return
+    }
+    try {
+      if (FirebaseApp.getApps(context).isEmpty()) {
+        FirebaseApp.initializeApp(context)
+      }
+      ensureFirebaseInitialized(context)
+      FirebaseAuth.getInstance()
+        .signInWithEmailAndPassword(trimmedEmail, password)
+        .addOnSuccessListener { it ->
+          val user = it.user
+          user?.sendEmailVerification()
+          FirebaseAuth.getInstance().signOut()
+          Toast.makeText(context, "Verification email sent!", Toast.LENGTH_SHORT).show()
+        }
+        .addOnFailureListener { e ->
+          Toast.makeText(
+            context,
+            mapFirebaseAuthExceptionToMessage(e, isSignUp = false),
+            Toast.LENGTH_SHORT
+          ).show()
+        }
+    } catch (e: Throwable) {
+      Toast.makeText(
+        context,
+        mapFirebaseAuthExceptionToMessage(e, isSignUp = false),
+        Toast.LENGTH_SHORT
+      ).show()
+    }
+  }
+
   fun handlePrimaryAuthAction() {
     if (isLoading) return
     val trimmedEmail = email.trim()
 
     if (!isSignUpMode) {
       if (trimmedEmail.isBlank() || password.isEmpty()) {
+        loginSuccessMessage = null
+        showResendVerification = false
         loginErrorMessage = "Invalid email or password. Please check your credentials."
         return
       }
 
       isLoading = true
       loginErrorMessage = null
+      loginSuccessMessage = null
+      showResendVerification = false
       try {
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
@@ -5133,40 +5184,59 @@ fun StartupLoginScreen(
         ensureFirebaseInitialized(context)
         FirebaseAuth.getInstance()
           .signInWithEmailAndPassword(trimmedEmail, password)
-          .addOnSuccessListener { authResult ->
+          .addOnSuccessListener { it ->
             isLoading = false
-            val firebaseUser = authResult.user ?: FirebaseAuth.getInstance().currentUser
-            val resolvedEmail = firebaseUser?.email?.trim().orEmpty().ifBlank { trimmedEmail }
-            val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
-              .ifBlank { resolvedEmail.substringBefore("@").ifBlank { resolvedEmail } }
-            loginErrorMessage = null
-            onFirebaseLoginSuccess(resolvedEmail, resolvedDisplayName, password)
+            val isVerified = it.user?.isEmailVerified == true
+            if (isVerified) {
+              val firebaseUser = it.user ?: FirebaseAuth.getInstance().currentUser
+              val resolvedEmail = firebaseUser?.email?.trim().orEmpty().ifBlank { trimmedEmail }
+              val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
+                .ifBlank { fullName.trim() }
+                .ifBlank { resolvedEmail.substringBefore("@").ifBlank { resolvedEmail } }
+              loginErrorMessage = null
+              loginSuccessMessage = null
+              showResendVerification = false
+              onFirebaseLoginSuccess(resolvedEmail, resolvedDisplayName, password)
+            } else {
+              FirebaseAuth.getInstance().signOut()
+              loginSuccessMessage = null
+              showResendVerification = true
+              loginErrorMessage =
+                "Please verify your email address before logging in. Check your inbox or spam folder."
+            }
           }
           .addOnFailureListener { e ->
             isLoading = false
+            showResendVerification = false
             loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
           }
       } catch (e: Throwable) {
         isLoading = false
+        showResendVerification = false
         loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
       }
     } else {
       val trimmedFullName = fullName.trim()
       if (trimmedFullName.isBlank()) {
+        loginSuccessMessage = null
         loginErrorMessage = "Registration failed: Please enter your Full Name / Nickname."
         return
       }
       if (trimmedEmail.isBlank()) {
+        loginSuccessMessage = null
         loginErrorMessage = "Please enter a valid email address."
         return
       }
       if (password.length < 6) {
+        loginSuccessMessage = null
         loginErrorMessage = "Password must be at least 6 characters."
         return
       }
 
       isLoading = true
       loginErrorMessage = null
+      loginSuccessMessage = null
+      showResendVerification = false
       try {
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
@@ -5178,22 +5248,19 @@ fun StartupLoginScreen(
             val profileUpdate = UserProfileChangeRequest.Builder()
               .setDisplayName(trimmedFullName)
               .build()
-            val createdUser = it.user
-            if (createdUser != null) {
-              createdUser.updateProfile(profileUpdate)
-                .addOnCompleteListener {
-                  isLoading = false
-                  loginErrorMessage = null
-                  onCompleteSignUp(trimmedEmail, password, trimmedFullName, "")
-                }
-            } else {
-              isLoading = false
-              loginErrorMessage = null
-              onCompleteSignUp(trimmedEmail, password, trimmedFullName, "")
-            }
+            it.user?.updateProfile(profileUpdate)
+            it.user?.sendEmailVerification()
+            FirebaseAuth.getInstance().signOut()
+            isLoading = false
+            loginErrorMessage = null
+            showResendVerification = false
+            loginSuccessMessage =
+              "Account created! Please check your email to verify your account before logging in."
+            isSignUpMode = false
           }
           .addOnFailureListener { e ->
             isLoading = false
+            loginSuccessMessage = null
             loginErrorMessage = when (e) {
               is FirebaseAuthUserCollisionException -> "An account with this email already exists."
               is FirebaseAuthWeakPasswordException -> "Password must be at least 6 characters."
@@ -5203,6 +5270,7 @@ fun StartupLoginScreen(
           }
       } catch (e: Throwable) {
         isLoading = false
+        loginSuccessMessage = null
         loginErrorMessage = when (e) {
           is FirebaseAuthUserCollisionException -> "An account with this email already exists."
           is FirebaseAuthWeakPasswordException -> "Password must be at least 6 characters."
@@ -5514,6 +5582,8 @@ fun StartupLoginScreen(
                   .clickable(enabled = !isLoading) {
                     isSignUpMode = true
                     loginErrorMessage = null
+                    loginSuccessMessage = null
+                    showResendVerification = false
                   }
                   .testTag("sign_up_button"),
                 contentAlignment = Alignment.Center
@@ -5527,6 +5597,30 @@ fun StartupLoginScreen(
                   color = if (isSignUpMode) Color.White else palette.textSecondary
                 )
               }
+            }
+          }
+
+          // Prominent Frosted Glass Success Message (e.g. after Sign Up email verification dispatch)
+          loginSuccessMessage?.let { successText ->
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = Color(0xFF10B981).copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.50f)),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = successText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 12.dp, vertical = 10.dp)
+                  .testTag("login_success_text")
+              )
             }
           }
 
@@ -5612,7 +5706,7 @@ fun StartupLoginScreen(
               .testTag("login_password_input")
           )
 
-          // Clear Glass Error Badge
+          // Red Frosted Glass Error Badge
           loginErrorMessage?.let { errorText ->
             Surface(
               shape = RoundedCornerShape(14.dp),
@@ -5721,6 +5815,29 @@ fun StartupLoginScreen(
             }
           }
 
+          // Resend Verification Button (shown when login fails the isEmailVerified check)
+          if (showResendVerification && !isSignUpMode) {
+            TextButton(
+              onClick = { handleResendVerificationEmail() },
+              enabled = !isLoading,
+              shape = CircleShape,
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(metrics.scaledDp(42))
+                .testTag("resend_verification_button")
+            ) {
+              Text(
+                text = "Didn't get the email? Resend.",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo,
+                textAlign = TextAlign.Center
+              )
+            }
+          }
+
           // Offline Scholar / Guest Bypass:
           // Text button at bottom: "Continue as Offline Scholar →"
           // Allows offline students to access study tools immediately without signing up.
@@ -5728,6 +5845,8 @@ fun StartupLoginScreen(
             onClick = {
               if (!isLoading) {
                 loginErrorMessage = null
+                loginSuccessMessage = null
+                showResendVerification = false
                 onContinueAsGuest()
               }
             },
