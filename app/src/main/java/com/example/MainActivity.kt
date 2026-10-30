@@ -127,6 +127,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -157,6 +158,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
@@ -258,6 +260,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -7178,42 +7181,83 @@ fun DashboardScreen(
     }
   }
 
-  var availableUpdateRelease by remember {
-    mutableStateOf(cachedSessionUpdateRelease)
-  }
-  var showUpdateDialog by remember {
-    mutableStateOf(cachedSessionUpdateRelease != null && !hasDismissedUpdateForSession)
-  }
-
-  val currentVersion = remember(context) { getInstalledVersionName(context) }
-  var showWhatsNewDialog by rememberSaveable { mutableStateOf(false) }
-
-  // First-Launch "What's New" Version Handshake Logic on App Launch
-  LaunchedEffect(currentVersion) {
-    val prefs = context.applicationContext.getSharedPreferences(
+  val localVersion = remember(context) { getInstalledVersionName(context) }
+  val currentVersion = localVersion
+  val offlinePrefs = remember(context) {
+    context.applicationContext.getSharedPreferences(
       "sibil_app_offline_storage",
       Context.MODE_PRIVATE
     )
-    val lastSeenVersion = prefs.getString("last_seen_version", null)
+  }
+  val initialDismissedTag = remember(offlinePrefs) {
+    offlinePrefs.getString("dismissed_update_tag", "").orEmpty()
+  }
+
+  var availableUpdateRelease by remember {
+    val cached = cachedSessionUpdateRelease
+    val validCached = if (
+      cached != null &&
+      isStrictlyNewer(cached.tagName, localVersion) &&
+      cached.tagName != initialDismissedTag &&
+      cached.tagName != dismissedSessionUpdateTag
+    ) {
+      cached
+    } else {
+      null
+    }
+    mutableStateOf(validCached)
+  }
+  var showUpdateDialog by remember {
+    val release = availableUpdateRelease
+    mutableStateOf(
+      release != null &&
+        !hasDismissedUpdateForSession &&
+        isStrictlyNewer(release.tagName, localVersion) &&
+        release.tagName != initialDismissedTag &&
+        release.tagName != dismissedSessionUpdateTag
+    )
+  }
+
+  var showWhatsNewDialog by rememberSaveable { mutableStateOf(false) }
+
+  // First-Launch "What's New" Version Handshake Logic on App Launch
+  LaunchedEffect(localVersion) {
+    val lastSeenVersion = offlinePrefs.getString("last_seen_version", null)
     if (lastSeenVersion == null) {
-      // First install ever -> Do not show "What's New". Save last_seen_version = currentVersion.
-      prefs.edit().putString("last_seen_version", currentVersion).apply()
+      // First install ever -> Do not show "What's New". Save last_seen_version = localVersion.
+      offlinePrefs.edit().putString("last_seen_version", localVersion).apply()
       showWhatsNewDialog = false
-    } else if (isNewerVersion(currentVersion, lastSeenVersion)) {
+    } else if (isStrictlyNewer(localVersion, lastSeenVersion)) {
       // User just installed an update -> Trigger showWhatsNewDialog = true.
       showWhatsNewDialog = true
+    } else if (lastSeenVersion != localVersion) {
+      offlinePrefs.edit().putString("last_seen_version", localVersion).apply()
+      showWhatsNewDialog = false
     }
   }
 
-  // Trigger In-App GitHub Auto-Update Check asynchronously when DashboardScreen mounts
-  LaunchedEffect(Unit) {
+  // Startup Handshake Rules for Automatic Update Check:
+  // Do NOT prompt automatically if:
+  // a) isStrictlyNewer(remoteTag, localVersion) is false.
+  // b) The user already tapped "Remind Me Later" for this exact remoteTag (dismissed_update_tag == remoteTag).
+  // Only set showUpdateDialog = true when remoteTag is strictly greater than localVersion.
+  LaunchedEffect(localVersion) {
     if (!hasDismissedUpdateForSession && availableUpdateRelease == null) {
       val detectedUpdate = checkForAppUpdate(context)
-      if (detectedUpdate != null) {
+      val dismissedTag = offlinePrefs.getString("dismissed_update_tag", "").orEmpty()
+      val remoteTag = detectedUpdate?.tagName.orEmpty()
+      if (
+        detectedUpdate != null &&
+        isStrictlyNewer(remoteTag, localVersion) &&
+        dismissedTag != remoteTag &&
+        dismissedSessionUpdateTag != remoteTag
+      ) {
         cachedSessionUpdateRelease = detectedUpdate
         availableUpdateRelease = detectedUpdate
         showUpdateDialog = true
       } else {
+        cachedSessionUpdateRelease = null
+        availableUpdateRelease = null
         showUpdateDialog = false
       }
     }
@@ -7440,33 +7484,33 @@ fun DashboardScreen(
         currentVersion = currentVersion,
         metrics = metrics,
         onExploreUpdates = {
-          val prefs = context.applicationContext.getSharedPreferences(
-            "sibil_app_offline_storage",
-            Context.MODE_PRIVATE
-          )
-          prefs.edit().putString("last_seen_version", currentVersion).apply()
+          offlinePrefs.edit().putString("last_seen_version", currentVersion).apply()
           showWhatsNewDialog = false
         }
       )
     }
 
     val activeUpdateRelease = availableUpdateRelease
-    if (showUpdateDialog && activeUpdateRelease != null && !hasDismissedUpdateForSession) {
+    if (
+      showUpdateDialog &&
+      activeUpdateRelease != null &&
+      !hasDismissedUpdateForSession &&
+      isStrictlyNewer(activeUpdateRelease.tagName, localVersion) &&
+      dismissedSessionUpdateTag != activeUpdateRelease.tagName
+    ) {
       UpdateAvailableDialog(
         releaseInfo = activeUpdateRelease,
         metrics = metrics,
         onUpdateNow = {
           hasDismissedUpdateForSession = true
+          dismissedSessionUpdateTag = activeUpdateRelease.tagName
           cachedSessionUpdateRelease = null
           availableUpdateRelease = null
           showUpdateDialog = false
         },
         onRemindLater = {
-          val prefs = context.applicationContext.getSharedPreferences(
-            "sibil_app_offline_storage",
-            Context.MODE_PRIVATE
-          )
-          prefs.edit().putString("dismissed_update_tag", activeUpdateRelease.tagName).apply()
+          offlinePrefs.edit().putString("dismissed_update_tag", activeUpdateRelease.tagName).apply()
+          dismissedSessionUpdateTag = activeUpdateRelease.tagName
           hasDismissedUpdateForSession = true
           cachedSessionUpdateRelease = null
           availableUpdateRelease = null
@@ -7488,10 +7532,28 @@ data class GitHubReleaseUpdateInfo(
   val body: String = releaseNotes
 )
 
+/**
+ * Result states for on-demand and startup GitHub release checks.
+ */
+sealed class GitHubUpdateCheckResult {
+  data class UpdateAvailable(
+    val releaseInfo: GitHubReleaseUpdateInfo,
+    val localVersion: String
+  ) : GitHubUpdateCheckResult()
+
+  data class UpToDate(
+    val localVersion: String,
+    val remoteTag: String
+  ) : GitHubUpdateCheckResult()
+
+  data object NetworkError : GitHubUpdateCheckResult()
+}
+
 private const val DEFAULT_FALLBACK_RELEASE_NOTES =
   "• Performance enhancements & formula vault rendering optimizations.\n• Bug fixes and battery life improvements."
 
 private var hasDismissedUpdateForSession by mutableStateOf(false)
+private var dismissedSessionUpdateTag by mutableStateOf("")
 private var cachedSessionUpdateRelease by mutableStateOf<GitHubReleaseUpdateInfo?>(null)
 
 /**
@@ -7508,48 +7570,46 @@ fun getInstalledVersionName(context: Context): String {
       @Suppress("DEPRECATION")
       context.packageManager.getPackageInfo(context.packageName, 0)
     }
-    pInfo.versionName ?: "1.0.0"
+    pInfo.versionName ?: APP_VERSION_NAME.removePrefix("v").removePrefix("V")
   } catch (e: Exception) {
-    "1.0.0"
+    APP_VERSION_NAME.removePrefix("v").removePrefix("V")
   }
 }
 
 /**
- * Semantic Version Evaluator (`remoteTag` vs `localVersion`):
- * Extracts numerical parts from the release tag (`tag_name`) and `packageInfo.versionName`
- * (e.g., `"v1.0.4"` -> `[1, 0, 4]`) and returns `true` ONLY if remote version > installed version.
+ * Parses a semantic version string (e.g., `"v1.0.4"`, `"1.0.4-beta"`) into integer components `[1, 0, 4]`.
  */
-fun isNewerVersion(remoteTag: String, localVersion: String): Boolean {
-  fun parseVersionParts(versionStr: String): List<Int> {
-    val cleaned = versionStr.trim()
-      .removePrefix("v")
-      .removePrefix("V")
-      .substringBefore("-")
+fun parseVersionParts(raw: String): List<Int> {
+  return raw.trim()
+    .removePrefix("v").removePrefix("V")
+    .substringBefore("-")
+    .split(".")
+    .map { part -> part.filter { it.isDigit() }.toIntOrNull() ?: 0 }
+}
 
-    val dotParts = cleaned.split(".")
-      .mapNotNull { part -> part.takeWhile { it.isDigit() }.toIntOrNull() }
-    if (dotParts.isNotEmpty()) {
-      return dotParts
-    }
-
-    return Regex("\\d+")
-      .findAll(versionStr)
-      .mapNotNull { it.value.toIntOrNull() }
-      .toList()
-  }
-
-  val remoteParts = parseVersionParts(remoteTag)
-  val localParts = parseVersionParts(localVersion)
-
-  val maxLen = maxOf(remoteParts.size, localParts.size)
+/**
+ * Strict Semantic Version Comparison (`remoteTag` vs `localVersion`):
+ * Returns `true` ONLY when `remoteTag` is strictly greater than `localVersion`.
+ * If equal or older, NEVER flags as newer.
+ */
+fun isStrictlyNewer(remoteTag: String, localVersion: String): Boolean {
+  val remote = parseVersionParts(remoteTag)
+  val local = parseVersionParts(localVersion)
+  val maxLen = maxOf(remote.size, local.size)
   for (i in 0 until maxLen) {
-    val r = remoteParts.getOrElse(i) { 0 }
-    val l = localParts.getOrElse(i) { 0 }
+    val r = remote.getOrElse(i) { 0 }
+    val l = local.getOrElse(i) { 0 }
     if (r > l) return true
     if (r < l) return false
   }
-  return false
+  return false // If equal or older, NEVER flag as newer
 }
+
+/**
+ * Alias for `isStrictlyNewer` to ensure all callers use strict numerical version comparison.
+ */
+fun isNewerVersion(remoteTag: String, localVersion: String): Boolean =
+  isStrictlyNewer(remoteTag = remoteTag, localVersion = localVersion)
 
 /**
  * Formats raw GitHub markdown release notes (`release.body`) into clean bulleted items.
@@ -7583,99 +7643,134 @@ fun formatGitHubReleaseChangelogLines(rawBody: String?): List<String> {
 }
 
 /**
+ * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest` on `Dispatchers.IO`
+ * and evaluates `isStrictlyNewer(latestTag, localVersion)`.
+ * Used by both the automatic startup check and the manual "Check for Updates" button in About Sibil.
+ */
+suspend fun queryGitHubLatestRelease(context: Context): GitHubUpdateCheckResult =
+  withContext(Dispatchers.IO) {
+    val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
+    val defaultDownloadUrl =
+      "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest/download/app-debug.apk"
+    var connection: HttpURLConnection? = null
+
+    try {
+      connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 5_000
+        readTimeout = 5_000
+        doInput = true
+        setRequestProperty("User-Agent", "Sibil-App-Android")
+        setRequestProperty("Accept", "application/vnd.github.v3+json")
+      }
+
+      val responseCode = connection.responseCode
+      if (responseCode !in 200..299) {
+        return@withContext GitHubUpdateCheckResult.NetworkError
+      }
+
+      val responseBody = BufferedReader(
+        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+      ).use { it.readText() }
+
+      val root = JSONObject(responseBody)
+      val latestTag = root.optString("tag_name", "").trim()
+      val localVersion = getInstalledVersionName(context).removePrefix("v").removePrefix("V")
+      if (latestTag.isBlank() || latestTag.equals("internal-keystore-vault", ignoreCase = true)) {
+        return@withContext GitHubUpdateCheckResult.UpToDate(
+          localVersion = localVersion,
+          remoteTag = localVersion
+        )
+      }
+
+      val prefs = context.applicationContext.getSharedPreferences(
+        "sibil_app_offline_storage",
+        Context.MODE_PRIVATE
+      )
+
+      val rawBody = root.optString("body", "").trim()
+      if (rawBody.isNotBlank()) {
+        prefs.edit().putString("pending_release_notes", rawBody).apply()
+      }
+
+      if (!isStrictlyNewer(remoteTag = latestTag, localVersion = localVersion)) {
+        return@withContext GitHubUpdateCheckResult.UpToDate(
+          localVersion = localVersion,
+          remoteTag = latestTag
+        )
+      }
+
+      val releaseBody = rawBody.ifEmpty {
+        DEFAULT_FALLBACK_RELEASE_NOTES
+      }
+
+      var resolvedDownloadUrl = defaultDownloadUrl
+      val assetsArray = root.optJSONArray("assets")
+      if (assetsArray != null) {
+        for (i in 0 until assetsArray.length()) {
+          val assetObj = assetsArray.optJSONObject(i) ?: continue
+          val assetName = assetObj.optString("name", "").trim()
+          val assetUrl = assetObj.optString("browser_download_url", "").trim()
+          if (assetName.endsWith(".apk", ignoreCase = true) && assetUrl.isNotBlank()) {
+            resolvedDownloadUrl = assetUrl
+            break
+          }
+        }
+        if (resolvedDownloadUrl == defaultDownloadUrl && assetsArray.length() > 0) {
+          val fallbackAssetUrl = assetsArray.optJSONObject(0)
+            ?.optString("browser_download_url", "")
+            ?.trim()
+            .orEmpty()
+          if (fallbackAssetUrl.isNotBlank()) {
+            resolvedDownloadUrl = fallbackAssetUrl
+          }
+        }
+      }
+
+      GitHubUpdateCheckResult.UpdateAvailable(
+        releaseInfo = GitHubReleaseUpdateInfo(
+          tagName = latestTag,
+          versionBadgeText = latestTag,
+          releaseNotes = releaseBody,
+          downloadUrl = resolvedDownloadUrl,
+          body = releaseBody
+        ),
+        localVersion = localVersion
+      )
+    } catch (_: Exception) {
+      GitHubUpdateCheckResult.NetworkError
+    } finally {
+      connection?.disconnect()
+    }
+  }
+
+/**
  * In-App GitHub Auto-Update Checker:
  * Queries `https://api.github.com/repos/Dodolzzzkie/Sibil-app/releases/latest`
- * with a 5-second timeout, parses `tag_name`, `body`, and `assets` (`.apk`),
- * caches `pending_release_notes` in `SharedPreferences`, dynamically resolves
- * `getInstalledVersionName(context)`, and checks `isNewerVersion` and `dismissed_update_tag`.
+ * with a 5-second timeout, resolves `getInstalledVersionName(context)`, and returns
+ * a `GitHubReleaseUpdateInfo` ONLY if `isStrictlyNewer(remoteTag, localVersion)` is `true`
+ * and `dismissed_update_tag != remoteTag`.
  */
 suspend fun checkForAppUpdate(context: Context): GitHubReleaseUpdateInfo? = withContext(Dispatchers.IO) {
-  val endpointUrl = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
-  val defaultDownloadUrl =
-    "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest/download/app-debug.apk"
-  var connection: HttpURLConnection? = null
-
-  try {
-    connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
-      requestMethod = "GET"
-      connectTimeout = 5_000
-      readTimeout = 5_000
-      doInput = true
-      setRequestProperty("User-Agent", "Sibil-App-Android")
-      setRequestProperty("Accept", "application/vnd.github.v3+json")
-    }
-
-    val responseCode = connection.responseCode
-    if (responseCode !in 200..299) {
-      return@withContext null
-    }
-
-    val responseBody = BufferedReader(
-      InputStreamReader(connection.inputStream, Charsets.UTF_8)
-    ).use { it.readText() }
-
-    val root = JSONObject(responseBody)
-    val tag_name = root.optString("tag_name", "").trim()
-    if (tag_name.isBlank() || tag_name.equals("internal-keystore-vault", ignoreCase = true)) {
-      return@withContext null
-    }
-
-    val prefs = context.applicationContext.getSharedPreferences(
-      "sibil_app_offline_storage",
-      Context.MODE_PRIVATE
-    )
-
-    val rawBody = root.optString("body", "").trim()
-    if (rawBody.isNotBlank()) {
-      prefs.edit().putString("pending_release_notes", rawBody).apply()
-    }
-
-    val localVersion = getInstalledVersionName(context)
-    val isNewer = isNewerVersion(remoteTag = tag_name, localVersion = localVersion)
-    val dismissedTag = prefs.getString("dismissed_update_tag", "").orEmpty()
-
-    if (!isNewer || tag_name == dismissedTag) {
-      return@withContext null
-    }
-
-    val releaseBody = rawBody.ifEmpty {
-      DEFAULT_FALLBACK_RELEASE_NOTES
-    }
-
-    var resolvedDownloadUrl = defaultDownloadUrl
-    val assetsArray = root.optJSONArray("assets")
-    if (assetsArray != null) {
-      for (i in 0 until assetsArray.length()) {
-        val assetObj = assetsArray.optJSONObject(i) ?: continue
-        val assetName = assetObj.optString("name", "").trim()
-        val assetUrl = assetObj.optString("browser_download_url", "").trim()
-        if (assetName.endsWith(".apk", ignoreCase = true) && assetUrl.isNotBlank()) {
-          resolvedDownloadUrl = assetUrl
-          break
-        }
-      }
-      if (resolvedDownloadUrl == defaultDownloadUrl && assetsArray.length() > 0) {
-        val fallbackAssetUrl = assetsArray.optJSONObject(0)
-          ?.optString("browser_download_url", "")
-          ?.trim()
-          .orEmpty()
-        if (fallbackAssetUrl.isNotBlank()) {
-          resolvedDownloadUrl = fallbackAssetUrl
-        }
+  when (val result = queryGitHubLatestRelease(context)) {
+    is GitHubUpdateCheckResult.UpdateAvailable -> {
+      val prefs = context.applicationContext.getSharedPreferences(
+        "sibil_app_offline_storage",
+        Context.MODE_PRIVATE
+      )
+      val dismissedTag = prefs.getString("dismissed_update_tag", "").orEmpty()
+      val remoteTag = result.releaseInfo.tagName
+      if (
+        !isStrictlyNewer(remoteTag, result.localVersion) ||
+        remoteTag == dismissedTag ||
+        remoteTag == dismissedSessionUpdateTag
+      ) {
+        null
+      } else {
+        result.releaseInfo
       }
     }
-
-    GitHubReleaseUpdateInfo(
-      tagName = tag_name,
-      versionBadgeText = tag_name,
-      releaseNotes = releaseBody,
-      downloadUrl = resolvedDownloadUrl,
-      body = releaseBody
-    )
-  } catch (_: Exception) {
-    null
-  } finally {
-    connection?.disconnect()
+    else -> null
   }
 }
 
@@ -9375,35 +9470,19 @@ fun ExtrasScreen(
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18))
     ) {
       // Top Header
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-      ) {
-        Text(
-          text = stringResource(R.string.extras_screen_title),
-          style = MaterialTheme.typography.headlineLarge.copy(
-            fontSize = metrics.scaledSp(26),
-            fontWeight = FontWeight.Bold
-          ),
-          color = palette.textPrimary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("extras_screen_title")
-        )
-        Text(
-          text = "AI Study Suite & Civil Engineering companion modules",
-          style = MaterialTheme.typography.bodyMedium.copy(
-            fontSize = metrics.scaledSp(14),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = palette.textSecondary,
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth()
-        )
-      }
+      Text(
+        text = stringResource(R.string.extras_screen_title),
+        style = MaterialTheme.typography.headlineLarge.copy(
+          fontSize = metrics.scaledSp(26),
+          fontWeight = FontWeight.Bold
+        ),
+        color = palette.textPrimary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("extras_screen_title")
+      )
 
       // 1. TOP HERO CARD: Smart Flashcards Premier Featured Card
       LiquidGlassCard(
@@ -9427,11 +9506,11 @@ fun ExtrasScreen(
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Top
+            verticalAlignment = Alignment.CenterVertically
           ) {
             Box(
               modifier = Modifier
-                .size(54.dp)
+                .size(50.dp)
                 .shadow(
                   elevation = 8.dp,
                   shape = RoundedCornerShape(16.dp),
@@ -9450,11 +9529,11 @@ fun ExtrasScreen(
                 imageVector = Icons.Filled.AutoAwesome,
                 contentDescription = "Smart Flashcards",
                 tint = Color.White,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(26.dp)
               )
             }
 
-            // Gradient Badges ("AI Powered", "Multi-Batch") + Deck Counter
+            // Gradient Badges ("AI Powered", "Multi-Batch")
             Row(
               horizontalArrangement = Arrangement.spacedBy(6.dp),
               verticalAlignment = Alignment.CenterVertically
@@ -9463,13 +9542,15 @@ fun ExtrasScreen(
                 modifier = Modifier
                   .clip(CircleShape)
                   .background(brush = LiquidVioletChipGradient)
-                  .padding(horizontal = 10.dp, vertical = 4.dp)
+                  .padding(horizontal = 8.dp, vertical = 4.dp)
               ) {
                 Text(
                   text = "AI Powered",
-                  fontSize = 10.sp,
+                  fontSize = 11.sp,
                   fontWeight = FontWeight.Bold,
-                  color = Color.White
+                  color = Color.White,
+                  maxLines = 1,
+                  softWrap = false
                 )
               }
 
@@ -9480,37 +9561,27 @@ fun ExtrasScreen(
               ) {
                 Text(
                   text = "Multi-Batch",
-                  fontSize = 10.sp,
+                  fontSize = 11.sp,
                   fontWeight = FontWeight.Bold,
                   color = palette.accentIndigo,
-                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                  maxLines = 1,
+                  softWrap = false,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                 )
               }
             }
           }
 
-          Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            Text(
-              text = "Smart Flashcards",
-              style = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = metrics.scaledSp(21),
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = palette.textPrimary
-            )
-            Text(
-              text = "Convert PDFs, DOCX handouts, and lecture notes into active-recall engineering decks with 3D flip physics and classmate code sharing.",
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(13),
-                lineHeight = metrics.scaledSp(18),
-                fontWeight = FontWeight.Medium
-              ),
-              color = palette.textSecondary
-            )
-          }
+          Text(
+            text = "Smart Flashcards",
+            style = MaterialTheme.typography.headlineSmall.copy(
+              fontSize = metrics.scaledSp(21),
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
 
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -9520,17 +9591,23 @@ fun ExtrasScreen(
             Surface(
               shape = CircleShape,
               color = palette.nestedCardFill,
-              border = palette.nestedBorder
+              border = palette.nestedBorder,
+              modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(end = 8.dp)
             ) {
               Text(
-                text = "🗂️ $deckCount ${if (deckCount == 1) "Deck" else "Decks"} • $totalCardCount Cards",
+                text = "$deckCount ${if (deckCount == 1) "Deck" else "Decks"} • $totalCardCount Cards",
                 style = MaterialTheme.typography.labelMedium.copy(
                   fontFamily = JetBrainsMonoFamily,
-                  fontSize = 11.5.sp,
+                  fontSize = 11.sp,
                   fontWeight = FontWeight.Bold
                 ),
                 color = palette.textPrimary,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
               )
             }
 
@@ -9544,15 +9621,17 @@ fun ExtrasScreen(
                 containerColor = Color(0xFF4F46E5),
                 contentColor = Color.White
               ),
-              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-              modifier = Modifier.testTag("launch_flashcards_hero_button")
+              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+              modifier = Modifier
+                .wrapContentWidth()
+                .testTag("launch_flashcards_hero_button")
             ) {
               Text(
                 text = "Launch Flashcards",
-                style = MaterialTheme.typography.labelLarge.copy(
-                  fontSize = 12.5.sp,
-                  fontWeight = FontWeight.Bold
-                ),
+                maxLines = 1,
+                softWrap = false,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
                 color = Color.White
               )
               Spacer(modifier = Modifier.width(6.dp))
@@ -9560,7 +9639,7 @@ fun ExtrasScreen(
                 imageVector = Icons.Filled.ArrowForward,
                 contentDescription = null,
                 tint = Color.White,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(15.dp)
               )
             }
           }
@@ -9572,7 +9651,7 @@ fun ExtrasScreen(
         tool = ExtraToolItem(
           id = "ce_formula_vault",
           title = "CE Formula Vault",
-          subtitle = "Interactive mathematics cheat sheets, visual geometry inspector & CE reference vault",
+          subtitle = "",
           icon = Icons.Filled.Functions
         ),
         metrics = metrics,
@@ -10197,8 +10276,8 @@ private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "mste",
     title = "MSTE",
-    fullTitle = "Mathematics, Surveying & Transportation Engineering",
-    subtitle = "Algebra, Trigonometry, Geometry, Analytic Geometry & Engineering Math",
+    fullTitle = "",
+    subtitle = "Mathematics & Surveying",
     departmentCode = "PRC BOARD PILLAR I • MSTE",
     pageBadge = "ACTIVE • 4 SUB-VOLUMES",
     isActive = true,
@@ -10208,8 +10287,8 @@ private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "psad",
     title = "PSAD",
-    fullTitle = "Structural Analysis & Design",
-    subtitle = "Theory of Structures, Concrete, Steel & Timber Design",
+    fullTitle = "",
+    subtitle = "Structural Analysis & Design",
     departmentCode = "PRC BOARD PILLAR II • PSAD",
     pageBadge = "COMING SOON",
     isActive = false,
@@ -10219,8 +10298,8 @@ private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "hpge",
     title = "HPGE",
-    fullTitle = "Hydraulics & Geotechnical Engineering",
-    subtitle = "Fluid Mechanics, Hydraulics & Foundation Engineering",
+    fullTitle = "",
+    subtitle = "Hydraulics & Geotechnical",
     departmentCode = "PRC BOARD PILLAR III • HPGE",
     pageBadge = "COMING SOON",
     isActive = false,
@@ -10233,10 +10312,10 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "algebra",
     title = "Algebra",
-    fullTitle = "Engineering Algebra & Number Theory",
-    subtitle = "Natural Numbers, Equalities, Inequalities, Exponents, Radicals, Logarithms & Polynomials",
+    fullTitle = "",
+    subtitle = "Engineering Algebra & Number Theory",
     departmentCode = "MSTE / CE-01",
-    pageBadge = "ACTIVE • A4 FORMULA SHEET",
+    pageBadge = "ACTIVE • A4 SHEET",
     isActive = true,
     spineAccentColor = Color(0xFF6366F1),
     secondaryAccentColor = Color(0xFF8B5CF6)
@@ -10244,8 +10323,8 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "trigonometry",
     title = "Trigonometry",
-    fullTitle = "Plane & Spherical Trigonometry",
-    subtitle = "Pythagorean, Double/Half-Angle, Oblique Triangles & Spherical Identities • Coming Soon",
+    fullTitle = "",
+    subtitle = "Plane & Spherical Trigonometry",
     departmentCode = "MSTE / CE-02",
     pageBadge = "COMING SOON",
     isActive = false,
@@ -10255,8 +10334,8 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "geometry",
     title = "Geometry",
-    fullTitle = "Plane & Solid Mensuration",
-    subtitle = "Cross-Section Areas, Volumes, Centroids & Moments of Inertia • Coming Soon",
+    fullTitle = "",
+    subtitle = "Plane & Solid Mensuration",
     departmentCode = "MSTE / CE-03",
     pageBadge = "COMING SOON",
     isActive = false,
@@ -10266,8 +10345,8 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
   EngineeringNotebookSpec(
     id = "analytic_geometry",
     title = "Analytic Geometry",
-    fullTitle = "Cartesian & Conic Sections",
-    subtitle = "Lines, Circles, Parabolas, Ellipses, Hyperbolas & Polar Coordinates • Coming Soon",
+    fullTitle = "",
+    subtitle = "Cartesian & Conic Sections",
     departmentCode = "MSTE / CE-04",
     pageBadge = "COMING SOON",
     isActive = false,
@@ -10413,8 +10492,10 @@ fun FormulaVaultMainView(
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          modifier = Modifier.weight(1f)
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier
+            .weight(1f)
+            .padding(end = 6.dp)
         ) {
           // Left: Circular glass Back navigation button
           Surface(
@@ -10424,7 +10505,7 @@ fun FormulaVaultMainView(
             border = palette.glassBorder,
             shadowElevation = 6.dp,
             modifier = Modifier
-              .size(48.dp)
+              .size(38.dp)
               .testTag("formula_vault_back_button")
           ) {
             Box(contentAlignment = Alignment.Center) {
@@ -10436,7 +10517,7 @@ fun FormulaVaultMainView(
                   FormulaVaultTier.MASTER_VOLUMES -> "Back to Extras"
                 },
                 tint = palette.textPrimary,
-                modifier = Modifier.size(26.dp)
+                modifier = Modifier.size(22.dp)
               )
             }
           }
@@ -10445,7 +10526,7 @@ fun FormulaVaultMainView(
           Text(
             text = topBarTitle,
             style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = 20.sp,
+              fontSize = 18.sp,
               fontWeight = FontWeight.Bold
             ),
             color = palette.textPrimary,
@@ -10454,10 +10535,10 @@ fun FormulaVaultMainView(
           )
         }
 
-        // Right: Table of Contents (TOC) button, + Custom Formula button, & Search button
+        // Right: Compact Table of Contents (TOC) button, + Custom Formula button, & Search button
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
           // Dedicated Table of Contents (TOC) Top Bar Button
           Surface(
@@ -10474,7 +10555,7 @@ fun FormulaVaultMainView(
             },
             shadowElevation = 4.dp,
             modifier = Modifier
-              .size(48.dp)
+              .size(38.dp)
               .testTag("formula_vault_toc_top_button")
           ) {
             Box(contentAlignment = Alignment.Center) {
@@ -10482,7 +10563,7 @@ fun FormulaVaultMainView(
                 imageVector = Icons.AutoMirrored.Filled.ViewList,
                 contentDescription = "Table of Contents",
                 tint = if (showTocSheet) palette.accentIndigo else palette.textPrimary,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
               )
             }
           }
@@ -10497,7 +10578,7 @@ fun FormulaVaultMainView(
             border = palette.glassBorder,
             shadowElevation = 4.dp,
             modifier = Modifier
-              .size(48.dp)
+              .size(38.dp)
               .testTag("add_custom_formula_top_button")
           ) {
             Box(contentAlignment = Alignment.Center) {
@@ -10505,7 +10586,7 @@ fun FormulaVaultMainView(
                 imageVector = Icons.Default.Add,
                 contentDescription = "Add Custom Formula",
                 tint = palette.accentIndigo,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
               )
             }
           }
@@ -10527,7 +10608,7 @@ fun FormulaVaultMainView(
             },
             shadowElevation = 4.dp,
             modifier = Modifier
-              .size(48.dp)
+              .size(38.dp)
               .testTag("formula_vault_search_toggle_button")
           ) {
             Box(contentAlignment = Alignment.Center) {
@@ -10535,7 +10616,7 @@ fun FormulaVaultMainView(
                 imageVector = if (isSearchExpanded) Icons.Default.Close else Icons.Default.Search,
                 contentDescription = if (isSearchExpanded) "Close Search" else "Search Formulas",
                 tint = if (isSearchExpanded) palette.accentIndigo else palette.textPrimary,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(19.dp)
               )
             }
           }
@@ -11126,7 +11207,7 @@ private fun NotebookShelfLibraryView(
 
     // Styled Engineering Subject Notebooks
     filteredNotebooks.forEach { notebook ->
-      EngineeringNotebookBinderCard(
+      MasterVolumeCard(
         notebook = notebook,
         customFormulasCount = if (notebook.id == "algebra") customFormulasCount else 0,
         metrics = metrics,
@@ -11134,6 +11215,21 @@ private fun NotebookShelfLibraryView(
       )
     }
   }
+}
+
+@Composable
+private fun MasterVolumeCard(
+  notebook: EngineeringNotebookSpec,
+  customFormulasCount: Int,
+  metrics: ResponsiveMetrics,
+  onClick: () -> Unit
+) {
+  EngineeringNotebookBinderCard(
+    notebook = notebook,
+    customFormulasCount = customFormulasCount,
+    metrics = metrics,
+    onClick = onClick
+  )
 }
 
 @Composable
@@ -11211,131 +11307,114 @@ private fun EngineeringNotebookBinderCard(
       }
 
       // Main Binder Cover Content
-      Row(
+      Column(
         modifier = Modifier
           .weight(1f)
-          .padding(horizontal = 18.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+          .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        Column(
-          modifier = Modifier.weight(1f),
-          verticalArrangement = Arrangement.spacedBy(5.dp)
+        // Card Header Row: Title on Left, Unconstrained Single-Line Status Badge on Right
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          // Department Code & Status Pill Row
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            Text(
-              text = notebook.departmentCode,
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 1.sp
-              ),
-              color = notebook.spineAccentColor
-            )
-
-            Surface(
-              shape = RoundedCornerShape(6.dp),
-              color = if (notebook.isActive) {
-                notebook.spineAccentColor.copy(alpha = 0.15f)
-              } else {
-                palette.textSecondary.copy(alpha = 0.12f)
-              },
-              border = BorderStroke(
-                width = 0.8.dp,
-                color = if (notebook.isActive) {
-                  notebook.spineAccentColor.copy(alpha = 0.45f)
-                } else {
-                  palette.textSecondary.copy(alpha = 0.25f)
-                }
-              )
-            ) {
-              Text(
-                text = if (customFormulasCount > 0) {
-                  "${notebook.pageBadge} + $customFormulasCount CUSTOM"
-                } else {
-                  notebook.pageBadge
-                },
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = JetBrainsMonoFamily,
-                  fontSize = 9.5.sp,
-                  fontWeight = FontWeight.ExtraBold,
-                  letterSpacing = 0.6.sp
-                ),
-                color = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary,
-                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-              )
-            }
-          }
-
-          // Subject Title & Full Title
           Text(
             text = notebook.title,
             style = MaterialTheme.typography.titleMedium.copy(
-              fontSize = metrics.scaledSp(19),
+              fontSize = metrics.scaledSp(18),
               fontWeight = FontWeight.ExtraBold
             ),
-            color = palette.textPrimary
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .weight(1f, fill = false)
+              .padding(end = 8.dp)
           )
 
-          if (notebook.fullTitle.isNotEmpty() && notebook.fullTitle != notebook.title) {
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (notebook.isActive) {
+              notebook.spineAccentColor.copy(alpha = 0.15f)
+            } else {
+              palette.textSecondary.copy(alpha = 0.12f)
+            },
+            border = BorderStroke(
+              width = 0.8.dp,
+              color = if (notebook.isActive) {
+                notebook.spineAccentColor.copy(alpha = 0.45f)
+              } else {
+                palette.textSecondary.copy(alpha = 0.25f)
+              }
+            )
+          ) {
             Text(
-              text = notebook.fullTitle,
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
-              ),
-              color = notebook.spineAccentColor
+              text = if (customFormulasCount > 0) {
+                "${notebook.pageBadge} + $customFormulasCount"
+              } else {
+                notebook.pageBadge
+              },
+              fontFamily = JetBrainsMonoFamily,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.ExtraBold,
+              maxLines = 1,
+              softWrap = false,
+              color = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
             )
           }
+        }
 
-          // Subject Description / Subtitle
+        // Bottom Row: Clean Single-Line Subtitle on Left + Open/Lock Icon Affordance on Right
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
           Text(
             text = notebook.subtitle,
             style = MaterialTheme.typography.bodySmall.copy(
-              fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.Medium,
-              lineHeight = 16.sp
+              fontSize = metrics.scaledSp(13),
+              fontWeight = FontWeight.Medium
             ),
-            color = if (notebook.isActive) palette.textPrimary.copy(alpha = 0.80f) else palette.textSecondary
+            color = if (notebook.isActive) palette.textPrimary.copy(alpha = 0.82f) else palette.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .weight(1f)
+              .padding(end = 10.dp)
           )
-        }
 
-        Spacer(modifier = Modifier.width(12.dp))
-
-        // Right Binder Open Affordance
-        Surface(
-          shape = CircleShape,
-          color = if (notebook.isActive) {
-            notebook.spineAccentColor.copy(alpha = 0.14f)
-          } else {
-            palette.nestedCardFill
-          },
-          border = BorderStroke(
-            width = 1.dp,
+          Surface(
+            shape = CircleShape,
             color = if (notebook.isActive) {
-              notebook.spineAccentColor.copy(alpha = 0.35f)
+              notebook.spineAccentColor.copy(alpha = 0.14f)
             } else {
-              palette.textSecondary.copy(alpha = 0.18f)
-            }
-          ),
-          modifier = Modifier.size(38.dp)
-        ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = if (notebook.isActive) {
-                Icons.Default.Description
+              palette.nestedCardFill
+            },
+            border = BorderStroke(
+              width = 1.dp,
+              color = if (notebook.isActive) {
+                notebook.spineAccentColor.copy(alpha = 0.35f)
               } else {
-                Icons.Outlined.Lock
-              },
-              contentDescription = if (notebook.isActive) "Open ${notebook.title}" else "Coming Soon",
-              tint = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary.copy(alpha = 0.65f),
-              modifier = Modifier.size(18.dp)
-            )
+                palette.textSecondary.copy(alpha = 0.18f)
+              }
+            ),
+            modifier = Modifier.size(34.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = if (notebook.isActive) {
+                  Icons.Default.Description
+                } else {
+                  Icons.Outlined.Lock
+                },
+                contentDescription = if (notebook.isActive) "Open ${notebook.title}" else "Coming Soon",
+                tint = if (notebook.isActive) notebook.spineAccentColor else palette.textSecondary.copy(alpha = 0.65f),
+                modifier = Modifier.size(17.dp)
+              )
+            }
           }
         }
       }
@@ -16494,11 +16573,12 @@ private fun ExtraToolPlaceholderCard(
           ) {
             Text(
               text = "Coming Soon",
-              fontSize = 10.sp,
+              fontSize = 11.sp,
               fontWeight = FontWeight.Bold,
               color = Color(0xFF818CF8),
               maxLines = 1,
-              modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+              softWrap = false,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
             )
           }
         }
@@ -16517,16 +16597,18 @@ private fun ExtraToolPlaceholderCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
-          Text(
-            text = tool.subtitle,
-            style = MaterialTheme.typography.bodySmall.copy(
-              fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.Medium
-            ),
-            color = palette.textSecondary.copy(alpha = 0.8f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-          )
+          if (tool.subtitle.isNotBlank()) {
+            Text(
+              text = tool.subtitle,
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = metrics.scaledSp(12),
+                fontWeight = FontWeight.Medium
+              ),
+              color = palette.textSecondary.copy(alpha = 0.8f),
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
         }
       }
     }
@@ -16583,16 +16665,18 @@ private fun ExtraToolPlaceholderCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
-          Text(
-            text = tool.subtitle,
-            style = MaterialTheme.typography.bodyMedium.copy(
-              fontSize = metrics.scaledSp(13),
-              fontWeight = FontWeight.SemiBold
-            ),
-            color = palette.textSecondary,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-          )
+          if (tool.subtitle.isNotBlank()) {
+            Text(
+              text = tool.subtitle,
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(13),
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.textSecondary,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
         }
 
         Icon(
@@ -18293,9 +18377,24 @@ private fun AmPmSegmentedToggle(
 }
 
 /**
- * Cleanly styled popup `Dialog` opened by clicking the Profile Icon in the upper right
- * corner of the Dashboard. Houses the Account, Display (Dark Mode switch),
- * Data Management, and About cards with floating elevation (`8.dp`).
+ * Compact, high-performance Liquid Glass Profile & Settings Dialog (`ProfileAndSettingsDialog`):
+ * - Uses a single consolidated Liquid Glass container (`18.dp` corner radius, slim specular border)
+ *   and lightweight solid tints (`palette.cardSurface.copy(alpha = 0.85f)`) instead of heavy
+ *   multi-pass blur shaders.
+ * - Hoists and caches `SharedPreferences` and version reads inside `remember { ... }` blocks to
+ *   prevent disk reads during recomposition and eliminate swipe/tab lag.
+ * - Relies on a single lightweight `Modifier.verticalScroll(rememberScrollState())` without
+ *   redundant nested scroll states.
+ * - Includes:
+ *   1. Compact Profile Header (`36.dp` avatar icon, Student Name + Handle in a single row, trailing
+ *      "Edit Profile" icon button).
+ *   2. Compact Settings Row Items (`8.dp`–`10.dp` vertical spacing):
+ *      - "Dark Mode" (`Icons.Default.DarkMode`, title, compact `Switch`)
+ *      - "Auto Backup & Sync" (`Icons.Default.CloudSync`, title, `"Enabled (Drive)"` status chip +
+ *        1-tap clipboard Backup & Restore actions)
+ *      - "About Sibil" (installed version `Version 1.0.x (Official Build)`, license status, and
+ *        manual `"Check for Updates"` button with inline spinning progress and status toast/chip)
+ *      - "Account Actions" (minimalist text button `"Log Out / Switch Account"` with neutral red tint)
  */
 @Composable
 private fun ProfileAndSettingsDialog(
@@ -18303,11 +18402,68 @@ private fun ProfileAndSettingsDialog(
   onDismiss: () -> Unit,
   onSwitchAccount: () -> Unit
 ) {
+  val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
   val isGuest = viewModel.isGuestMode
 
+  // Hoist and cache SharedPreferences & PackageInfo reads inside remember blocks
+  val cachedPrefs = remember(context) {
+    context.applicationContext.getSharedPreferences(
+      "sibil_app_offline_storage",
+      Context.MODE_PRIVATE
+    )
+  }
+  val localVersion = remember(context) {
+    getInstalledVersionName(context).removePrefix("v").removePrefix("V")
+  }
+  val autoBackupStatusLabel = remember(cachedPrefs) {
+    cachedPrefs.getString("auto_backup_status_label", "Enabled (Drive)") ?: "Enabled (Drive)"
+  }
+
+  // Lightweight solid tints with low alpha instead of heavy multi-pass blur shaders
   val modalBackgroundColor = if (palette.isDark) Color(0xFF0B1120) else Color(0xFFF4F7FB)
+  val consolidatedContainerColor = palette.cardSurface.copy(alpha = 0.85f)
+  val rowTileSurfaceColor = palette.cardSurface.copy(alpha = 0.85f)
+  val slimSpecularBorder = remember(palette.isDark) {
+    BorderStroke(
+      width = 1.dp,
+      brush = Brush.linearGradient(
+        colors = if (palette.isDark) {
+          listOf(
+            Color.White.copy(alpha = 0.32f),
+            Color.White.copy(alpha = 0.08f)
+          )
+        } else {
+          listOf(
+            Color.White.copy(alpha = 0.85f),
+            Color(0xFFCBD5E1).copy(alpha = 0.55f)
+          )
+        }
+      )
+    )
+  }
+
+  // Inline Edit Profile state
+  var isEditingProfile by rememberSaveable { mutableStateOf(false) }
+  var editDisplayNameInput by rememberSaveable(viewModel.displayUsername) {
+    mutableStateOf(if (isGuest) "" else viewModel.displayUsername)
+  }
+  var editHandleInput by rememberSaveable(viewModel.username) {
+    mutableStateOf(if (isGuest) "" else viewModel.username)
+  }
+
+  // Data Backup & Restore dialog state
+  var isRestoreDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var restoreJsonInput by rememberSaveable { mutableStateOf("") }
+  var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
+
+  // Manual "Check for Updates" state
+  var isCheckingUpdates by remember { mutableStateOf(false) }
+  var updateStatusMessage by remember { mutableStateOf<String?>(null) }
+  var isUpdateStatusError by remember { mutableStateOf(false) }
+  var manualUpdateRelease by remember { mutableStateOf<GitHubReleaseUpdateInfo?>(null) }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -18316,37 +18472,33 @@ private fun ProfileAndSettingsDialog(
     Surface(
       modifier = Modifier
         .fillMaxWidth(0.92f)
-        .widthIn(max = if (metrics.screenWidthDp > 600) 600.dp else 520.dp)
-        .heightIn(max = 720.dp)
+        .widthIn(max = if (metrics.screenWidthDp > 600) 560.dp else 480.dp)
+        .heightIn(max = 680.dp)
         .testTag("profile_settings_dialog"),
-      shape = RoundedCornerShape(28.dp),
+      shape = RoundedCornerShape(22.dp),
       color = modalBackgroundColor,
-      border = palette.glassBorder,
+      border = slimSpecularBorder,
       tonalElevation = 0.dp,
-      shadowElevation = 16.dp
+      shadowElevation = 12.dp
     ) {
+      // Single lightweight verticalScroll without nested conflicting scroll states
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          .padding(
-            start = metrics.scaledDp(20),
-            end = metrics.scaledDp(20),
-            top = metrics.scaledDp(20),
-            bottom = metrics.scaledDp(28)
-          ),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+          .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
-        // Dialog Header with Close Button
+        // Compact Dialog Top Bar
         Row(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
           Text(
             text = "Profile & Settings",
-            style = MaterialTheme.typography.headlineMedium.copy(
-              fontSize = metrics.scaledSp(22),
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = 18.sp,
               fontWeight = FontWeight.Bold
             ),
             color = palette.textPrimary,
@@ -18360,204 +18512,236 @@ private fun ProfileAndSettingsDialog(
           IconButton(
             onClick = onDismiss,
             modifier = Modifier
-              .size(48.dp)
-              .minimumInteractiveComponentSize()
+              .size(36.dp)
               .testTag("close_profile_settings_dialog_button")
           ) {
             Icon(
               imageVector = Icons.Filled.Close,
               contentDescription = "Close Settings",
               tint = palette.textSecondary,
-              modifier = Modifier.size(24.dp)
+              modifier = Modifier.size(20.dp)
             )
           }
         }
 
-        // 1. Account Section Card
-        LiquidGlassCard(
+        // Single Consolidated Liquid Glass Container (18.dp corner radius, slim specular border)
+        Surface(
           modifier = Modifier
             .fillMaxWidth()
             .testTag("extras_account_card"),
-          shape = RoundedCornerShape(24.dp),
-          elevation = if (palette.isDark) 8.dp else 6.dp
+          shape = RoundedCornerShape(18.dp),
+          color = consolidatedContainerColor,
+          border = slimSpecularBorder,
+          tonalElevation = 0.dp,
+          shadowElevation = 0.dp
         ) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(metrics.scaledDp(18)),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+              .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
           ) {
-            Text(
-              text = stringResource(R.string.account_section_title),
-              style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(18),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-
+            // 1. COMPACT PROFILE HEADER (36.dp avatar + Student Name & Handle in a single row + Edit Profile icon)
             Row(
-              modifier = Modifier.fillMaxWidth(),
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+              horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
               Surface(
-                color = palette.nestedCardFill,
+                color = palette.nestedCardFill.copy(alpha = 0.85f),
                 shape = CircleShape,
-                modifier = Modifier.size(54.dp)
+                modifier = Modifier.size(36.dp)
               ) {
                 Box(contentAlignment = Alignment.Center) {
                   Icon(
                     imageVector = Icons.Default.AccountCircle,
                     contentDescription = "Account Profile Icon",
                     tint = palette.accentIndigo,
-                    modifier = Modifier.size(34.dp)
+                    modifier = Modifier.size(24.dp)
                   )
                 }
               }
 
               if (isGuest) {
-                Text(
-                  text = "Guest User",
-                  style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = metrics.scaledSp(18),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.textPrimary,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier
-                    .weight(1f)
-                    .testTag("account_guest_text")
-                )
-              } else {
-                Column(
+                Row(
                   modifier = Modifier.weight(1f),
-                  verticalArrangement = Arrangement.spacedBy(2.dp)
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Text(
+                    text = "Guest User",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                      fontSize = 15.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("account_guest_text")
+                  )
+                  Text(
+                    text = "• @guest",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
+                    maxLines = 1,
+                    softWrap = false
+                  )
+                }
+              } else {
+                Row(
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                   Text(
                     text = viewModel.displayUsername,
                     style = MaterialTheme.typography.titleMedium.copy(
-                      fontSize = metrics.scaledSp(16),
+                      fontSize = 15.sp,
                       fontWeight = FontWeight.Bold
                     ),
                     color = palette.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                      .fillMaxWidth()
+                      .weight(1f, fill = false)
                       .testTag("account_user_name_text")
                   )
                   Text(
                     text = "@${viewModel.username}",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontSize = metrics.scaledSp(14)
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
                     ),
                     color = palette.textSecondary,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .testTag("account_username_handle_text")
+                    modifier = Modifier.testTag("account_username_handle_text")
                   )
+                }
+              }
+
+              IconButton(
+                onClick = { isEditingProfile = !isEditingProfile },
+                modifier = Modifier
+                  .size(32.dp)
+                  .testTag("edit_profile_icon_button")
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Edit,
+                  contentDescription = "Edit Profile",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(17.dp)
+                )
+              }
+            }
+
+            // Optional Compact Inline Profile Editor when "Edit Profile" is tapped
+            if (isEditingProfile) {
+              Surface(
+                color = palette.nestedCardFill.copy(alpha = 0.70f),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, palette.dividerColor)
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  OutlinedTextField(
+                    value = editDisplayNameInput,
+                    onValueChange = { editDisplayNameInput = it },
+                    label = { Text("Student Name", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = sibilOutlinedTextFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                  )
+                  OutlinedTextField(
+                    value = editHandleInput,
+                    onValueChange = { editHandleInput = it },
+                    label = { Text("Student Handle / ID", fontSize = 12.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = sibilOutlinedTextFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                  )
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    TextButton(onClick = { isEditingProfile = false }) {
+                      Text("Cancel", fontSize = 12.sp, color = palette.textSecondary)
+                    }
+                    Button(
+                      onClick = {
+                        val cleanHandle = editHandleInput.trim().removePrefix("@").ifBlank {
+                          viewModel.username
+                        }
+                        val cleanName = editDisplayNameInput.trim().ifBlank { cleanHandle }
+                        viewModel.loginWithUsername(cleanHandle, cleanName)
+                        isEditingProfile = false
+                      },
+                      shape = RoundedCornerShape(10.dp),
+                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                      Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                  }
                 }
               }
             }
 
-            OutlinedButton(
-              onClick = onSwitchAccount,
-              shape = CircleShape,
-              border = BorderStroke(1.2.dp, Color(0xFF6366F1)),
-              colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = palette.nestedCardFill,
-                contentColor = palette.accentIndigo
-              ),
-              elevation = null,
-              modifier = Modifier
-                .fillMaxWidth()
-                .height(metrics.scaledDp(46))
-                .testTag("switch_account_button")
-            ) {
-              Text(
-                text = stringResource(R.string.switch_account_button),
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(15),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.accentIndigo,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            }
-          }
-        }
+            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-        // 2. Display Section Card (with functional Dark Mode Switch)
-        LiquidGlassCard(
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("extras_display_card"),
-          shape = RoundedCornerShape(24.dp),
-          elevation = if (palette.isDark) 8.dp else 6.dp
-        ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(metrics.scaledDp(18)),
-              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
-          ) {
-            Text(
-              text = stringResource(R.string.display_section_title),
-              style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(18),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-
+            // 2. "DARK MODE" COMPACT LIST TILE
             Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(12.dp))
+                .background(rowTileSurfaceColor)
                 .clickable { viewModel.updateDarkMode(!viewModel.isDarkMode) }
-                .padding(vertical = 4.dp),
-              horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .testTag("extras_display_card"),
+              horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
               Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
               ) {
                 Surface(
-                  color = palette.nestedCardFill,
-                  shape = RoundedCornerShape(12.dp),
-                  modifier = Modifier.size(40.dp)
+                  color = palette.nestedCardFill.copy(alpha = 0.85f),
+                  shape = RoundedCornerShape(10.dp),
+                  modifier = Modifier.size(32.dp)
                 ) {
                   Box(contentAlignment = Alignment.Center) {
                     Icon(
-                      imageVector = Icons.Filled.DarkMode,
+                      imageVector = Icons.Default.DarkMode,
                       contentDescription = null,
                       tint = palette.accentIndigo,
-                      modifier = Modifier.size(22.dp)
+                      modifier = Modifier.size(18.dp)
                     )
                   }
                 }
 
                 Text(
                   text = stringResource(R.string.dark_mode_label),
-                  style = MaterialTheme.typography.titleMedium.copy(
-                    fontSize = metrics.scaledSp(16),
+                  style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
                   ),
                   color = palette.textPrimary,
                   maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier.weight(1f)
+                  overflow = TextOverflow.Ellipsis
                 )
               }
 
@@ -18570,304 +18754,492 @@ private fun ProfileAndSettingsDialog(
                   uncheckedThumbColor = palette.textSecondary,
                   uncheckedTrackColor = palette.progressTrack
                 ),
-                modifier = Modifier.testTag("dark_mode_switch")
+                modifier = Modifier
+                  .scale(0.86f)
+                  .testTag("dark_mode_switch")
               )
             }
-          }
-        }
 
-        // 3. Data Management Section Card (One-Tap Backup & Restore)
-        val context = LocalContext.current
-        var isRestoreDialogOpen by rememberSaveable { mutableStateOf(false) }
-        var restoreJsonInput by rememberSaveable { mutableStateOf("") }
-        var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
+            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-        LiquidGlassCard(
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("extras_data_management_card"),
-          shape = RoundedCornerShape(24.dp),
-          elevation = if (palette.isDark) 8.dp else 6.dp
-        ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(metrics.scaledDp(18)),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
-          ) {
-            Text(
-              text = "Data Management",
-              style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(18),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-
-            Text(
-              text = "Back up your Schedules, Tasks, Alarms, Flashcards, and Profile to your clipboard or restore from a saved backup string.",
-              style = MaterialTheme.typography.bodySmall.copy(
-                fontSize = metrics.scaledSp(13)
-              ),
-              color = palette.textSecondary
-            )
-
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+            // 3. "AUTO BACKUP & SYNC" COMPACT LIST TILE + COMPACT ACTIONS
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(rowTileSurfaceColor)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .testTag("extras_data_management_card"),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-              Button(
-                onClick = {
-                  val backupJson = viewModel.createBackupJsonString(context)
-                  val clipboard =
-                    context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                  val clip = ClipData.newPlainText("Sibil Data Backup", backupJson)
-                  clipboard?.setPrimaryClip(clip)
-                  Toast.makeText(
-                    context,
-                    "All Sibil data copied to clipboard! Paste and save it in your notes.",
-                    Toast.LENGTH_LONG
-                  ).show()
-                },
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                  .weight(1f)
-                  .heightIn(min = 48.dp)
-                  .testTag("backup_data_button")
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
               ) {
-                Text(
-                  text = "Backup Data",
-                  style = MaterialTheme.typography.labelLarge.copy(
-                    fontSize = metrics.scaledSp(13),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
+                Row(
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Surface(
+                    color = palette.nestedCardFill.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.size(32.dp)
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      Icon(
+                        imageVector = Icons.Default.CloudSync,
+                        contentDescription = null,
+                        tint = palette.accentIndigo,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
+                  }
 
-              OutlinedButton(
-                onClick = {
-                  restoreErrorText = null
-                  isRestoreDialogOpen = true
-                },
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.2.dp, Color(0xFF6366F1)),
-                colors = ButtonDefaults.outlinedButtonColors(
-                  containerColor = palette.nestedCardFill,
-                  contentColor = palette.accentIndigo
-                ),
-                elevation = null,
-                modifier = Modifier
-                  .weight(1f)
-                  .heightIn(min = 48.dp)
-                  .testTag("restore_data_button")
-              ) {
-                Text(
-                  text = "Restore Data",
-                  style = MaterialTheme.typography.labelLarge.copy(
-                    fontSize = metrics.scaledSp(13),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.accentIndigo,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
-            }
-          }
-        }
-
-        if (isRestoreDialogOpen) {
-          AlertDialog(
-            onDismissRequest = { isRestoreDialogOpen = false },
-            shape = RoundedCornerShape(24.dp),
-            containerColor = modalBackgroundColor,
-            title = {
-              Text(
-                text = "Restore Sibil Data",
-                style = MaterialTheme.typography.titleLarge.copy(
-                  fontSize = metrics.scaledSp(19),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary
-              )
-            },
-            text = {
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-              ) {
-                Text(
-                  text = "Paste your previously copied Sibil backup JSON string below to restore all Schedules, Tasks, Alarms, Flashcards, and Profile data.",
-                  style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = metrics.scaledSp(13)
-                  ),
-                  color = palette.textSecondary
-                )
-
-                OutlinedTextField(
-                  value = restoreJsonInput,
-                  onValueChange = {
-                    restoreJsonInput = it
-                    if (it.isNotBlank()) restoreErrorText = null
-                  },
-                  label = { Text("Backup JSON String") },
-                  placeholder = { Text("{\"app\":\"Sibil\", ...}") },
-                  isError = restoreErrorText != null,
-                  minLines = 5,
-                  maxLines = 10,
-                  shape = RoundedCornerShape(14.dp),
-                  colors = sibilOutlinedTextFieldColors(),
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("restore_backup_json_input")
-                )
-
-                if (restoreErrorText != null) {
                   Text(
-                    text = restoreErrorText.orEmpty(),
-                    style = MaterialTheme.typography.labelSmall.copy(
+                    text = "Auto Backup & Sync",
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                      fontSize = 14.sp,
                       fontWeight = FontWeight.SemiBold
                     ),
-                    color = palette.accentRed
+                    color = palette.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+
+                Surface(
+                  color = Color(0xFF10B981).copy(alpha = 0.14f),
+                  shape = CircleShape,
+                  border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.38f))
+                ) {
+                  Text(
+                    text = autoBackupStatusLabel,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (palette.isDark) Color(0xFF34D399) else Color(0xFF047857),
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                      .padding(horizontal = 8.dp, vertical = 4.dp)
+                      .testTag("auto_backup_status_chip")
                   )
                 }
               }
-            },
-            confirmButton = {
-              Button(
-                onClick = {
-                  val restored = viewModel.restoreFromBackupJsonString(context, restoreJsonInput)
-                  if (restored) {
-                    isRestoreDialogOpen = false
-                    restoreJsonInput = ""
-                    restoreErrorText = null
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                OutlinedButton(
+                  onClick = {
+                    val backupJson = viewModel.createBackupJsonString(context)
+                    val clipboard =
+                      context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    val clip = ClipData.newPlainText("Sibil Data Backup", backupJson)
+                    clipboard?.setPrimaryClip(clip)
                     Toast.makeText(
                       context,
-                      "Data restored successfully!",
-                      Toast.LENGTH_LONG
+                      "Backup copied to clipboard!",
+                      Toast.LENGTH_SHORT
                     ).show()
-                  } else {
-                    restoreErrorText = "Invalid backup JSON string. Please check and try again."
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+                  colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
+                    contentColor = palette.accentIndigo
+                  ),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .testTag("backup_data_button")
+                ) {
+                  Text(
+                    text = "Copy Backup",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
+                  )
+                }
+
+                OutlinedButton(
+                  onClick = {
+                    restoreErrorText = null
+                    isRestoreDialogOpen = true
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+                  colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
+                    contentColor = palette.accentIndigo
+                  ),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .testTag("restore_data_button")
+                ) {
+                  Text(
+                    text = "Restore Backup",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false
+                  )
+                }
+              }
+            }
+
+            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
+
+            // 4. "ABOUT SIBIL" COMPACT TILE WITH MANUAL "CHECK FOR UPDATES"
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(rowTileSurfaceColor)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .testTag("extras_about_card"),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Surface(
+                    color = palette.nestedCardFill.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.size(32.dp)
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      Icon(
+                        imageVector = Icons.Filled.Info,
+                        contentDescription = null,
+                        tint = palette.accentIndigo,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
                   }
-                },
-                shape = CircleShape,
-                modifier = Modifier.testTag("confirm_restore_data_button")
+
+                  Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                      text = "About Sibil",
+                      style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = palette.textPrimary,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.testTag("about_app_name_text")
+                    )
+                    Text(
+                      text = "Version $localVersion (Official Build)",
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textSecondary,
+                      maxLines = 1,
+                      softWrap = false,
+                      modifier = Modifier.testTag("about_app_version_text")
+                    )
+                  }
+                }
+
+                // Compact, sleek frosted action button: "Check for Updates"
+                OutlinedButton(
+                  onClick = {
+                    if (!isCheckingUpdates) {
+                      isCheckingUpdates = true
+                      updateStatusMessage = null
+                      isUpdateStatusError = false
+                      coroutineScope.launch {
+                        when (val checkResult = queryGitHubLatestRelease(context)) {
+                          is GitHubUpdateCheckResult.UpdateAvailable -> {
+                            isCheckingUpdates = false
+                            cachedSessionUpdateRelease = checkResult.releaseInfo
+                            manualUpdateRelease = checkResult.releaseInfo
+                          }
+                          is GitHubUpdateCheckResult.UpToDate -> {
+                            isCheckingUpdates = false
+                            isUpdateStatusError = false
+                            val msg = "You're on the latest version (v${checkResult.localVersion}) ✓"
+                            updateStatusMessage = msg
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                          }
+                          GitHubUpdateCheckResult.NetworkError -> {
+                            isCheckingUpdates = false
+                            isUpdateStatusError = true
+                            val errMsg = "Unable to check updates. Please check your connection."
+                            updateStatusMessage = errMsg
+                            Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
+                          }
+                        }
+                      }
+                    }
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+                  colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = palette.nestedCardFill.copy(alpha = 0.80f),
+                    contentColor = palette.accentIndigo
+                  ),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .wrapContentWidth()
+                    .height(34.dp)
+                    .testTag("check_for_updates_button")
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    if (isCheckingUpdates) {
+                      CircularProgressIndicator(
+                        modifier = Modifier.size(13.dp),
+                        strokeWidth = 2.dp,
+                        color = palette.accentIndigo
+                      )
+                    } else {
+                      Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = null,
+                        tint = palette.accentIndigo,
+                        modifier = Modifier.size(14.dp)
+                      )
+                    }
+                    Text(
+                      text = if (isCheckingUpdates) "Checking..." else "Check for Updates",
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Bold,
+                      maxLines = 1,
+                      softWrap = false
+                    )
+                  }
+                }
+              }
+
+              // Inline Status Toast / Chip for Manual Update Check Result
+              val currentStatusMsg = updateStatusMessage
+              if (currentStatusMsg != null) {
+                Surface(
+                  color = if (isUpdateStatusError) {
+                    palette.accentRed.copy(alpha = 0.14f)
+                  } else {
+                    Color(0xFF10B981).copy(alpha = 0.14f)
+                  },
+                  shape = RoundedCornerShape(8.dp),
+                  border = BorderStroke(
+                    1.dp,
+                    if (isUpdateStatusError) {
+                      palette.accentRed.copy(alpha = 0.35f)
+                    } else {
+                      Color(0xFF10B981).copy(alpha = 0.35f)
+                    }
+                  ),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("update_check_status_chip")
+                ) {
+                  Text(
+                    text = currentStatusMsg,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isUpdateStatusError) {
+                      palette.accentRed
+                    } else if (palette.isDark) {
+                      Color(0xFF34D399)
+                    } else {
+                      Color(0xFF047857)
+                    },
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                  )
+                }
+              }
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
               ) {
                 Text(
-                  text = "Confirm Restore",
-                  style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                  text = stringResource(R.string.developed_by_text),
+                  style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
+                  ),
+                  color = palette.textSecondary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier
+                    .weight(1f)
+                    .testTag("about_developed_by_text")
                 )
-              }
-            },
-            dismissButton = {
-              TextButton(onClick = { isRestoreDialogOpen = false }) {
-                Text("Cancel", color = palette.textSecondary)
-              }
-            }
-          )
-        }
 
-        // 4. About Section Card
-        LiquidGlassCard(
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("extras_about_card"),
-          shape = RoundedCornerShape(24.dp),
-          elevation = if (palette.isDark) 8.dp else 6.dp
-        ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(metrics.scaledDp(18)),
-            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
-          ) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Filled.Info,
-                contentDescription = null,
-                tint = palette.accentIndigo,
-                modifier = Modifier.size(22.dp)
-              )
-              Text(
-                text = stringResource(R.string.about_section_title),
-                style = MaterialTheme.typography.titleLarge.copy(
-                  fontSize = metrics.scaledSp(18),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-              )
-            }
-
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Text(
-                text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.titleLarge.copy(
-                  fontSize = metrics.scaledSp(18),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                  .weight(1f)
-                  .testTag("about_app_name_text")
-              )
-
-              Surface(
-                color = palette.nestedCardFill,
-                shape = CircleShape
-              ) {
                 Text(
-                  text = SIBIL_APP_VERSION_TAG,
-                  style = MaterialTheme.typography.labelMedium.copy(
-                    fontSize = metrics.scaledSp(12),
-                    fontWeight = FontWeight.Bold
+                  text = "Academic License • Verified",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
                   ),
                   color = palette.accentIndigo,
                   maxLines = 1,
-                  modifier = Modifier
-                    .padding(horizontal = 12.dp, vertical = 5.dp)
-                    .testTag("about_app_version_text")
+                  softWrap = false
                 )
               }
             }
 
-            HorizontalDivider(color = palette.dividerColor)
+            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-            Text(
-              text = stringResource(R.string.developed_by_text),
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.SemiBold
+            // 5. "ACCOUNT ACTIONS": Minimalist Text Button for "Log Out / Switch Account" with neutral red tint
+            TextButton(
+              onClick = onSwitchAccount,
+              shape = RoundedCornerShape(10.dp),
+              colors = ButtonDefaults.textButtonColors(
+                contentColor = palette.accentRed
               ),
-              color = palette.textSecondary,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
               modifier = Modifier
                 .fillMaxWidth()
-                .testTag("about_developed_by_text")
-            )
+                .height(38.dp)
+                .testTag("switch_account_button")
+            ) {
+              Text(
+                text = "Log Out / Switch Account",
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentRed,
+                maxLines = 1,
+                softWrap = false
+              )
+            }
           }
         }
       }
     }
+  }
+
+  // Restore Backup Modal Dialog
+  if (isRestoreDialogOpen) {
+    AlertDialog(
+      onDismissRequest = { isRestoreDialogOpen = false },
+      shape = RoundedCornerShape(22.dp),
+      containerColor = modalBackgroundColor,
+      title = {
+        Text(
+          text = "Restore Sibil Data",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textPrimary
+        )
+      },
+      text = {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "Paste your previously copied Sibil backup JSON string below to restore all Schedules, Tasks, Alarms, Flashcards, and Profile data.",
+            style = MaterialTheme.typography.bodySmall.copy(
+              fontSize = 12.sp
+            ),
+            color = palette.textSecondary
+          )
+
+          OutlinedTextField(
+            value = restoreJsonInput,
+            onValueChange = {
+              restoreJsonInput = it
+              if (it.isNotBlank()) restoreErrorText = null
+            },
+            label = { Text("Backup JSON String") },
+            placeholder = { Text("{\"app\":\"Sibil\", ...}") },
+            isError = restoreErrorText != null,
+            minLines = 4,
+            maxLines = 8,
+            shape = RoundedCornerShape(12.dp),
+            colors = sibilOutlinedTextFieldColors(),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("restore_backup_json_input")
+          )
+
+          if (restoreErrorText != null) {
+            Text(
+              text = restoreErrorText.orEmpty(),
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = palette.accentRed
+            )
+          }
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            val restored = viewModel.restoreFromBackupJsonString(context, restoreJsonInput)
+            if (restored) {
+              isRestoreDialogOpen = false
+              restoreJsonInput = ""
+              restoreErrorText = null
+              Toast.makeText(
+                context,
+                "Data restored successfully!",
+                Toast.LENGTH_LONG
+              ).show()
+            } else {
+              restoreErrorText = "Invalid backup JSON string. Please check and try again."
+            }
+          },
+          shape = CircleShape,
+          modifier = Modifier.testTag("confirm_restore_data_button")
+        ) {
+          Text(
+            text = "Confirm Restore",
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+          )
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { isRestoreDialogOpen = false }) {
+          Text("Cancel", color = palette.textSecondary)
+        }
+      }
+    )
+  }
+
+  // Trigger UpdateAvailableDialog immediately if manual "Check for Updates" detects a newer release
+  val activeManualRelease = manualUpdateRelease
+  if (activeManualRelease != null) {
+    UpdateAvailableDialog(
+      releaseInfo = activeManualRelease,
+      metrics = metrics,
+      onUpdateNow = {
+        manualUpdateRelease = null
+      },
+      onRemindLater = {
+        cachedPrefs.edit().putString("dismissed_update_tag", activeManualRelease.tagName).apply()
+        dismissedSessionUpdateTag = activeManualRelease.tagName
+        hasDismissedUpdateForSession = true
+        manualUpdateRelease = null
+      }
+    )
   }
 }
 
@@ -19725,10 +20097,17 @@ private val CE_FOCUS_PRESETS = listOf(
 
 const val SIBIL_ALARM_CHANNEL_ID = "sibil_alarm_channel"
 const val SIBIL_ALARM_CHANNEL_NAME = "Sibil Alarms & Timers"
-const val TIMER_NOTIFICATION_CHANNEL_ID = SIBIL_ALARM_CHANNEL_ID
-const val TIMER_NOTIFICATION_CHANNEL_NAME = SIBIL_ALARM_CHANNEL_NAME
+const val SIBIL_TIMER_CHANNEL_ID = "sibil_timer_channel"
+const val SIBIL_TIMER_CHANNEL_NAME = "Sibil Countdown Timers"
+const val TIMER_NOTIFICATION_CHANNEL_ID = SIBIL_TIMER_CHANNEL_ID
+const val TIMER_NOTIFICATION_CHANNEL_NAME = SIBIL_TIMER_CHANNEL_NAME
+const val ACTION_STOP_TIMER_ALARM = "com.example.ACTION_STOP_TIMER_ALARM"
 private const val TIMER_NOTIFICATION_ID = 4001
 private const val TIMER_ALARM_REQUEST_CODE = 4002
+private const val TIMER_STOP_ACTION_REQUEST_CODE = 4003
+
+@Volatile
+private var lastTimerAlarmFiredRealtimeMs: Long = 0L
 
 var currentRingtone: Ringtone? = null
 var isAlarmSoundRinging by mutableStateOf(false)
@@ -19741,7 +20120,7 @@ var snoozeTargetTitle by mutableStateOf<String?>(null)
  * Continuous Audio Engine (`AlarmSoundController` singleton object):
  * - Uses `android.media.MediaPlayer` with `AudioAttributes.USAGE_ALARM` and `CONTENT_TYPE_SONIFICATION`.
  * - Sets `mediaPlayer.isLooping = true` before calling `prepare()` and `start()` so the alarm/timer
- *   continues ringing until the user explicitly taps "Stop" or "Snooze (5m)".
+ *   continues ringing until the user explicitly taps "Stop / Dismiss" or "Snooze (5m)".
  */
 object AlarmSoundController {
   private var mediaPlayer: MediaPlayer? = null
@@ -19844,11 +20223,21 @@ fun playNativeAlarmSound(context: Context): Ringtone? {
 }
 
 /**
- * Creates the high-importance Notification Channel `"sibil_alarm_channel"` ("Sibil Alarms & Timers").
+ * Creates the high-importance Notification Channels `"sibil_timer_channel"` and `"sibil_alarm_channel"`.
  */
 fun createClockNotificationChannel(context: Context) {
   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-    val channel = NotificationChannel(
+    val notificationManager =
+      context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+    val timerChannel = NotificationChannel(
+      SIBIL_TIMER_CHANNEL_ID,
+      SIBIL_TIMER_CHANNEL_NAME,
+      NotificationManager.IMPORTANCE_HIGH
+    ).apply {
+      description = "High-priority heads-up alerts for Sibil Countdown Timers"
+      enableVibration(true)
+    }
+    val alarmChannel = NotificationChannel(
       SIBIL_ALARM_CHANNEL_ID,
       SIBIL_ALARM_CHANNEL_NAME,
       NotificationManager.IMPORTANCE_HIGH
@@ -19856,9 +20245,8 @@ fun createClockNotificationChannel(context: Context) {
       description = "High-priority alerts for Sibil Alarms and Countdown Timers"
       enableVibration(true)
     }
-    val notificationManager =
-      context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-    notificationManager?.createNotificationChannel(channel)
+    notificationManager?.createNotificationChannel(timerChannel)
+    notificationManager?.createNotificationChannel(alarmChannel)
   }
 }
 
@@ -19868,8 +20256,9 @@ fun createTimerNotificationChannel(context: Context) {
 
 /**
  * System Notification Helper:
- * Creates the `"sibil_alarm_channel"` (`IMPORTANCE_HIGH`) and displays a high-priority system
- * notification whenever an Alarm triggers or a Timer reaches `00:00:00`.
+ * Dispatches a high-priority heads-up `NotificationCompat.Builder` to the phone's status bar
+ * with channel ID `sibil_timer_channel` and an interactive `Stop / Dismiss` action button
+ * that stops the ringing sound and clears the notification.
  */
 @SuppressLint("MissingPermission")
 fun showClockNotification(context: Context, title: String, message: String) {
@@ -19885,7 +20274,17 @@ fun showClockNotification(context: Context, title: String, message: String) {
     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
   )
 
-  val notification = NotificationCompat.Builder(context, SIBIL_ALARM_CHANNEL_ID)
+  val stopIntent = Intent(context, TimerReceiver::class.java).apply {
+    action = ACTION_STOP_TIMER_ALARM
+  }
+  val stopPendingIntent = PendingIntent.getBroadcast(
+    context,
+    TIMER_STOP_ACTION_REQUEST_CODE,
+    stopIntent,
+    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+  )
+
+  val notification = NotificationCompat.Builder(context, SIBIL_TIMER_CHANNEL_ID)
     .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
     .setContentTitle(title)
     .setContentText(message)
@@ -19895,6 +20294,12 @@ fun showClockNotification(context: Context, title: String, message: String) {
     .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
     .setAutoCancel(true)
     .setContentIntent(contentPendingIntent)
+    .setDeleteIntent(stopPendingIntent)
+    .addAction(
+      android.R.drawable.ic_media_pause,
+      "Stop / Dismiss",
+      stopPendingIntent
+    )
     .build()
 
   val hasNotifPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -19915,8 +20320,24 @@ fun showClockNotification(context: Context, title: String, message: String) {
 }
 
 /**
- * Triggers continuous looping alarm audio, sets `ringingAlertTitle` so the non-dismissible
- * `RingingAlertDialog` pops up immediately, and posts a system notification.
+ * Fires the timer finished alarm sound and high-priority `sibil_timer_channel` status bar
+ * notification ONCE (guarded by `lastTimerAlarmFiredRealtimeMs` to prevent double-firing
+ * between the foreground coroutine and `TimerReceiver`), without showing an in-app banner.
+ */
+@Synchronized
+fun triggerSingleTimerExpirationAlert(context: Context, title: String, message: String) {
+  val now = SystemClock.elapsedRealtime()
+  if (now - lastTimerAlarmFiredRealtimeMs < 2_500L) {
+    return
+  }
+  lastTimerAlarmFiredRealtimeMs = now
+  AlarmSoundController.startRinging(context)
+  showClockNotification(context = context, title = title, message = message)
+}
+
+/**
+ * Triggers continuous looping alarm audio for scheduled Alarms, sets `ringingAlertTitle`
+ * so `RingingAlertDialog` pops up for scheduled Alarms, and posts a system notification.
  */
 fun triggerClockAlert(context: Context, title: String, message: String) {
   ringingAlertTitle = title
@@ -20218,17 +20639,12 @@ fun ClockScreen(
     }
   }
 
-  // Local and global ringing state so user can stop or snooze ringing alarm or timer
-  var ringingBannerMessage by remember { mutableStateOf<String?>(null) }
-
   fun triggerAlarmRingtone(title: String, message: String) {
-    ringingBannerMessage = message
     triggerClockAlert(context = context, title = title, message = message)
   }
 
   fun stopActiveRingtone() {
     AlarmSoundController.stopRinging()
-    ringingBannerMessage = null
     try {
       NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
     } catch (_: Exception) {
@@ -20238,9 +20654,13 @@ fun ClockScreen(
   // ==========================================================================
   // ALARM STATE (SHARED PREFERENCES BACKED, STARTS COMPLETELY EMPTY)
   // ==========================================================================
-  val fallbackAlarms = remember {
-    val saved = localStorageManager.loadAlarms(LocalStorageManager.GUEST_ACCOUNT_KEY) ?: emptyList()
-    mutableStateListOf<AlarmItem>().apply { addAll(saved) }
+  val fallbackAlarms = remember(viewModel == null) {
+    if (viewModel == null) {
+      val saved = localStorageManager.loadAlarms(LocalStorageManager.GUEST_ACCOUNT_KEY) ?: emptyList()
+      mutableStateListOf<AlarmItem>().apply { addAll(saved) }
+    } else {
+      mutableStateListOf()
+    }
   }
   val alarms: List<AlarmItem> = viewModel?.alarms ?: fallbackAlarms
   var isAddAlarmDialogOpen by rememberSaveable { mutableStateOf(false) }
@@ -20295,19 +20715,27 @@ fun ClockScreen(
   var timerRemainingSeconds by rememberSaveable { mutableLongStateOf(0L) }
   var isTimerRunning by rememberSaveable { mutableStateOf(false) }
   var activePresetLabel by rememberSaveable { mutableStateOf<String?>(null) }
+  var hasFiredAlarm by remember { mutableStateOf(false) }
 
   LaunchedEffect(isTimerRunning) {
     while (isTimerRunning && timerRemainingSeconds > 0L) {
       delay(1000L)
       if (isTimerRunning && timerRemainingSeconds > 0L) {
         timerRemainingSeconds -= 1L
-        if (timerRemainingSeconds == 0L) {
+        if (timerRemainingSeconds <= 0L) {
+          timerRemainingSeconds = 0L
           isTimerRunning = false
-          val labelSuffix = activePresetLabel?.let { " ($it)" } ?: ""
-          triggerAlarmRingtone(
-            title = "Timer Reached 00:00:00!",
-            message = "Timer finished: 00:00:00$labelSuffix"
-          )
+          if (!hasFiredAlarm) {
+            hasFiredAlarm = true
+            cancelTimerExactAlarm(context)
+            val labelSuffix = activePresetLabel?.let { " ($it)" } ?: ""
+            triggerSingleTimerExpirationAlert(
+              context = context,
+              title = "Timer Reached 00:00:00!$labelSuffix",
+              message = "Countdown timer finished (00:00:00)$labelSuffix. Tap Stop / Dismiss to silence."
+            )
+          }
+          break
         }
       }
     }
@@ -20336,102 +20764,56 @@ fun ClockScreen(
       .background(Color.Transparent)
       .testTag("clock_screen")
   ) {
-    // Floating Liquid Glass Header ("Clock" & "CE Time Suite")
+    // Minimalist Floating Liquid Glass Header ("Clock")
     Row(
       modifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 20.dp, vertical = 12.dp),
       verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.weight(1f, fill = false)
-      ) {
-        Box(
-          modifier = Modifier
-            .size(38.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(
+      Box(
+        modifier = Modifier
+          .size(38.dp)
+          .clip(RoundedCornerShape(12.dp))
+          .background(
+            brush = Brush.linearGradient(
+              colors = listOf(
+                Color(0xFF6366F1).copy(alpha = 0.2f),
+                Color(0xFF4F46E5).copy(alpha = 0.1f)
+              )
+            ),
+            shape = RoundedCornerShape(12.dp)
+          )
+          .border(
+            border = BorderStroke(
+              width = 1.dp,
               brush = Brush.linearGradient(
                 colors = listOf(
-                  Color(0xFF6366F1).copy(alpha = 0.2f),
-                  Color(0xFF4F46E5).copy(alpha = 0.1f)
+                  Color.White.copy(alpha = 0.55f),
+                  Color(0xFF6366F1).copy(alpha = 0.35f)
                 )
-              ),
-              shape = RoundedCornerShape(12.dp)
-            )
-            .border(
-              border = BorderStroke(
-                width = 1.dp,
-                brush = Brush.linearGradient(
-                  colors = listOf(
-                    Color.White.copy(alpha = 0.55f),
-                    Color(0xFF6366F1).copy(alpha = 0.35f)
-                  )
-                )
-              ),
-              shape = RoundedCornerShape(12.dp)
+              )
             ),
-          contentAlignment = Alignment.Center
-        ) {
-          Icon(
-            imageVector = Icons.Filled.Schedule,
-            contentDescription = "Clock header icon",
-            tint = Color(0xFF6366F1),
-            modifier = Modifier.size(20.dp)
-          )
-        }
-
-        Column {
-          Text(
-            text = "Clock",
-            fontSize = 26.sp,
-            fontWeight = FontWeight.ExtraBold,
-            color = palette.textPrimary
-          )
-          Text(
-            text = "Board Exam & Study Timekeeper",
-            fontSize = 11.sp,
-            color = palette.textSecondary
-          )
-        }
-      }
-
-      Surface(
-        shape = RoundedCornerShape(50),
-        color = palette.nestedCardFill,
-        border = BorderStroke(
-          width = 1.dp,
-          brush = Brush.horizontalGradient(
-            colors = listOf(
-              Color(0xFF6366F1).copy(alpha = 0.45f),
-              Color.White.copy(alpha = 0.6f)
-            )
-          )
-        ),
-        shadowElevation = 4.dp
+            shape = RoundedCornerShape(12.dp)
+          ),
+        contentAlignment = Alignment.Center
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-          Icon(
-            imageVector = Icons.Filled.Timer,
-            contentDescription = null,
-            tint = Color(0xFF6366F1),
-            modifier = Modifier.size(12.dp)
-          )
-          Text(
-            text = "CE Time Suite",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
-          )
-        }
+        Icon(
+          imageVector = Icons.Filled.Schedule,
+          contentDescription = "Clock header icon",
+          tint = Color(0xFF6366F1),
+          modifier = Modifier.size(20.dp)
+        )
       }
+
+      Text(
+        text = "Clock",
+        fontSize = 26.sp,
+        fontWeight = FontWeight.ExtraBold,
+        color = palette.textPrimary,
+        maxLines = 1
+      )
     }
 
     // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch)
@@ -20517,13 +20899,13 @@ fun ClockScreen(
           ) {
             Row(
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(6.dp),
-              modifier = Modifier.padding(horizontal = 8.dp)
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+              modifier = Modifier.padding(horizontal = 4.dp)
             ) {
               Icon(
                 imageVector = tab.icon,
                 contentDescription = tab.title,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(14.dp),
                 tint = if (selected) Color.White else palette.textSecondary
               )
               Text(
@@ -20532,7 +20914,7 @@ fun ClockScreen(
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 fontSize = 13.sp,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                softWrap = false
               )
             }
           }
@@ -20641,71 +21023,6 @@ fun ClockScreen(
       }
     }
 
-    // Active ringing alarm/timer banner with visible "Stop Alarm" button
-    val resolvedRingingMessage = ringingBannerMessage
-      ?: activeRingingAlertMessage
-      ?: ringingAlertTitle
-      ?: if (isAlarmSoundRinging) "Alarm / Timer Ringing!" else null
-
-    if (isAlarmSoundRinging || resolvedRingingMessage != null) {
-      Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-          containerColor = palette.nestedCardFill
-        ),
-        border = BorderStroke(1.5.dp, palette.accentIndigo),
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(
-            horizontal = metrics.scaledDp(16),
-            vertical = metrics.scaledDp(8)
-          )
-          .testTag("active_ringing_banner")
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = metrics.scaledDp(16), vertical = metrics.scaledDp(12)),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-          Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-          ) {
-            Icon(
-              imageVector = Icons.Filled.NotificationsActive,
-              contentDescription = "Ringing",
-              tint = palette.accentIndigo
-            )
-            Text(
-              text = resolvedRingingMessage ?: "Alarm Ringing!",
-              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-              color = palette.textPrimary
-            )
-          }
-          Button(
-            onClick = { stopActiveRingtone() },
-            shape = RoundedCornerShape(50),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary
-            ),
-            modifier = Modifier.testTag("stop_alarm_sound_button")
-          ) {
-            Icon(
-              imageVector = Icons.Filled.VolumeOff,
-              contentDescription = "Stop Alarm",
-              modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Stop Alarm")
-          }
-        }
-      }
-    }
-
     // Main Sub-screen Content
     Box(
       modifier = Modifier
@@ -20780,6 +21097,8 @@ fun ClockScreen(
           },
           onClearInput = {
             isTimerRunning = false
+            hasFiredAlarm = false
+            stopActiveRingtone()
             timerRemainingSeconds = 0L
             timerTotalDurationSeconds = 0L
             timerDigitInput = ""
@@ -20792,6 +21111,7 @@ fun ClockScreen(
               cancelTimerExactAlarm(context)
             } else {
               stopActiveRingtone()
+              hasFiredAlarm = false
               if (timerRemainingSeconds > 0L) {
                 isTimerRunning = true
                 scheduleTimerExactAlarm(
@@ -20817,6 +21137,8 @@ fun ClockScreen(
           },
           onResetTimer = {
             isTimerRunning = false
+            hasFiredAlarm = false
+            stopActiveRingtone()
             timerRemainingSeconds = 0L
             timerTotalDurationSeconds = 0L
             activePresetLabel = null
@@ -20824,6 +21146,7 @@ fun ClockScreen(
           },
           onSelectPreset = { preset ->
             stopActiveRingtone()
+            hasFiredAlarm = false
             timerDigitInput = ""
             timerTotalDurationSeconds = preset.durationSeconds
             timerRemainingSeconds = preset.durationSeconds
@@ -22344,6 +22667,15 @@ private fun StopwatchSubScreen(
 class TimerReceiver : BroadcastReceiver() {
   @SuppressLint("MissingPermission")
   override fun onReceive(context: Context, intent: Intent?) {
+    if (intent?.action == ACTION_STOP_TIMER_ALARM) {
+      AlarmSoundController.stopRinging()
+      try {
+        NotificationManagerCompat.from(context).cancel(TIMER_NOTIFICATION_ID)
+      } catch (_: Exception) {
+      }
+      return
+    }
+
     val label = intent?.getStringExtra("timer_label")
     val alertTitle = if (!label.isNullOrBlank()) {
       "Timer Reached 00:00:00! ($label)"
@@ -22351,11 +22683,11 @@ class TimerReceiver : BroadcastReceiver() {
       "Timer Reached 00:00:00!"
     }
     val alertMessage = if (!label.isNullOrBlank()) {
-      "Your timer ($label) has reached 00:00:00."
+      "Your timer ($label) has reached 00:00:00. Tap Stop / Dismiss to silence."
     } else {
-      "Your countdown timer has reached 00:00:00."
+      "Your countdown timer has reached 00:00:00. Tap Stop / Dismiss to silence."
     }
-    triggerClockAlert(
+    triggerSingleTimerExpirationAlert(
       context = context,
       title = alertTitle,
       message = alertMessage
