@@ -334,6 +334,11 @@ import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.UserProfileChangeRequest
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.PropertyName
+import com.google.firebase.firestore.SetOptions
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -1008,27 +1013,105 @@ const val DEFAULT_TASK_CATEGORY = "General"
  * Shared Task Data Model including `id`, `title`, `dueDate`, `isCompleted`, and `subjectCategory`.
  */
 data class Task(
-  val id: Int,
-  val title: String,
-  val dueDate: String,
+  val id: Int = 0,
+  val title: String = "",
+  val dueDate: String = "",
+  @get:PropertyName("isCompleted")
   val isCompleted: Boolean = false,
   val subjectCategory: String = DEFAULT_TASK_CATEGORY
-)
+) {
+  fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
+    "id" to id,
+    "title" to title,
+    "dueDate" to dueDate,
+    "isCompleted" to isCompleted,
+    "completed" to isCompleted,
+    "subjectCategory" to subjectCategory
+  )
+}
+
+typealias TaskItem = Task
+
+fun DocumentSnapshot.toTaskItemOrNull(): TaskItem? {
+  val parsed = try {
+    toObject(TaskItem::class.java)
+  } catch (_: Throwable) {
+    null
+  } ?: return null
+  val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: parsed.id
+  val resolvedCompleted = getBoolean("isCompleted") ?: getBoolean("completed") ?: parsed.isCompleted
+  val resolvedTitle = (getString("title") ?: parsed.title).trim()
+  if (resolvedTitle.isEmpty()) return null
+  val resolvedDueDate = (getString("dueDate") ?: parsed.dueDate).trim().ifEmpty { "Upcoming" }
+  val resolvedCategory = (getString("subjectCategory") ?: parsed.subjectCategory).trim().ifEmpty {
+    DEFAULT_TASK_CATEGORY
+  }
+  return parsed.copy(
+    id = resolvedId,
+    title = resolvedTitle,
+    dueDate = resolvedDueDate,
+    isCompleted = resolvedCompleted,
+    subjectCategory = resolvedCategory
+  )
+}
 
 /**
  * Data Model for the colored Timetable Schedule on the "Schedule" tab:
  * `id: Int, subjectName: String, timeRange: String, days: List<String>, room: String, colorHex: Long`.
  */
 data class ClassSchedule(
-  val id: Int,
-  val subjectName: String,
-  val timeRange: String,
-  val days: List<String>,
-  val room: String,
-  val colorHex: Long,
+  val id: Int = 0,
+  val subjectName: String = "",
+  val timeRange: String = "7:00 AM - 9:00 AM",
+  val days: List<String> = emptyList(),
+  val room: String = "",
+  val colorHex: Long = 0xFF6366F1,
   val startTime: String = extractStartEndTimeTokens(timeRange).first,
   val endTime: String = extractStartEndTimeTokens(timeRange).second
-)
+) {
+  fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
+    "id" to id,
+    "subjectName" to subjectName,
+    "timeRange" to timeRange,
+    "days" to days,
+    "room" to room,
+    "colorHex" to colorHex,
+    "startTime" to startTime,
+    "endTime" to endTime
+  )
+}
+
+typealias ScheduleItem = ClassSchedule
+
+fun DocumentSnapshot.toScheduleItemOrNull(): ScheduleItem? {
+  val parsed = try {
+    toObject(ScheduleItem::class.java)
+  } catch (_: Throwable) {
+    null
+  } ?: return null
+  val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: parsed.id
+  val resolvedSubject = (getString("subjectName") ?: parsed.subjectName).trim()
+  if (resolvedSubject.isEmpty()) return null
+  val resolvedTimeRange = (getString("timeRange") ?: parsed.timeRange).trim().ifEmpty {
+    "7:00 AM - 9:00 AM"
+  }
+  val (fallbackStart, fallbackEnd) = extractStartEndTimeTokens(resolvedTimeRange)
+  val resolvedStart = (getString("startTime") ?: parsed.startTime).trim().ifEmpty { fallbackStart }
+  val resolvedEnd = (getString("endTime") ?: parsed.endTime).trim().ifEmpty { fallbackEnd }
+  val resolvedRoom = (getString("room") ?: parsed.room).trim().ifEmpty { "ENG. 307" }
+  val resolvedColor = getLong("colorHex") ?: parsed.colorHex
+  val resolvedDays = parsed.days.ifEmpty { listOf("M") }
+  return parsed.copy(
+    id = resolvedId,
+    subjectName = resolvedSubject,
+    timeRange = resolvedTimeRange,
+    days = resolvedDays,
+    room = resolvedRoom,
+    colorHex = resolvedColor,
+    startTime = resolvedStart,
+    endTime = resolvedEnd
+  )
+}
 
 /**
  * Selectable Day options for the Week View in the Schedule tab and
@@ -1069,21 +1152,69 @@ data class ExtraToolItem(
  * Smart Flashcard Data Models for Active-Recall Civil Engineering Study.
  */
 data class FlashcardItem(
-  val id: Int,
-  val question: String,
-  val answer: String,
-  val category: String,
+  val id: Int = 0,
+  val question: String = "",
+  val answer: String = "",
+  val category: String = "",
   var masteryLevel: String = "New",
+  @get:PropertyName("isMastered")
   var isMastered: Boolean = masteryLevel.equals("Good", ignoreCase = true)
-)
+) {
+  fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
+    "id" to id,
+    "question" to question,
+    "answer" to answer,
+    "category" to category,
+    "masteryLevel" to masteryLevel,
+    "isMastered" to isMastered,
+    "mastered" to isMastered
+  )
+}
 
 data class FlashcardDeck(
-  val id: Int,
-  val title: String,
-  val subjectTag: String,
-  val cards: List<FlashcardItem>,
+  val id: Int = 0,
+  val title: String = "",
+  val subjectTag: String = "",
+  val cards: List<FlashcardItem> = emptyList(),
   val masteredCardIds: List<Int> = cards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) }.map { it.id }
-)
+) {
+  fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
+    "id" to id,
+    "title" to title,
+    "subjectTag" to subjectTag,
+    "cards" to cards.map { it.toFirestoreMap() },
+    "masteredCardIds" to masteredCardIds
+  )
+}
+
+fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
+  val parsed = try {
+    toObject(FlashcardDeck::class.java)
+  } catch (_: Throwable) {
+    null
+  } ?: return null
+  val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: parsed.id
+  val resolvedTitle = (getString("title") ?: parsed.title).trim()
+  if (resolvedTitle.isEmpty()) return null
+  val resolvedTag = (getString("subjectTag") ?: parsed.subjectTag).trim().ifEmpty { "General CE" }
+  val normalizedCards = parsed.cards.map { card ->
+    val mastered = card.isMastered ||
+      card.masteryLevel.equals("Good", ignoreCase = true) ||
+      parsed.masteredCardIds.contains(card.id)
+    card.copy(
+      category = card.category.ifBlank { resolvedTag },
+      masteryLevel = card.masteryLevel.ifBlank { if (mastered) "Good" else "New" },
+      isMastered = mastered
+    )
+  }
+  return parsed.copy(
+    id = resolvedId,
+    title = resolvedTitle,
+    subjectTag = resolvedTag,
+    cards = normalizedCards,
+    masteredCardIds = normalizedCards.filter { it.isMastered }.map { it.id }
+  )
+}
 
 /**
  * Custom exception carrying HTTP status code and detailed Gemini API or network error message.
@@ -3759,6 +3890,256 @@ class TaskViewModel(
   private val _flashcardDecks = mutableStateListOf<FlashcardDeck>()
   val flashcardDecks: List<FlashcardDeck> get() = _flashcardDecks
 
+  // Initial Firestore payload loading states
+  var isSyncingTasks by mutableStateOf(false)
+    private set
+  var isSyncingSchedule by mutableStateOf(false)
+    private set
+  var isSyncingFlashcards by mutableStateOf(false)
+    private set
+  var isSyncingSettings by mutableStateOf(false)
+    private set
+
+  val isFirestoreSyncing: Boolean
+    get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings
+
+  private var activeFirestoreUserId: String? = null
+  private var tasksSnapshotListener: ListenerRegistration? = null
+  private var scheduleSnapshotListener: ListenerRegistration? = null
+  private var flashcardsSnapshotListener: ListenerRegistration? = null
+  private var settingsSnapshotListener: ListenerRegistration? = null
+  private var hasSeededTasksForUser: String? = null
+  private var hasSeededScheduleForUser: String? = null
+  private var hasSeededFlashcardsForUser: String? = null
+  private var hasSeededSettingsForUser: String? = null
+
+  private fun resolveActiveCloudUserId(): String? {
+    if (isGuestMode) return null
+    return try {
+      FirebaseAuth.getInstance().currentUser?.uid?.takeIf { it.isNotBlank() }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /**
+   * Starts real-time Firestore snapshot listeners isolated by [userId]:
+   * - `db.collection("users").document(userId).collection("tasks")`
+   * - `db.collection("users").document(userId).collection("schedule")`
+   * - `db.collection("users").document(userId).collection("flashcards")`
+   * - `db.collection("users").document(userId).collection("settings")`
+   * If `FirebaseAuth.getInstance().currentUser == null` (Offline Scholar mode), falls back gracefully to local state.
+   */
+  fun startFirestoreSyncForUser(userId: String) {
+    val cleanUid = userId.trim()
+    if (cleanUid.isEmpty() || isGuestMode) {
+      stopFirestoreSync()
+      return
+    }
+    if (
+      activeFirestoreUserId == cleanUid &&
+      tasksSnapshotListener != null &&
+      scheduleSnapshotListener != null &&
+      flashcardsSnapshotListener != null &&
+      settingsSnapshotListener != null
+    ) {
+      return
+    }
+
+    stopFirestoreSync()
+    activeFirestoreUserId = cleanUid
+    isSyncingTasks = true
+    isSyncingSchedule = true
+    isSyncingFlashcards = true
+    isSyncingSettings = true
+
+    try {
+      val db = FirebaseFirestore.getInstance()
+      val userDoc = db.collection("users").document(cleanUid)
+
+      // 1. Real-time Snapshot Listener for Tasks
+      tasksSnapshotListener = userDoc.collection("tasks")
+        .addSnapshotListener { snapshot, error ->
+          isSyncingTasks = false
+          if (error != null || snapshot == null) return@addSnapshotListener
+          val remoteTasks = snapshot.documents.mapNotNull { doc ->
+            doc.toTaskItemOrNull()
+          }.sortedByDescending { it.id }
+
+          if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForUser != cleanUid) {
+            hasSeededTasksForUser = cleanUid
+            val localSnapshot = _tasks.toList()
+            localSnapshot.forEach { taskItem ->
+              userDoc.collection("tasks")
+                .document(taskItem.id.toString())
+                .set(taskItem.toFirestoreMap())
+            }
+          } else {
+            hasSeededTasksForUser = cleanUid
+            _tasks.clear()
+            _tasks.addAll(remoteTasks)
+            nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
+            storageManager?.saveTasks(_tasks, currentAccountKey)
+          }
+        }
+
+      // 2. Real-time Snapshot Listener for Schedule
+      scheduleSnapshotListener = userDoc.collection("schedule")
+        .addSnapshotListener { snapshot, error ->
+          isSyncingSchedule = false
+          if (error != null || snapshot == null) return@addSnapshotListener
+          val remoteSchedules = snapshot.documents.mapNotNull { doc ->
+            doc.toScheduleItemOrNull()
+          }.sortedBy { parseTimeToFloat(it.startTime) }
+
+          if (
+            remoteSchedules.isEmpty() &&
+            _classSchedules.isNotEmpty() &&
+            hasSeededScheduleForUser != cleanUid
+          ) {
+            hasSeededScheduleForUser = cleanUid
+            val localSnapshot = _classSchedules.toList()
+            localSnapshot.forEach { scheduleItem ->
+              userDoc.collection("schedule")
+                .document(scheduleItem.id.toString())
+                .set(scheduleItem.toFirestoreMap())
+            }
+          } else {
+            hasSeededScheduleForUser = cleanUid
+            _classSchedules.clear()
+            _classSchedules.addAll(remoteSchedules)
+            nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
+            storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+            val validFolders = getSubjectFolders()
+            if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
+              selectedTaskFolder = DEFAULT_TASK_CATEGORY
+            }
+          }
+        }
+
+      // 3. Real-time Snapshot Listener for Flashcards
+      flashcardsSnapshotListener = userDoc.collection("flashcards")
+        .addSnapshotListener { snapshot, error ->
+          isSyncingFlashcards = false
+          if (error != null || snapshot == null) return@addSnapshotListener
+          val remoteDecks = snapshot.documents.mapNotNull { doc ->
+            doc.toFlashcardDeckOrNull()
+          }.sortedByDescending { it.id }
+
+          if (
+            remoteDecks.isEmpty() &&
+            _flashcardDecks.isNotEmpty() &&
+            hasSeededFlashcardsForUser != cleanUid
+          ) {
+            hasSeededFlashcardsForUser = cleanUid
+            val localSnapshot = _flashcardDecks.toList()
+            localSnapshot.forEach { deck ->
+              userDoc.collection("flashcards")
+                .document(deck.id.toString())
+                .set(deck.toFirestoreMap())
+            }
+          } else {
+            hasSeededFlashcardsForUser = cleanUid
+            _flashcardDecks.clear()
+            _flashcardDecks.addAll(remoteDecks)
+            nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
+            val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
+            nextCardId = maxOf(1000, maxCardId + 1)
+            storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+          }
+        }
+
+      // 4. Real-time Snapshot Listener for Settings (Dark Mode & Profile Name)
+      settingsSnapshotListener = userDoc.collection("settings")
+        .addSnapshotListener { snapshot, error ->
+          isSyncingSettings = false
+          if (error != null || snapshot == null) return@addSnapshotListener
+          val settingsDoc = snapshot.documents.firstOrNull { it.id == "preferences" }
+            ?: snapshot.documents.firstOrNull()
+
+          if (settingsDoc == null) {
+            if (hasSeededSettingsForUser != cleanUid) {
+              hasSeededSettingsForUser = cleanUid
+              syncSettingsToFirestore()
+            }
+          } else {
+            hasSeededSettingsForUser = cleanUid
+            val remoteDark = settingsDoc.getBoolean("isDarkMode")
+              ?: settingsDoc.getBoolean("darkMode")
+            if (remoteDark != null && remoteDark != isDarkMode) {
+              isDarkMode = remoteDark
+              storageManager?.saveDarkMode(remoteDark)
+            }
+            val remoteProfileName = (
+              settingsDoc.getString("profileName")
+                ?: settingsDoc.getString("displayName")
+              )?.trim().orEmpty()
+            if (remoteProfileName.isNotEmpty() && remoteProfileName != displayName) {
+              displayName = remoteProfileName
+              storageManager?.saveUserProfile(username, remoteProfileName)
+            }
+          }
+        }
+    } catch (_: Throwable) {
+      isSyncingTasks = false
+      isSyncingSchedule = false
+      isSyncingFlashcards = false
+      isSyncingSettings = false
+    }
+  }
+
+  /**
+   * Detaches all active Firestore snapshot listeners and resets syncing states.
+   */
+  fun stopFirestoreSync() {
+    tasksSnapshotListener?.remove()
+    tasksSnapshotListener = null
+    scheduleSnapshotListener?.remove()
+    scheduleSnapshotListener = null
+    flashcardsSnapshotListener?.remove()
+    flashcardsSnapshotListener = null
+    settingsSnapshotListener?.remove()
+    settingsSnapshotListener = null
+    activeFirestoreUserId = null
+    isSyncingTasks = false
+    isSyncingSchedule = false
+    isSyncingFlashcards = false
+    isSyncingSettings = false
+  }
+
+  fun clearInitialSyncIndicators() {
+    isSyncingTasks = false
+    isSyncingSchedule = false
+    isSyncingFlashcards = false
+    isSyncingSettings = false
+  }
+
+  private fun syncSettingsToFirestore() {
+    val userId = resolveActiveCloudUserId() ?: return
+    try {
+      val db = FirebaseFirestore.getInstance()
+      val settingsPayload = hashMapOf(
+        "isDarkMode" to isDarkMode,
+        "darkMode" to isDarkMode,
+        "profileName" to displayName,
+        "displayName" to displayName,
+        "username" to username,
+        "updatedAt" to System.currentTimeMillis()
+      )
+      db.collection("users")
+        .document(userId)
+        .collection("settings")
+        .document("preferences")
+        .set(settingsPayload, SetOptions.merge())
+    } catch (_: Throwable) {
+    }
+  }
+
+  override fun onCleared() {
+    stopFirestoreSync()
+    super.onCleared()
+  }
+
   /**
    * Dynamically builds the list of Subject Folders:
    * Starts with a permanent `"General"` folder, then appends unique `subjectName`s
@@ -3816,13 +4197,16 @@ class TaskViewModel(
       hasSavedSession = true
       manager.saveUserProfile(resolvedUser, resolvedDisplay)
       loadAccountDataForKey(manager, currentAccountKey)
+      startFirestoreSyncForUser(firebaseUser.uid)
     } else if (manager.isAuthGuest()) {
+      stopFirestoreSync()
       isGuestMode = true
       username = LocalStorageManager.GUEST_DISPLAY_NAME
       displayName = LocalStorageManager.GUEST_DISPLAY_NAME
       hasSavedSession = true
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
     } else {
+      stopFirestoreSync()
       isGuestMode = false
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
@@ -3844,6 +4228,7 @@ class TaskViewModel(
     }.ifBlank { resolvedUser.substringBefore("@").ifBlank { resolvedUser } }
     isGuestMode = false
     loginWithUsername(resolvedUser, resolvedDisplay)
+    startFirestoreSyncForUser(firebaseUser.uid)
   }
 
   private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
@@ -3937,24 +4322,34 @@ class TaskViewModel(
     val (parsedStart, parsedEnd) = extractStartEndTimeTokens(trimmedTime)
 
     if (trimmedSubject.isNotEmpty()) {
-      _classSchedules.add(
-        ClassSchedule(
-          id = nextScheduleId++,
-          subjectName = trimmedSubject,
-          timeRange = trimmedTime,
-          days = normalizedDays,
-          room = trimmedRoom,
-          colorHex = colorHex,
-          startTime = parsedStart,
-          endTime = parsedEnd
-        )
+      val newSchedule = ClassSchedule(
+        id = nextScheduleId++,
+        subjectName = trimmedSubject,
+        timeRange = trimmedTime,
+        days = normalizedDays,
+        room = trimmedRoom,
+        colorHex = colorHex,
+        startTime = parsedStart,
+        endTime = parsedEnd
       )
+      _classSchedules.add(newSchedule)
       val sorted = _classSchedules.sortedBy {
         parseTimeToFloat(it.startTime)
       }
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("schedule")
+            .document(newSchedule.id.toString())
+            .set(newSchedule.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -3974,7 +4369,7 @@ class TaskViewModel(
     val (parsedStart, parsedEnd) = extractStartEndTimeTokens(trimmedTime)
 
     if (index != -1 && trimmedSubject.isNotEmpty()) {
-      _classSchedules[index] = _classSchedules[index].copy(
+      val updatedSchedule = _classSchedules[index].copy(
         subjectName = trimmedSubject,
         timeRange = trimmedTime,
         days = normalizedDays,
@@ -3983,18 +4378,41 @@ class TaskViewModel(
         startTime = parsedStart,
         endTime = parsedEnd
       )
+      _classSchedules[index] = updatedSchedule
       val sorted = _classSchedules.sortedBy {
         parseTimeToFloat(it.startTime)
       }
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("schedule")
+            .document(updatedSchedule.id.toString())
+            .set(updatedSchedule.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
     storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+    resolveActiveCloudUserId()?.let { userId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users")
+          .document(userId)
+          .collection("schedule")
+          .document(scheduleId.toString())
+          .delete()
+      } catch (_: Throwable) {
+      }
+    }
   }
 
   /**
@@ -4130,6 +4548,7 @@ class TaskViewModel(
   fun updateDarkMode(enabled: Boolean) {
     isDarkMode = enabled
     storageManager?.saveDarkMode(enabled)
+    syncSettingsToFirestore()
   }
 
   /**
@@ -4218,9 +4637,16 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
       manager.saveUserProfile(username, displayName)
     }
+    resolveActiveCloudUserId()?.let { uid ->
+      startFirestoreSyncForUser(uid)
+      if (explicitDisplayName.isNotBlank()) {
+        syncSettingsToFirestore()
+      }
+    }
   }
 
   fun loginAsGuest() {
+    stopFirestoreSync()
     isGuestMode = true
     username = LocalStorageManager.GUEST_DISPLAY_NAME
     displayName = LocalStorageManager.GUEST_DISPLAY_NAME
@@ -4237,6 +4663,7 @@ class TaskViewModel(
    * without deleting their created decks or formula favorites.
    */
   fun logout() {
+    stopFirestoreSync()
     try {
       FirebaseAuth.getInstance().signOut()
     } catch (_: Throwable) {
@@ -4366,6 +4793,17 @@ class TaskViewModel(
     )
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    resolveActiveCloudUserId()?.let { userId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users")
+          .document(userId)
+          .collection("flashcards")
+          .document(newDeck.id.toString())
+          .set(newDeck.toFirestoreMap())
+      } catch (_: Throwable) {
+      }
+    }
     return newDeck
   }
 
@@ -4390,11 +4828,23 @@ class TaskViewModel(
         isMastered = false
       )
       val updatedCards = deck.cards + newCard
-      _flashcardDecks[index] = deck.copy(
+      val updatedDeck = deck.copy(
         cards = updatedCards,
         masteredCardIds = updatedCards.filter { it.isMastered }.map { it.id }
       )
+      _flashcardDecks[index] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("flashcards")
+            .document(updatedDeck.id.toString())
+            .set(updatedDeck.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -4468,11 +4918,23 @@ class TaskViewModel(
           card
         }
       }
-      _flashcardDecks[deckIndex] = currentDeck.copy(
+      val updatedDeck = currentDeck.copy(
         cards = updatedCards,
         masteredCardIds = updatedCards.filter { it.isMastered }.map { it.id }
       )
+      _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("flashcards")
+            .document(updatedDeck.id.toString())
+            .set(updatedDeck.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -4485,17 +4947,40 @@ class TaskViewModel(
         card.isMastered = false
         card.copy(masteryLevel = "New", isMastered = false)
       }
-      _flashcardDecks[deckIndex] = currentDeck.copy(
+      val updatedDeck = currentDeck.copy(
         cards = resetCards,
         masteredCardIds = emptyList()
       )
+      _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("flashcards")
+            .document(updatedDeck.id.toString())
+            .set(updatedDeck.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
   fun deleteFlashcardDeck(deckId: Int) {
     _flashcardDecks.removeAll { it.id == deckId }
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    resolveActiveCloudUserId()?.let { userId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users")
+          .document(userId)
+          .collection("flashcards")
+          .document(deckId.toString())
+          .delete()
+      } catch (_: Throwable) {
+      }
+    }
   }
 
   fun addTask(
@@ -4507,17 +4992,26 @@ class TaskViewModel(
     val trimmedDueDate = dueDate.trim().ifEmpty { "Upcoming" }
     val trimmedCategory = subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
     if (trimmedTitle.isNotEmpty()) {
-      _tasks.add(
-        0,
-        Task(
-          id = nextId++,
-          title = trimmedTitle,
-          dueDate = trimmedDueDate,
-          isCompleted = false,
-          subjectCategory = trimmedCategory
-        )
+      val newTask = Task(
+        id = nextId++,
+        title = trimmedTitle,
+        dueDate = trimmedDueDate,
+        isCompleted = false,
+        subjectCategory = trimmedCategory
       )
+      _tasks.add(0, newTask)
       storageManager?.saveTasks(_tasks, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("tasks")
+            .document(newTask.id.toString())
+            .set(newTask.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -4525,8 +5019,20 @@ class TaskViewModel(
     val index = _tasks.indexOfFirst { it.id == taskId }
     if (index != -1) {
       val current = _tasks[index]
-      _tasks[index] = current.copy(isCompleted = !current.isCompleted)
+      val updatedTask = current.copy(isCompleted = !current.isCompleted)
+      _tasks[index] = updatedTask
       storageManager?.saveTasks(_tasks, currentAccountKey)
+      resolveActiveCloudUserId()?.let { userId ->
+        try {
+          val db = FirebaseFirestore.getInstance()
+          db.collection("users")
+            .document(userId)
+            .collection("tasks")
+            .document(updatedTask.id.toString())
+            .set(updatedTask.toFirestoreMap())
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -4534,6 +5040,17 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
+    resolveActiveCloudUserId()?.let { userId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users")
+          .document(userId)
+          .collection("tasks")
+          .document(taskId.toString())
+          .delete()
+      } catch (_: Throwable) {
+      }
+    }
   }
 
   /**
@@ -4984,12 +5501,39 @@ fun CivilEngineeringProductivityApp(
             FirebaseAuth.getInstance().signOut()
           } catch (_: Throwable) {
           }
+          resolvedViewModel.stopFirestoreSync()
           isLoggedIn = false
         } else if (resolvedViewModel.isGuestMode || isGuestMode) {
+          resolvedViewModel.stopFirestoreSync()
           isGuestMode = true
           isLoggedIn = true
         } else {
+          resolvedViewModel.stopFirestoreSync()
           isLoggedIn = false
+        }
+      }
+
+      // Connect real-time Firestore snapshot listeners whenever an authenticated user is logged in,
+      // or fall back to local Offline Scholar state when FirebaseAuth.getInstance().currentUser == null.
+      DisposableEffect(isLoggedIn, isGuestMode, resolvedViewModel.username) {
+        val activeUser = try {
+          FirebaseAuth.getInstance().currentUser?.takeIf { it.isEmailVerified }
+        } catch (_: Throwable) {
+          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { it.isEmailVerified }
+        }
+        if (isLoggedIn && !isGuestMode && activeUser != null) {
+          resolvedViewModel.startFirestoreSyncForUser(activeUser.uid)
+        } else if (isGuestMode || activeUser == null) {
+          resolvedViewModel.stopFirestoreSync()
+        }
+        onDispose { }
+      }
+
+      // Safety timeout so loading indicators never remain stuck if offline while logged in
+      LaunchedEffect(resolvedViewModel.isFirestoreSyncing) {
+        if (resolvedViewModel.isFirestoreSyncing) {
+          delay(4_500L)
+          resolvedViewModel.clearInitialSyncIndicators()
         }
       }
 
@@ -7739,6 +8283,17 @@ fun DashboardScreen(
                 modifier = Modifier
                   .fillMaxWidth()
                   .testTag("dashboard_datetime_header")
+              )
+            }
+
+            if (viewModel.isFirestoreSyncing) {
+              CircularProgressIndicator(
+                modifier = Modifier
+                  .padding(end = 8.dp)
+                  .size(18.dp)
+                  .testTag("dashboard_firestore_sync_indicator"),
+                strokeWidth = 2.dp,
+                color = palette.accentIndigo
               )
             }
 
@@ -15422,6 +15977,16 @@ fun FlashcardMainView(
           )
         }
 
+        if (viewModel.isSyncingFlashcards) {
+          CircularProgressIndicator(
+            modifier = Modifier
+              .size(18.dp)
+              .testTag("flashcards_firestore_sync_indicator"),
+            strokeWidth = 2.dp,
+            color = palette.accentIndigo
+          )
+        }
+
         Surface(
           onClick = {
             playCardHapticSound(context, localView)
@@ -18801,6 +19366,16 @@ fun ClassTimetableScheduleScreen(
               .testTag("schedule_screen_title")
           )
 
+          if (viewModel.isSyncingSchedule) {
+            CircularProgressIndicator(
+              modifier = Modifier
+                .size(18.dp)
+                .testTag("schedule_firestore_sync_indicator"),
+              strokeWidth = 2.dp,
+              color = palette.accentIndigo
+            )
+          }
+
           val toggleFillColor = if (palette.isDark) Color(0xFF1E293B) else Color(0xFFEEF2FF)
           val toggleContentColor = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
           Box(
@@ -20530,6 +21105,17 @@ private fun ProfileAndSettingsDialog(
               .testTag("profile_settings_dialog_title")
           )
 
+          if (viewModel.isSyncingSettings || viewModel.isFirestoreSyncing) {
+            CircularProgressIndicator(
+              modifier = Modifier
+                .padding(end = 8.dp)
+                .size(16.dp)
+                .testTag("settings_firestore_sync_indicator"),
+              strokeWidth = 2.dp,
+              color = palette.accentIndigo
+            )
+          }
+
           IconButton(
             onClick = onDismiss,
             modifier = Modifier
@@ -21382,6 +21968,16 @@ fun CourseworkTaskManagerScreen(
             .weight(1f)
             .testTag("tasks_screen_title")
         )
+
+        if (viewModel.isSyncingTasks) {
+          CircularProgressIndicator(
+            modifier = Modifier
+              .size(18.dp)
+              .testTag("tasks_firestore_sync_indicator"),
+            strokeWidth = 2.dp,
+            color = palette.accentIndigo
+          )
+        }
 
         Surface(
           color = palette.accentIndigo.copy(alpha = 0.16f),
