@@ -1,0 +1,31 @@
+name: Generate and Commit Permanent Keystore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  commit-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check or Generate Keystore
+        run: |
+          if [ ! -f app/sibil-release.jks ]; then
+            echo "Generating permanent keystore..."
+            keytool -genkey -v -keystore app/sibil-release.jks -alias sibil -keyalg RSA -keysize 2048 -validity 10000 -storepass sibil12345 -keypass sibil12345 -dname "CN=Sibil, C=PH"
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/sibil-release.jks
+            git commit -m "Add permanent release keystore [skip ci]"
+            git push
+            echo "Keystore committed to repository."
+          else
+            echo "Keystore already exists in repo. Doing nothing."
+          fi
+
+  
