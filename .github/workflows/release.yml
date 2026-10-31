@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Release Version (e.g. 1.0.3)'
+        description: 'Release Version (e.g. 1.0.4)'
         required: true
-        default: '1.0.3'
+        default: '1.0.4'
+      release_notes:
+        description: 'Release notes'
+        required: false
+        default: 'Flashcards multi-key rotation, cloud sync fixes, and UI improvements.'
 
 permissions:
   contents: write
@@ -32,27 +36,11 @@ jobs:
         run: |
           if [ -n "$G_DATA" ]; then
             echo "$G_DATA" | base64 -d > app/google-services.json
-            echo "Restored google-services.json successfully."
-          else
-            echo "Warning: GOOGLE_SERVICES_JSON_BASE64 secret not found."
           fi
 
       - name: Inject Gemini API Key
         run: |
-          sed -i "s/__KEY_INJECTION_PLACEHOLDER__/${{ secrets.GEMINI_API_KEY }}/g" app/src/main/java/com/example/MainActivity.kt || true
-
-      - name: Setup Release Keystore
-        env:
-          K_DATA: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$K_DATA" ]; then
-            echo "Restoring keystore from GitHub Secret..."
-            echo "$K_DATA" | base64 -d > app/sibil-release.jks
-          else
-            echo "Secret not detected. Generating reproducible release keystore on the fly..."
-            keytool -genkey -v -keystore app/sibil-release.jks -alias sibil -keyalg RSA -keysize 2048 -validity 10000 -storepass sibil12345 -keypass sibil12345 -dname "CN=Sibil, C=PH"
-          fi
-          test -f app/sibil-release.jks && echo "Keystore file confirmed at app/sibil-release.jks"
+          sed -i "s|__KEY_INJECTION_PLACEHOLDER__|${{ secrets.GEMINI_KEYS }}|g" app/src/main/java/com/example/MainActivity.kt || true
 
       - name: Grant Execute Permission to Gradle
         run: chmod +x gradlew
@@ -60,9 +48,9 @@ jobs:
       - name: Build Production APK
         env:
           KEYSTORE_PATH: "sibil-release.jks"
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'sibil12345' }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'sibil' }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'sibil12345' }}
+          KEYSTORE_PASSWORD: "sibil12345"
+          KEY_ALIAS: "sibil"
+          KEY_PASSWORD: "sibil12345"
         run: ./gradlew assembleRelease
 
       - name: Prepare Release Artifact
@@ -80,12 +68,10 @@ jobs:
           prerelease: false
           body: |
             ## Sibil CE v${{ github.event.inputs.version_name }}
-            
+
             ### ✨ What's New
-            * Cloud synchronization with Firebase Firestore.
-            * Hybrid Flashcards (QR code sharing & scanning).
-            * UI layout and tablet navigation fixes.
-            
+            ${{ github.event.inputs.release_notes }}
+
             ---
             **Download:** Download and install `Sibil-CE-v${{ github.event.inputs.version_name }}.apk` below.
         env:
