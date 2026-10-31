@@ -1,22 +1,26 @@
-name: Release Sibil CE APK
+name: Sibil CE Production Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Release Version Name (e.g., 1.0.3)'
+        required: false
+        default: '1.0.3'
+      release_notes:
+        description: 'Custom Release Notes'
+        required: false
+        default: 'Performance updates, hybrid QR flashcard sharing, and UI stability fixes.'
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Release Tag (e.g. v1.0.2)'
-        required: false
-        default: 'v1.0.2'
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build & Publish Production Release
+  build-release:
+    name: Build & Publish Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -25,32 +29,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine Release Tag and Version Info
-        id: version_info
+      - name: Compute Dynamic Versioning
+        id: versioning
         run: |
           set -e
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
+          # Determine Version Name (from input or git tag)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version_name }}" ]; then
+            RAW_VERSION="${{ github.event.inputs.version_name }}"
           elif [ -n "${{ github.ref_name }}" ] && echo "${{ github.ref_name }}" | grep -Eq '^v'; then
-            TAG="${{ github.ref_name }}"
+            RAW_VERSION="${{ github.ref_name }}"
           else
-            TAG="v1.0.2"
-          fi
-          
-          # Clean version name (strip leading 'v' or 'V')
-          VER_NAME=$(echo "$TAG" | sed -E 's/^[vV]//')
-          
-          # Compute or extract versionCode from build.gradle.kts if possible
-          if grep -Eq 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' app/build.gradle.kts; then
-            VER_CODE=$(grep -E 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' app/build.gradle.kts | head -n 1 | sed -E 's/[^0-9]//g')
-          else
-            VER_CODE=102
+            RAW_VERSION="1.0.3"
           fi
 
+          # Strip leading 'v' or 'V' for clean semantic version number
+          VERSION_CLEAN=$(echo "$RAW_VERSION" | sed -E 's/^[vV]//')
+          TAG="v${VERSION_CLEAN}"
+
+          # Compute strictly increasing versionCode: base 100 + run number
+          VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))
+
+          echo "VERSION=${VERSION_CLEAN}" >> "$GITHUB_ENV"
           echo "TAG_NAME=${TAG}" >> "$GITHUB_ENV"
-          echo "VERSION_NAME=${VER_NAME}" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=${VER_CODE}" >> "$GITHUB_ENV"
-          echo "Building Sibil CE Release ${TAG} (Version Name: ${VER_NAME}, Version Code: ${VER_CODE})"
+          echo "VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
+
+          # User custom release notes
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.release_notes }}" ]; then
+            CUSTOM_NOTES="${{ github.event.inputs.release_notes }}"
+          else
+            CUSTOM_NOTES="Performance updates, hybrid QR flashcard sharing, and UI stability fixes."
+          fi
+          echo "USER_RELEASE_NOTES=${CUSTOM_NOTES}" >> "$GITHUB_ENV"
+
+          echo "Configured Release: Tag=${TAG}, VersionName=${VERSION_CLEAN}, VersionCode=${VERSION_CODE}"
+
+      - name: Inject Versioning into build.gradle.kts and MainActivity.kt
+        run: |
+          set -e
+          # Inject into app/build.gradle.kts
+          sed -i -E "s/versionCode[[:space:]]*=[[:space:]]*[0-9]+/versionCode = ${VERSION_CODE}/g" app/build.gradle.kts
+          sed -i -E "s/versionName[[:space:]]*=[[:space:]]*\"[^\"]*\"/versionName = \"${VERSION}\"/g" app/build.gradle.kts
+          
+          # Inject into MainActivity.kt if constants exist
+          sed -i -E "s/const val APP_VERSION_CODE[[:space:]]*=[[:space:]]*[0-9]+/const val APP_VERSION_CODE = ${VERSION_CODE}/g" app/src/main/java/com/example/MainActivity.kt || true
+          sed -i -E "s/const val APP_VERSION_NAME[[:space:]]*=[[:space:]]*\"[^\"]*\"/const val APP_VERSION_NAME = \"v${VERSION}\"/g" app/src/main/java/com/example/MainActivity.kt || true
+
+          echo "Updated app/build.gradle.kts and MainActivity.kt with Version ${VERSION} (${VERSION_CODE})"
 
       - name: Set up Temurin Java 17
         uses: actions/setup-java@v4
@@ -61,141 +85,163 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Set up Gradle
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Inject Secret API Keys into Source
+      - name: Restore Google Services Configuration
+        env:
+          GOOGLE_SERVICES_B64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          mkdir -p app
+          if [ -n "$GOOGLE_SERVICES_B64" ]; then
+            echo "Decoding GOOGLE_SERVICES_JSON_BASE64 to app/google-services.json..."
+            echo "$GOOGLE_SERVICES_B64" | base64 -d > app/google-services.json
+          elif [ -f "google-services.json" ]; then
+            echo "Copying root google-services.json to app/google-services.json..."
+            cp -f "google-services.json" "app/google-services.json"
+          elif [ -f "app/google-services.json" ]; then
+            echo "Existing app/google-services.json detected."
+          else
+            echo "Warning: google-services.json not found in repository or secrets. Continuing build..."
+          fi
+
+      - name: Inject Secret API Keys
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SECRET_KEYS: ${{ secrets.GEMINI_KEYS }}
+          GEMINI_KEYS: ${{ secrets.GEMINI_KEYS }}
         run: |
+          TARGET_FILE="app/src/main/java/com/example/MainActivity.kt"
           if [ -n "$GEMINI_API_KEY" ]; then
             echo "Injecting GEMINI_API_KEY into app source..."
-            find app/src/main/java -name "*.kt" -exec sed -i "s|\"__KEY_INJECTION_PLACEHOLDER__\"|\"$GEMINI_API_KEY\"|g" {} +
-            echo "API key injected successfully."
-          elif [ -n "$SECRET_KEYS" ]; then
-            echo "Injecting GEMINI_KEYS list into app source..."
-            FORMATTED_KEYS=$(echo "$SECRET_KEYS" | tr ',' '\n' | sed 's/^/"/' | sed 's/$/"/' | paste -sd, -)
-            find app/src/main/java -name "*.kt" -exec sed -i "s|\"__KEY_INJECTION_PLACEHOLDER__\"|$FORMATTED_KEYS|g" {} +
-            echo "API keys injected successfully."
+            sed -i "s|\"__KEY_INJECTION_PLACEHOLDER__\"|\"$GEMINI_API_KEY\"|g" "$TARGET_FILE"
+            echo "Single API Key injected successfully."
+          elif [ -n "$GEMINI_KEYS" ]; then
+            echo "Injecting comma-separated GEMINI_KEYS into app source..."
+            FORMATTED_KEYS=$(echo "$GEMINI_KEYS" | tr ',' '\n' | sed 's/^/"/' | sed 's/$/"/' | paste -sd, -)
+            sed -i "s|\"__KEY_INJECTION_PLACEHOLDER__\"|$FORMATTED_KEYS|g" "$TARGET_FILE"
+            echo "Key pool injected successfully."
           else
-            echo "No GEMINI_API_KEY or GEMINI_KEYS found. Retaining placeholder string."
+            echo "No GEMINI_API_KEY found in secrets. Retaining placeholder string."
           fi
 
-      - name: Ensure google-services.json is present in app module
-        run: |
-          if [ -f "google-services.json" ] && [ ! -f "app/google-services.json" ]; then
-            cp -f "google-services.json" "app/google-services.json"
-            echo "Copied google-services.json from root to app module."
-          elif [ -f "app/google-services.json" ]; then
-            echo "Found app/google-services.json"
-          fi
-
-      - name: Configure Production Release Keystore
+      - name: Prepare Continuous Production Signing Keystore
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_pass_2026' }}
-          KEY_PASS: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_pass_2026' }}
-          KEY_ALIAS_NAME: ${{ secrets.KEY_ALIAS || 'sibilce' }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_key_2026' }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_key_2026' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'sibilce' }}
         run: |
           set -e
           mkdir -p app
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Decoding provided KEYSTORE_BASE64 to app/release.jks..."
-            echo "$KEYSTORE_BASE64" | base64 -d > app/release.jks
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "Restoring official production release keystore from secret..."
+            echo "$KEYSTORE_B64" | base64 -d > app/release.keystore
+          elif [ -f "app/release.keystore" ]; then
+            echo "Found existing app/release.keystore."
           else
-            echo "KEYSTORE_BASE64 not found in secrets. Generating dedicated production release keystore on the fly..."
+            echo "No KEYSTORE_BASE64 provided. Generating standardized reproducible release keystore..."
             keytool -genkeypair -v \
-              -keystore app/release.jks \
-              -alias "$KEY_ALIAS_NAME" \
+              -keystore app/release.keystore \
+              -alias "$KEY_ALIAS" \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
               -storepass "$KEYSTORE_PASS" \
               -keypass "$KEY_PASS" \
-              -dname "CN=Sibil Civil Engineering, OU=Engineering, O=Sibil, L=Manila, ST=NCR, C=PH"
+              -dname "CN=Sibil Civil Engineering, OU=Engineering Release, O=Sibil CE, L=Manila, ST=NCR, C=PH"
           fi
-          if [ ! -s app/release.jks ]; then
-            echo "ERROR: app/release.jks is missing or empty!" >&2
+          
+          if [ ! -s app/release.keystore ]; then
+            echo "ERROR: Failed to establish valid release.keystore!" >&2
             exit 1
           fi
-          echo "Production release keystore successfully prepared at app/release.jks."
+          echo "Production signing keystore verified at app/release.keystore."
 
-      - name: Grant execute permission for gradlew
+      - name: Grant Gradle wrapper execution permissions
         run: chmod +x ./gradlew
 
-      - name: Build Production Release APK
+      - name: Assemble Production Release APK
         env:
-          KEYSTORE_PATH: ${{ github.workspace }}/app/release.jks
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_pass_2026' }}
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || secrets.KEYSTORE_PASSWORD || 'sibilce_release_pass_2026' }}
+          KEYSTORE_PATH: ${{ github.workspace }}/app/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_key_2026' }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || secrets.KEYSTORE_PASSWORD || 'sibilce_release_key_2026' }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'sibilce' }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_pass_2026' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD || 'sibilce_release_key_2026' }}
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      - name: Verify and Standardize Release APK
-        id: package_release
+      - name: Standardize and Verify Release Artifact
         run: |
           set -e
           RAW_APK="app/build/outputs/apk/release/app-release.apk"
           if [ ! -s "$RAW_APK" ]; then
-            echo "ERROR: Release APK not found at $RAW_APK" >&2
+            echo "ERROR: Expected APK not found at $RAW_APK" >&2
             find app/build/outputs -type f || true
             exit 1
           fi
-          RELEASE_APK="Sibil-CE-${TAG_NAME}.apk"
-          cp "$RAW_APK" "$RELEASE_APK"
-          sha256sum "$RELEASE_APK" > "${RELEASE_APK}.sha256"
-          APK_SIZE_HUMAN=$(du -h "$RELEASE_APK" | cut -f1)
-          APK_SHA=$(cut -d ' ' -f 1 "${RELEASE_APK}.sha256")
-          echo "APK_SIZE_HUMAN=${APK_SIZE_HUMAN}" >> "$GITHUB_ENV"
-          echo "APK_SHA=${APK_SHA}" >> "$GITHUB_ENV"
-          echo "Verified release APK: $RELEASE_APK ($APK_SIZE_HUMAN, SHA: $APK_SHA)"
 
-      - name: Upload Release APK Artifact
+          RELEASE_FILENAME="Sibil-CE-v${VERSION}.apk"
+          cp -f "$RAW_APK" "$RELEASE_FILENAME"
+          sha256sum "$RELEASE_FILENAME" > "${RELEASE_FILENAME}.sha256"
+
+          APK_FILESIZE=$(du -h "$RELEASE_FILENAME" | cut -f1)
+          APK_SHA256=$(cut -d ' ' -f 1 "${RELEASE_FILENAME}.sha256")
+
+          echo "RELEASE_FILENAME=${RELEASE_FILENAME}" >> "$GITHUB_ENV"
+          echo "APK_FILESIZE=${APK_FILESIZE}" >> "$GITHUB_ENV"
+          echo "APK_SHA256=${APK_SHA256}" >> "$GITHUB_ENV"
+
+          echo "Standardized release APK: $RELEASE_FILENAME ($APK_FILESIZE, SHA-256: $APK_SHA256)"
+
+      - name: Upload APK Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Sibil-CE-${{ env.TAG_NAME }}
+          name: Sibil-CE-v${{ env.VERSION }}
           path: |
-            Sibil-CE-${{ env.TAG_NAME }}.apk
-            Sibil-CE-${{ env.TAG_NAME }}.apk.sha256
+            ${{ env.RELEASE_FILENAME }}
+            ${{ env.RELEASE_FILENAME }}.sha256
           if-no-files-found: error
 
       - name: Publish Production GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: "Sibil CE ${{ env.TAG_NAME }} - Official Production Release"
+          name: "Sibil CE v${{ env.VERSION }}"
           draft: false
           prerelease: false
           files: |
-            Sibil-CE-${{ env.TAG_NAME }}.apk
-            Sibil-CE-${{ env.TAG_NAME }}.apk.sha256
+            ${{ env.RELEASE_FILENAME }}
+            ${{ env.RELEASE_FILENAME }}.sha256
           body: |
-            ## 🚀 Sibil CE ${{ env.TAG_NAME }} - Official Production Release
+            # 🚀 Sibil CE v${{ env.VERSION }}
 
-            Welcome to the official production release of **Sibil CE** — the comprehensive productivity and formula suite for Civil Engineering students and board examinees.
+            Welcome to the official production release of **Sibil CE** — the comprehensive engineering command center and formula suite designed specifically for Civil Engineering students and PRC licensure examinees.
 
-            ### ✨ Highlights & Improvements
-            - 🔐 **Production Release Signing**: Official production release key signed (never debug keys), avoiding Google Play Protect installation warnings.
-            - 🔄 **In-Place Updates**: Seamlessly updates existing installations (`com.aistudio.civildesk.ceprod`) without data loss or requiring uninstallation.
-            - 📱 **QR & Camera Deck Sharing**: Effortlessly generate and scan flashcard deck QR codes using Google Play Services barcode scanner.
-            - 📐 **CE Formula Vault Navigation**: Table of Contents optimized with navigation gesture bottom inset padding.
-            - ☁️ **Cloud Firestore & Offline Scholar**: Dual-engine synchronization for Schedule, Tasks, and Flashcards with instant offline fallback.
+            ---
 
-            ### 📱 Release Details
-            | Metric | Value |
+            ### ✨ What's New
+            - ${{ env.USER_RELEASE_NOTES }}
+            - 🔐 **Cryptographic Continuous Signing**: Digitally signed with production release credentials, preventing Google Play Protect warnings and ensuring seamless in-place updates without uninstalling.
+            - 📱 **QR & Camera Deck Sharing**: Real-time generation and native camera QR scanning powered by Google Play Services.
+            - 📐 **CE Formula Vault Navigation**: Enhanced gesture clearance and reorganized Trigonometry anatomy inspector.
+            - ☁️ **Cloud Sync & Offline Scholar**: Resilient Firestore real-time synchronization with instant zero-crash offline fallback.
+
+            ---
+
+            ### 📱 Build Information
+            | Property | Specification |
             | :--- | :--- |
-            | **Application ID** | `com.aistudio.civildesk.ceprod` |
-            | **Version Name** | `${{ env.VERSION_NAME }}` |
+            | **Package Name (`applicationId`)** | `com.aistudio.civildesk.ceprod` |
+            | **Version Name** | `v${{ env.VERSION }}` |
             | **Version Code** | `${{ env.VERSION_CODE }}` |
-            | **Target SDK** | 36 (Android 16) |
-            | **Min SDK** | 24 (Android 7.0 Nougat+) |
-            | **File Size** | `${{ env.APK_SIZE_HUMAN }}` |
-            | **SHA-256 Checksum** | `${{ env.APK_SHA }}` |
+            | **Target SDK** | Android 16 (API 36) |
+            | **Minimum SDK** | Android 7.0 (API 24) |
+            | **File Size** | `${{ env.APK_FILESIZE }}` |
+            | **Commit SHA** | `${{ github.sha }}` |
+            | **SHA-256 Checksum** | `${{ env.APK_SHA256 }}` |
+
+            ---
 
             ### 📥 Direct Download
-            Download the official release APK directly below or from the release assets:
-            - **[Sibil-CE-${{ env.TAG_NAME }}.apk](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/Sibil-CE-${{ env.TAG_NAME }}.apk)**
+            Direct APK Download: **[`${{ env.RELEASE_FILENAME }}`](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/${{ env.RELEASE_FILENAME }})**

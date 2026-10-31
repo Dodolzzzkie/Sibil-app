@@ -97,6 +97,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -163,6 +164,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
@@ -280,6 +282,14 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.filled.ChangeHistory
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.ui.graphics.asImageBitmap
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import com.google.zxing.BarcodeFormat
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -392,8 +402,8 @@ private val DEFAULT_GEMINI_API_KEY: String
 
 const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
 const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
-const val APP_VERSION_CODE = 102            // Incremented with builds
-const val APP_VERSION_NAME = "v1.0.2"
+const val APP_VERSION_CODE = 103            // Incremented with builds
+const val APP_VERSION_NAME = "v1.0.3"
 const val SIBIL_APP_VERSION_TAG = "Sibil $APP_VERSION_NAME (Official Release)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.52
@@ -1214,6 +1224,37 @@ fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
     cards = normalizedCards,
     masteredCardIds = normalizedCards.filter { it.isMastered }.map { it.id }
   )
+}
+
+/**
+ * User Settings Data Model with no-argument default constructor for Firestore deserialization.
+ */
+data class UserSettings(
+  val isDarkMode: Boolean = false,
+  val username: String = "",
+  val profileName: String = "",
+  val displayName: String = "",
+  val studyGoalMinutes: Int = 120,
+  val activeDeckFilter: String = "All"
+) {
+  fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
+    "isDarkMode" to isDarkMode,
+    "darkMode" to isDarkMode,
+    "username" to username,
+    "profileName" to profileName,
+    "displayName" to (if (displayName.isNotBlank()) displayName else profileName),
+    "studyGoalMinutes" to studyGoalMinutes,
+    "activeDeckFilter" to activeDeckFilter,
+    "updatedAt" to System.currentTimeMillis()
+  )
+}
+
+fun DocumentSnapshot.toUserSettingsOrNull(): UserSettings? {
+  return try {
+    toObject(UserSettings::class.java)
+  } catch (_: Throwable) {
+    null
+  }
 }
 
 /**
@@ -11950,54 +11991,56 @@ fun FormulaVaultMainView(
       label = "holo_pulse_scale"
     )
 
-    Surface(
-      onClick = {
-        playCardHapticSound(context, localView)
-        showHolographicTriangleModal = true
-      },
-      shape = CircleShape,
-      color = if (palette.isDark) {
-        Color(0xFF0F172A).copy(alpha = 0.90f)
-      } else {
-        Color(0xFFF8FAFC).copy(alpha = 0.94f)
-      },
-      border = BorderStroke(
-        width = 1.4.dp,
-        brush = Brush.linearGradient(
-          listOf(
-            Color(0xFF06B6D4).copy(alpha = holoGlowAlpha),
-            Color.White.copy(alpha = if (palette.isDark) 0.55f else 0.85f),
-            Color(0xFF3B82F6).copy(alpha = holoGlowAlpha * 0.85f)
-          )
-        )
-      ),
-      shadowElevation = 10.dp,
-      modifier = Modifier
-        .align(Alignment.BottomStart)
-        .padding(bottom = 24.dp, start = 20.dp)
-        .size(52.dp)
-        .scale(holoPulseScale)
-        .testTag("holographic_triangle_trigger_button")
-    ) {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(
-            brush = Brush.radialGradient(
-              colors = listOf(
-                Color(0xFF06B6D4).copy(alpha = 0.24f * holoGlowAlpha),
-                Color.Transparent
-              )
+    if (currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet) {
+      Surface(
+        onClick = {
+          playCardHapticSound(context, localView)
+          showHolographicTriangleModal = true
+        },
+        shape = CircleShape,
+        color = if (palette.isDark) {
+          Color(0xFF0F172A).copy(alpha = 0.90f)
+        } else {
+          Color(0xFFF8FAFC).copy(alpha = 0.94f)
+        },
+        border = BorderStroke(
+          width = 1.4.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              Color(0xFF06B6D4).copy(alpha = holoGlowAlpha),
+              Color.White.copy(alpha = if (palette.isDark) 0.55f else 0.85f),
+              Color(0xFF3B82F6).copy(alpha = holoGlowAlpha * 0.85f)
             )
-          ),
-        contentAlignment = Alignment.Center
+          )
+        ),
+        shadowElevation = 10.dp,
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(bottom = 24.dp, start = 20.dp)
+          .size(52.dp)
+          .scale(holoPulseScale)
+          .testTag("holographic_triangle_trigger_button")
       ) {
-        Icon(
-          imageVector = Icons.Default.ChangeHistory,
-          contentDescription = "Interactive Triangle Anatomy Inspector",
-          tint = Color(0xFF06B6D4),
-          modifier = Modifier.size(26.dp)
-        )
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              brush = Brush.radialGradient(
+                colors = listOf(
+                  Color(0xFF06B6D4).copy(alpha = 0.24f * holoGlowAlpha),
+                  Color.Transparent
+                )
+              )
+            ),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = Icons.Default.ChangeHistory,
+            contentDescription = "Interactive Triangle Anatomy Inspector",
+            tint = Color(0xFF06B6D4),
+            modifier = Modifier.size(26.dp)
+          )
+        }
       }
     }
 
@@ -12149,160 +12192,164 @@ private fun FormulaVaultTocGlassSheet(
           .widthIn(max = 560.dp)
           .testTag("formula_vault_toc_sheet")
       ) {
-        Column(
+        LazyColumn(
           modifier = Modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 20.dp)
-            .navigationBarsPadding(),
-          verticalArrangement = Arrangement.spacedBy(12.dp)
+            .testTag("formula_vault_toc_sheet"),
+          contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 120.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-          // Subtle Drag Handle Indicator
-          Box(
-            modifier = Modifier
-              .align(Alignment.CenterHorizontally)
-              .width(42.dp)
-              .height(4.dp)
-              .clip(CircleShape)
-              .background(palette.textSecondary.copy(alpha = 0.35f))
-          )
-
-          // Header Row: Title, Subtitle, Close Button
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Column(
-              modifier = Modifier.weight(1f),
-              verticalArrangement = Arrangement.spacedBy(3.dp)
+          item {
+            // Subtle Drag Handle Indicator
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+              contentAlignment = Alignment.Center
             ) {
-              Text(
-                text = "Table of Contents",
-                style = MaterialTheme.typography.titleLarge.copy(
-                  fontSize = 18.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary
-              )
-              Text(
-                text = sheetSubtitle,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.Bold,
-                  letterSpacing = 1.2.sp
-                ),
-                color = palette.accentIndigo
+              Box(
+                modifier = Modifier
+                  .width(42.dp)
+                  .height(4.dp)
+                  .clip(CircleShape)
+                  .background(palette.textSecondary.copy(alpha = 0.35f))
               )
             }
 
-            Surface(
-              onClick = onDismiss,
-              shape = CircleShape,
-              color = palette.nestedCardFill,
-              border = palette.nestedBorder,
-              modifier = Modifier
-                .size(38.dp)
-                .testTag("formula_vault_toc_close_button")
+            // Header Row: Title, Subtitle, Close Button
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
             ) {
-              Box(contentAlignment = Alignment.Center) {
-                Icon(
-                  imageVector = Icons.Default.Close,
-                  contentDescription = "Close Table of Contents",
-                  tint = palette.textSecondary,
-                  modifier = Modifier.size(18.dp)
+              Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+              ) {
+                Text(
+                  text = "Table of Contents",
+                  style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary
+                )
+                Text(
+                  text = sheetSubtitle,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.2.sp
+                  ),
+                  color = palette.accentIndigo
                 )
               }
-            }
-          }
 
-          HorizontalDivider(
-            thickness = 1.dp,
-            color = Color(0xFF6366F1).copy(alpha = 0.22f)
-          )
-
-          // Itemized Clickable Chapter Cards
-          Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            sections.forEachIndexed { index, section ->
-              val chapterNumberText = String.format(Locale.ROOT, "[%02d]", index + 1)
               Surface(
-                onClick = { onSelectSection(index) },
-                shape = RoundedCornerShape(12.dp),
-                color = palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.82f else 0.92f),
-                border = BorderStroke(
-                  width = 1.dp,
-                  color = Color(0xFF6366F1).copy(alpha = 0.25f)
-                ),
-                shadowElevation = 2.dp,
+                onClick = onDismiss,
+                shape = CircleShape,
+                color = palette.nestedCardFill,
+                border = palette.nestedBorder,
                 modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("toc_section_item_${index + 1}")
+                  .size(38.dp)
+                  .testTag("formula_vault_toc_close_button")
               ) {
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.weight(1f)
-                  ) {
-                    // Chapter Indicator Chip on the left: "[01]", "[02]", ...
-                    Surface(
-                      shape = RoundedCornerShape(8.dp),
-                      color = Color(0xFF6366F1).copy(alpha = 0.16f),
-                      border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
-                    ) {
-                      Text(
-                        text = chapterNumberText,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                          fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                          fontSize = 12.sp,
-                          fontWeight = FontWeight.ExtraBold
-                        ),
-                        color = palette.accentIndigo,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                      )
-                    }
-
-                    // Topic Title + Formula count badge
-                    Column(
-                      modifier = Modifier.weight(1f),
-                      verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                      Text(
-                        text = section.sectionTitle,
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                          fontSize = 14.sp,
-                          fontWeight = FontWeight.Bold
-                        ),
-                        color = palette.textPrimary
-                      )
-                      Text(
-                        text = "${section.items.size} reference laws & equations",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                          fontSize = 11.sp,
-                          fontWeight = FontWeight.Medium
-                        ),
-                        color = palette.textSecondary
-                      )
-                    }
-                  }
-
+                Box(contentAlignment = Alignment.Center) {
                   Icon(
-                    imageVector = Icons.Default.ArrowForward,
-                    contentDescription = "Jump to ${section.sectionTitle}",
-                    tint = palette.accentIndigo,
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close Table of Contents",
+                    tint = palette.textSecondary,
                     modifier = Modifier.size(18.dp)
                   )
                 }
+              }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            HorizontalDivider(
+              thickness = 1.dp,
+              color = Color(0xFF6366F1).copy(alpha = 0.22f)
+            )
+          }
+
+          items(sections.size) { index ->
+            val section = sections[index]
+            val chapterNumberText = String.format(Locale.ROOT, "[%02d]", index + 1)
+            Surface(
+              onClick = { onSelectSection(index) },
+              shape = RoundedCornerShape(12.dp),
+              color = palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.82f else 0.92f),
+              border = BorderStroke(
+                width = 1.dp,
+                color = Color(0xFF6366F1).copy(alpha = 0.25f)
+              ),
+              shadowElevation = 2.dp,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("toc_section_item_${index + 1}")
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  // Chapter Indicator Chip on the left: "[01]", "[02]", ...
+                  Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF6366F1).copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
+                  ) {
+                    Text(
+                      text = chapterNumberText,
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold
+                      ),
+                      color = palette.accentIndigo,
+                      modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                  }
+
+                  // Topic Title + Formula count badge
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
+                    Text(
+                      text = section.sectionTitle,
+                      style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = palette.textPrimary
+                    )
+                    Text(
+                      text = "${section.items.size} reference laws & equations",
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textSecondary
+                    )
+                  }
+                }
+
+                Icon(
+                  imageVector = Icons.Default.ArrowForward,
+                  contentDescription = "Jump to ${section.sectionTitle}",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(18.dp)
+                )
               }
             }
           }
@@ -15675,6 +15722,7 @@ fun FlashcardMainView(
   var pasteDialogNoticeMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var addCardTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
   var resetMasteryTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+  var shareQrTargetDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
 
   // API Key Quick-Verify & Override Dialog state
   var isApiKeyDialogOpen by rememberSaveable { mutableStateOf(false) }
@@ -16419,21 +16467,14 @@ fun FlashcardMainView(
                   IconButton(
                     onClick = {
                       playCardHapticSound(context, localView)
-                      val shareCode = GizmoBatchFlashcardEngine.encodeDeckToShareCode(deck)
-                      val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                      clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", shareCode))
-                      Toast.makeText(
-                        context,
-                        "Deck code copied to clipboard! Share this with your classmates.",
-                        Toast.LENGTH_LONG
-                      ).show()
+                      shareQrTargetDeckId = deck.id
                     },
                     modifier = Modifier
                       .size(48.dp)
                       .testTag("share_deck_button_${deck.id}")
                   ) {
                     Icon(
-                      imageVector = Icons.Default.Share,
+                      imageVector = Icons.Default.QrCode2,
                       contentDescription = "Share Deck ${deck.title}",
                       tint = palette.accentIndigo,
                       modifier = Modifier.size(20.dp)
@@ -17095,6 +17136,185 @@ fun FlashcardMainView(
       }
     )
   }
+
+  // QR Code Share Dialog
+  val targetDeckForQr = decks.firstOrNull { it.id == shareQrTargetDeckId }
+  if (targetDeckForQr != null) {
+    val shareCode = remember(targetDeckForQr.id) {
+      GizmoBatchFlashcardEngine.encodeDeckToShareCode(targetDeckForQr)
+    }
+    ShareDeckQrDialog(
+      deckId = shareCode,
+      deckTitle = targetDeckForQr.title,
+      onDismiss = { shareQrTargetDeckId = null }
+    )
+  }
+}
+
+/**
+ * 1. QR Code Generator Helper using BarcodeEncoder
+ */
+fun generateDeckQrBitmap(deckId: String, size: Int = 512): Bitmap? {
+  return try {
+    val encoder = BarcodeEncoder()
+    encoder.encodeBitmap("SIBIL_DECK:$deckId", BarcodeFormat.QR_CODE, size, size)
+  } catch (_: Exception) {
+    null
+  }
+}
+
+/**
+ * 2. Camera QR Scanner using Google Play Services GmsBarcodeScanning (zero manifest camera permissions)
+ */
+fun launchDeckQrScanner(
+  context: Context,
+  onSuccess: (String) -> Unit,
+  onError: (String) -> Unit
+) {
+  try {
+    val options = GmsBarcodeScannerOptions.Builder()
+      .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+      .enableAutoZoom()
+      .build()
+
+    val scanner = GmsBarcodeScanning.getClient(context, options)
+    scanner.startScan()
+      .addOnSuccessListener { barcode ->
+        val rawValue = barcode.rawValue ?: ""
+        val deckId = if (rawValue.startsWith("SIBIL_DECK:")) {
+          rawValue.removePrefix("SIBIL_DECK:")
+        } else {
+          rawValue
+        }
+        onSuccess(deckId)
+      }
+      .addOnFailureListener { error ->
+        onError(error.localizedMessage ?: "Scan canceled or unavailable")
+      }
+  } catch (e: Exception) {
+    onError(e.localizedMessage ?: "QR Scanner unavailable on this device")
+  }
+}
+
+/**
+ * 3. Liquid Glass Modal QR Share Dialog
+ */
+@Composable
+fun ShareDeckQrDialog(
+  deckId: String,
+  deckTitle: String,
+  onDismiss: () -> Unit
+) {
+  val context = LocalContext.current
+  val palette = currentGlassPalette()
+  val qrBitmap = remember(deckId) { generateDeckQrBitmap(deckId) }
+
+  androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(24.dp),
+      color = if (palette.isDark) Color(0xFF1E1E2E).copy(alpha = 0.96f) else Color.White.copy(alpha = 0.98f),
+      border = BorderStroke(1.dp, palette.cardBorder),
+      shadowElevation = 12.dp,
+      modifier = Modifier
+        .padding(16.dp)
+        .testTag("share_deck_qr_dialog")
+    ) {
+      Column(
+        modifier = Modifier
+          .padding(24.dp)
+          .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.QrCode2,
+            contentDescription = null,
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(24.dp)
+          )
+          Text(
+            text = "Share Flashcard Deck",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+            color = palette.textPrimary
+          )
+        }
+
+        Text(
+          text = deckTitle,
+          style = MaterialTheme.typography.bodyMedium,
+          color = palette.textSecondary,
+          modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+        )
+
+        if (qrBitmap != null) {
+          Image(
+            bitmap = qrBitmap.asImageBitmap(),
+            contentDescription = "QR Code for $deckTitle",
+            modifier = Modifier
+              .size(220.dp)
+              .clip(RoundedCornerShape(16.dp))
+              .background(Color.White)
+              .padding(12.dp)
+          )
+        } else {
+          Box(
+            modifier = Modifier
+              .size(220.dp)
+              .clip(RoundedCornerShape(16.dp))
+              .background(palette.nestedCardFill),
+            contentAlignment = Alignment.Center
+          ) {
+            Text("Generating QR Code...", color = palette.textSecondary)
+          }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+          text = "Classmates can scan this code to import instantly with zero quota used.",
+          style = MaterialTheme.typography.bodySmall,
+          color = palette.textSecondary,
+          textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          OutlinedButton(
+            onClick = {
+              val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+              clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", deckId))
+              Toast.makeText(context, "Deck code copied to clipboard!", Toast.LENGTH_SHORT).show()
+            },
+            shape = RoundedCornerShape(12.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.ContentCopy,
+              contentDescription = "Copy Code",
+              modifier = Modifier.size(16.dp),
+              tint = palette.accentIndigo
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Copy Code", color = palette.accentIndigo)
+          }
+
+          Button(
+            onClick = onDismiss,
+            colors = ButtonDefaults.buttonColors(containerColor = palette.accentIndigo),
+            shape = RoundedCornerShape(12.dp)
+          ) {
+            Text("Close", color = Color.White)
+          }
+        }
+      }
+    }
+  }
 }
 
 @Composable
@@ -17141,12 +17361,62 @@ private fun ImportSharedDeckCodeDialog(
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Text(
-          text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Paste their deck code below to load the full deck instantly with zero AI quota usage.",
+          text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Scan their QR code or paste their deck code below to load the full deck instantly with zero AI quota usage.",
           style = MaterialTheme.typography.bodySmall.copy(
             fontSize = metrics.scaledSp(12)
           ),
           color = palette.textSecondary
         )
+
+        // Native Google Play Services QR Scanner Button
+        Button(
+          onClick = {
+            launchDeckQrScanner(
+              context = context,
+              onSuccess = { scannedValue ->
+                val clean = if (scannedValue.startsWith("SIBIL_DECK:")) {
+                  scannedValue.removePrefix("SIBIL_DECK:")
+                } else scannedValue
+                val decoded = GizmoBatchFlashcardEngine.decodeDeckFromShareCode(clean)
+                if (decoded != null) {
+                  onImportDeck(decoded)
+                } else {
+                  deckCodeInput = clean
+                  decodeError = null
+                  val deckIdInt = clean.toIntOrNull()
+                  if (deckIdInt != null) {
+                    val db = FirebaseFirestore.getInstance()
+                    db.collectionGroup("flashcards").whereEqualTo("id", deckIdInt).limit(1).get()
+                      .addOnSuccessListener { qs ->
+                        val remote = qs.documents.firstOrNull()?.toFlashcardDeckOrNull()
+                        if (remote != null) onImportDeck(remote)
+                      }
+                  }
+                }
+              },
+              onError = { err ->
+                decodeError = err
+              }
+            )
+          },
+          shape = RoundedCornerShape(14.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = palette.accentIndigo.copy(alpha = 0.15f),
+            contentColor = palette.accentIndigo
+          ),
+          border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f)),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("scan_deck_qr_button")
+        ) {
+          Icon(
+            imageVector = Icons.Default.QrCodeScanner,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp)
+          )
+          Spacer(modifier = Modifier.width(8.dp))
+          Text("Scan QR Code (Camera)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
 
         OutlinedTextField(
           value = deckCodeInput,
@@ -24841,32 +25111,33 @@ private fun TimerSubScreen(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = metrics.scaledDp(4), bottom = metrics.scaledDp(16)),
-      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
+        .padding(top = 28.dp),
+      horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      if (isCountdownActive || digitInput.isNotEmpty()) {
-        Surface(
-          shape = CircleShape,
-          color = palette.cardFill,
-          border = BorderStroke(1.2.dp, palette.cardBorder),
-          shadowElevation = 6.dp,
-          modifier = Modifier
-            .size(metrics.scaledDp(58))
-            .clip(CircleShape)
-            .clickable { onResetTimer(); onClearInput() }
-            .testTag("timer_reset_button")
-        ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = Icons.Filled.Replay,
-              contentDescription = "Reset timer",
-              tint = palette.accentIndigo,
-              modifier = Modifier.size(26.dp)
-            )
-          }
+      val canReset = isCountdownActive || digitInput.isNotEmpty()
+      Surface(
+        shape = CircleShape,
+        color = if (canReset) palette.cardFill else palette.nestedCardFill,
+        border = BorderStroke(1.2.dp, palette.cardBorder),
+        shadowElevation = if (canReset) 4.dp else 0.dp,
+        modifier = Modifier
+          .size(56.dp)
+          .clip(CircleShape)
+          .clickable(enabled = canReset) { onResetTimer(); onClearInput() }
+          .testTag("timer_reset_button")
+      ) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(
+            imageVector = Icons.Filled.Replay,
+            contentDescription = "Reset timer",
+            tint = if (canReset) palette.accentIndigo else palette.textMuted,
+            modifier = Modifier.size(22.dp)
+          )
         }
       }
+
+      Spacer(modifier = Modifier.width(32.dp))
 
       FloatingActionButton(
         onClick = onStartOrPause,
@@ -24875,14 +25146,14 @@ private fun TimerSubScreen(
         contentColor = Color.White,
         elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
         modifier = Modifier
-          .size(metrics.scaledDp(72))
+          .size(72.dp)
           .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
           .testTag("timer_play_pause_fab")
       ) {
         Icon(
           imageVector = if (isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
           contentDescription = if (isRunning) "Pause timer" else "Start timer",
-          modifier = Modifier.size(metrics.scaledDp(34))
+          modifier = Modifier.size(34.dp)
         )
       }
     }
@@ -25052,8 +25323,10 @@ private fun StopwatchSubScreen(
   @Composable
   fun renderStopwatchControlsRow() {
     Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(24), Alignment.CenterHorizontally),
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 28.dp),
+      horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
       val canLapOrReset = isRunning || elapsedMillis > 0L
@@ -25063,7 +25336,7 @@ private fun StopwatchSubScreen(
         border = BorderStroke(1.2.dp, palette.cardBorder),
         shadowElevation = if (canLapOrReset) 4.dp else 0.dp,
         modifier = Modifier
-          .size(metrics.scaledDp(62))
+          .size(56.dp)
           .clip(CircleShape)
           .clickable(enabled = canLapOrReset) { onLapOrReset() }
           .testTag("stopwatch_lap_reset_button")
@@ -25080,7 +25353,7 @@ private fun StopwatchSubScreen(
             } else {
               palette.textMuted
             },
-            modifier = Modifier.size(22.dp)
+            modifier = Modifier.size(20.dp)
           )
           Text(
             text = if (isRunning) "Lap" else "Reset",
@@ -25088,7 +25361,7 @@ private fun StopwatchSubScreen(
             softWrap = false,
             style = MaterialTheme.typography.labelSmall.copy(
               fontWeight = FontWeight.Bold,
-              fontSize = metrics.scaledSp(10)
+              fontSize = 10.sp
             ),
             color = if (canLapOrReset) {
               palette.accentIndigo
@@ -25099,6 +25372,8 @@ private fun StopwatchSubScreen(
         }
       }
 
+      Spacer(modifier = Modifier.width(32.dp))
+
       // Primary circular Liquid Orb FAB: Start / Stop
       FloatingActionButton(
         onClick = onToggleStartStop,
@@ -25107,14 +25382,14 @@ private fun StopwatchSubScreen(
         contentColor = Color.White,
         elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
         modifier = Modifier
-          .size(metrics.scaledDp(74))
+          .size(72.dp)
           .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
           .testTag("stopwatch_start_stop_button")
       ) {
         Icon(
           imageVector = if (isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
           contentDescription = if (isRunning) "Stop stopwatch" else "Start stopwatch",
-          modifier = Modifier.size(metrics.scaledDp(36))
+          modifier = Modifier.size(36.dp)
         )
       }
     }

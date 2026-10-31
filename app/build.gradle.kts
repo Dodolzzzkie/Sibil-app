@@ -10,15 +10,14 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk = 36
 
   defaultConfig {
-    // Note: For standalone Sibil APK releases, keep applicationId fixed (e.g., "com.sibil.ceapp") across all builds.
     applicationId = "com.aistudio.civildesk.ceprod"
     minSdk = 24
     targetSdk = 36
-    versionCode = 102
-    versionName = "1.0.2"
+    versionCode = 103
+    versionName = "1.0.3"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -28,14 +27,17 @@ android {
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH")
-        ?: (if (file("${rootDir}/app/release.jks").exists()) "${rootDir}/app/release.jks"
+        ?: (if (file("${rootDir}/app/release.keystore").exists()) "${rootDir}/app/release.keystore"
+            else if (file("${rootDir}/app/release.jks").exists()) "${rootDir}/app/release.jks"
+            else if (file("${rootDir}/release.keystore").exists()) "${rootDir}/release.keystore"
             else if (file("${rootDir}/release.jks").exists()) "${rootDir}/release.jks"
             else if (file("${rootDir}/my-upload-key.jks").exists()) "${rootDir}/my-upload-key.jks"
             else "${rootDir}/debug.keystore")
+      val isDebugFallback = keystorePath.endsWith("debug.keystore")
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
-      keyAlias = System.getenv("KEY_ALIAS") ?: (if (keystorePath.endsWith("debug.keystore")) "androiddebugkey" else "upload")
-      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
+      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibilce_release_key_2026")
+      keyAlias = System.getenv("KEY_ALIAS") ?: (if (isDebugFallback) "androiddebugkey" else "sibilce")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibilce_release_key_2026")
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -60,15 +62,23 @@ android {
       signingConfig = signingConfigs.getByName("debugConfig")
     }
   }
+
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
+
   buildFeatures {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+    }
+  }
+
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -76,81 +86,65 @@ android {
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
-// to match the convention used in Web projects.
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
 }
 
-googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+googleServices {
+  missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN
+}
 
-// Some unused dependencies are commented out below instead of being removed.
-// This makes it easy to add them back in the future if needed.
 dependencies {
+  // Core Android & Jetpack Compose BOM
   implementation(platform(libs.androidx.compose.bom))
-  implementation(platform(libs.firebase.bom))
-  // implementation(libs.accompanist.permissions)
+  implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.activity.compose)
-  // implementation(libs.androidx.camera.camera2)
-  // implementation(libs.androidx.camera.core)
-  // implementation(libs.androidx.camera.lifecycle)
-  // implementation(libs.androidx.camera.view)
-  implementation(libs.androidx.compose.material.icons.core)
-  implementation(libs.androidx.compose.material.icons.extended)
-  implementation(libs.androidx.compose.material3)
+  implementation(libs.androidx.lifecycle.runtime.ktx)
+  implementation(libs.androidx.lifecycle.runtime.compose)
+  implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
-  implementation(libs.androidx.core.ktx)
-  // implementation(libs.androidx.datastore.preferences)
-  implementation(libs.androidx.lifecycle.runtime.compose)
-  implementation(libs.androidx.lifecycle.runtime.ktx)
-  implementation(libs.androidx.lifecycle.viewmodel.compose)
-  // implementation(libs.androidx.navigation.compose)
-  // implementation(libs.androidx.room.ktx)
-  // implementation(libs.androidx.room.runtime)
-  // implementation(libs.coil.compose)
-  // implementation(libs.converter.moshi)
-  // implementation(libs.firebase.ai)
-  // Uncomment to use Firestore:
-  implementation(libs.firebase.firestore)
+  implementation(libs.androidx.compose.material3)
+  implementation(libs.androidx.compose.material.icons.core)
+  implementation(libs.androidx.compose.material.icons.extended)
 
-  // Uncomment ALL FOUR of the following dependencies together to use Firebase Auth and Google
-  // Sign-In via Credential Manager:
-  implementation(libs.firebase.auth)
+  // Kotlin Coroutines
+  implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.kotlinx.coroutines.android)
+
+  // Official Firebase BoM & Unversioned KTX Artifacts
+  implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
+  implementation("com.google.firebase:firebase-auth-ktx")
+  implementation("com.google.firebase:firebase-firestore-ktx")
+
+  // Google Sign-In & Credential Manager
   implementation(libs.androidx.credentials)
   implementation(libs.androidx.credentials.play.services)
   implementation(libs.googleid)
-  // implementation(libs.firebase.appcheck.recaptcha)
-  // implementation(libs.firebase.appcheck.debug)
-  implementation(libs.kotlinx.coroutines.android)
-  implementation(libs.kotlinx.coroutines.core)
-  // implementation(libs.logging.interceptor)
-  // implementation(libs.moshi.kotlin)
-  // implementation(libs.okhttp)
-  // implementation(libs.play.services.location)
-  // implementation(libs.retrofit)
-  testImplementation(libs.androidx.compose.ui.test.junit4)
-  testImplementation(libs.androidx.core)
-  testImplementation(libs.androidx.junit)
+
+  // Google Play Services Native Code Scanner (Zero AndroidManifest camera permissions)
+  implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+
+  // Lightweight QR Code Generator
+  implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+  // Testing
   testImplementation(libs.junit)
+  testImplementation(libs.androidx.junit)
+  testImplementation(libs.androidx.core)
+  testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.robolectric)
+
   androidTestImplementation(platform(libs.androidx.compose.bom))
-  androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-  androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.runner)
-  debugImplementation(libs.androidx.compose.ui.test.manifest)
+  androidTestImplementation(libs.androidx.espresso.core)
+  androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+
   debugImplementation(libs.androidx.compose.ui.tooling)
-  // "ksp"(libs.androidx.room.compiler)
-  // "ksp"(libs.moshi.kotlin.codegen)
-  // QR Code Generator & Play Services Scanner
-  implementation("com.journeyapps:zxing-android-embedded:4.3.0")
-  implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
-  // Firebase BOM & Firestore
-  implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
-  implementation("com.google.firebase:firebase-auth-ktx")
-  implementation("com.google.firebase:firebase-firestore-ktx")
+  debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
