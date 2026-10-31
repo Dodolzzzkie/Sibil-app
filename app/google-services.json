@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "615100480820",
+    "project_id": "gen-lang-client-0434293060",
+    "storage_bucket": "gen-lang-client-0434293060.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:615100480820:android:94b22be69907263a557961",
+        "android_client_info": {
+          "package_name": "com.aistudio.civildesk.ceprod"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "615100480820-0cf5bnipiatkrvm5m2a9c05e618lpuea.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.civildesk.ceprod",
+            "certificate_hash": "5b07ccd29cff95248db287c5013018c018c54bad"
+          }
+        },
+        {
+          "client_id": "615100480820-tojg8mnisslf0dfpqtdp1livo38n9hq4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6G2PHHE2ZUO5DSyrvBz2Tzgqm4ScUHiU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "615100480820-tojg8mnisslf0dfpqtdp1livo38n9hq4.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
