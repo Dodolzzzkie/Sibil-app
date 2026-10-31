@@ -26,18 +26,22 @@ android {
   // and updating Android apps in AI Studio.
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH")
-        ?: (if (file("${rootDir}/app/release.keystore").exists()) "${rootDir}/app/release.keystore"
-            else if (file("${rootDir}/app/release.jks").exists()) "${rootDir}/app/release.jks"
-            else if (file("${rootDir}/release.keystore").exists()) "${rootDir}/release.keystore"
-            else if (file("${rootDir}/release.jks").exists()) "${rootDir}/release.jks"
-            else if (file("${rootDir}/my-upload-key.jks").exists()) "${rootDir}/my-upload-key.jks"
-            else "${rootDir}/debug.keystore")
+      val envPath = System.getenv("KEYSTORE_PATH")
+      val keystorePath = if (!envPath.isNullOrBlank() && file(envPath).exists()) envPath
+        else if (!envPath.isNullOrBlank() && file("${rootDir}/app/$envPath").exists()) "${rootDir}/app/$envPath"
+        else if (file("${rootDir}/app/sibil-release.jks").exists()) "${rootDir}/app/sibil-release.jks"
+        else if (file("${rootDir}/sibil-release.jks").exists()) "${rootDir}/sibil-release.jks"
+        else if (file("${rootDir}/app/release.keystore").exists()) "${rootDir}/app/release.keystore"
+        else if (file("${rootDir}/app/release.jks").exists()) "${rootDir}/app/release.jks"
+        else if (file("${rootDir}/release.keystore").exists()) "${rootDir}/release.keystore"
+        else if (file("${rootDir}/release.jks").exists()) "${rootDir}/release.jks"
+        else if (file("${rootDir}/my-upload-key.jks").exists()) "${rootDir}/my-upload-key.jks"
+        else "${rootDir}/debug.keystore"
       val isDebugFallback = keystorePath.endsWith("debug.keystore")
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibilce_release_key_2026")
-      keyAlias = System.getenv("KEY_ALIAS") ?: (if (isDebugFallback) "androiddebugkey" else "sibilce")
-      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibilce_release_key_2026")
+      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibil12345")
+      keyAlias = System.getenv("KEY_ALIAS") ?: (if (isDebugFallback) "androiddebugkey" else "sibil")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: (if (isDebugFallback) "android" else "sibil12345")
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")

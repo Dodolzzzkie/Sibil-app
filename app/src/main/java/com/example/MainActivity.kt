@@ -65,6 +65,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import android.view.SoundEffectConstants
 import android.view.View
 import android.widget.Toast
@@ -362,7 +363,10 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.MonthDay
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
 import java.util.zip.Inflater
@@ -390,15 +394,94 @@ import org.json.JSONObject
 
 // KEYS ARE INJECTED DURING CI/CD BUILD FROM GITHUB SECRETS.
 // DO NOT HARDCODE RAW "AIzaSy..." STRINGS HERE IN THE PUBLIC SOURCE.
+private const val INJECTED_API_KEYS = "__KEY_INJECTION_PLACEHOLDER__"
 private val COMPILED_DEVELOPER_KEY_POOL = listOf(
-    "__KEY_INJECTION_PLACEHOLDER__"
+    INJECTED_API_KEYS
 )
 
+/**
+ * Singleton API Key Manager for Gemini Flash multi-key rotation and traffic load-balancing.
+ * Splits `INJECTED_API_KEYS` by commas to support a pool of multiple keys:
+ * `INJECTED_API_KEYS.split(",").map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("__KEY") }`
+ * Supports user override via SharedPreferences, but defaults to the embedded pool.
+ */
+object ApiKeyManager {
+  private val exhaustedKeys = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+  @Volatile
+  private var activeKeyCache: String? = null
+
+  fun getCompiledKeys(): List<String> {
+    return INJECTED_API_KEYS
+      .split(',', '\n', ';', ' ')
+      .map { it.trim() }
+      .filter { it.isNotEmpty() && !it.startsWith("__KEY") }
+  }
+
+  fun getAllValidKeys(context: Context? = null): List<String> {
+    val compiled = getCompiledKeys()
+    val userSaved = if (context != null) {
+      val prefs = context.applicationContext.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
+      prefs.getString("saved_gemini_api_key", "")?.trim().orEmpty()
+    } else {
+      ""
+    }
+    val userKeys = userSaved
+      .split(',', '\n', ';', ' ')
+      .map { it.trim() }
+      .filter { it.isNotEmpty() && !it.startsWith("__KEY") }
+
+    return (userKeys + compiled).distinct()
+  }
+
+  fun getAvailableKeys(context: Context? = null): List<String> {
+    val all = getAllValidKeys(context)
+    val nonExhausted = all.filter { !exhaustedKeys.contains(it) }
+    return if (nonExhausted.isNotEmpty()) nonExhausted else all
+  }
+
+  fun hasValidKey(context: Context? = null): Boolean {
+    return getAllValidKeys(context).isNotEmpty()
+  }
+
+  @Synchronized
+  fun getActiveKey(context: Context? = null): String {
+    val available = getAvailableKeys(context)
+    if (available.isEmpty()) return ""
+    val cached = activeKeyCache
+    if (cached != null && available.contains(cached)) {
+      return cached
+    }
+    val selected = available[Random.nextInt(available.size)]
+    activeKeyCache = selected
+    return selected
+  }
+
+  @Synchronized
+  fun rotateOnQuotaExceeded(failedKey: String, context: Context? = null): String {
+    val clean = failedKey.trim()
+    if (clean.isNotEmpty()) {
+      exhaustedKeys.add(clean)
+      Log.w("ApiKeyManager", "Key quota exhausted or rate-limited. Marking key as exhausted: ${clean.take(8)}...")
+    }
+    val remaining = getAvailableKeys(context)
+    val nextKey = if (remaining.isNotEmpty()) {
+      remaining[Random.nextInt(remaining.size)]
+    } else {
+      ""
+    }
+    activeKeyCache = nextKey
+    Log.i("ApiKeyManager", "Rotated to next key: ${nextKey.take(8)}... (Remaining pool size: ${remaining.size})")
+    return nextKey
+  }
+
+  fun resetExhaustedKeys() {
+    exhaustedKeys.clear()
+    activeKeyCache = null
+  }
+}
+
 private val DEFAULT_GEMINI_API_KEY: String
-  get() = COMPILED_DEVELOPER_KEY_POOL
-    .map { it.trim() }
-    .firstOrNull { !it.startsWith("__KEY_") && it.isNotBlank() }
-    .orEmpty()
+  get() = ApiKeyManager.getActiveKey()
 
 const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
 const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
@@ -924,6 +1007,22 @@ class MainActivity : ComponentActivity() {
     }
     ensureFirebaseInitialized(this)
 
+    // Auto-authenticate anonymously if currentUser == null to support instant cross-device workspace syncing
+    try {
+      val auth = FirebaseAuth.getInstance()
+      if (auth.currentUser == null) {
+        auth.signInAnonymously()
+          .addOnSuccessListener {
+            Log.d("SibilSync", "Anonymous sign-in initialized: ${it.user?.uid}")
+          }
+          .addOnFailureListener { e ->
+            Log.w("SibilSync", "Anonymous sign-in skipped: ${e.message}")
+          }
+      }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Safe auto auth failure: ${e.message}", e)
+    }
+
     setContent {
       CivilEngineeringProductivityApp()
     }
@@ -1315,17 +1414,17 @@ object GizmoBatchFlashcardEngine {
    * from `COMPILED_DEVELOPER_KEY_POOL` and combines them with any custom user keys saved in SharedPreferences.
    */
   fun buildValidKeyPool(userConfiguredKey: String = ""): List<String> {
-    val compiledValidKeys = COMPILED_DEVELOPER_KEY_POOL
-      .flatMap { it.split(',', '\n', ';', ' ') }
-      .map { it.trim() }
-      .filter { !it.startsWith("__KEY_") && it.isNotBlank() }
-
+    val allValid = ApiKeyManager.getAllValidKeys()
     val customKeys = userConfiguredKey
       .split(',', '\n', ';', ' ')
       .map { it.trim() }
       .filter { !it.startsWith("__KEY_") && it.isNotBlank() }
 
-    return (customKeys + compiledValidKeys).distinct()
+    val combined = (customKeys + allValid).distinct()
+    val available = combined.filter { key ->
+      ApiKeyManager.getAvailableKeys().contains(key)
+    }
+    return if (available.isNotEmpty()) available else combined
   }
 
   /**
@@ -2264,7 +2363,17 @@ Convert the document into high-yield active-recall flashcards using these strict
           )
 
           // If rate-limited (429) or key quota/auth error (403/400), rotate to next classroom key in pool
-          if (responseCode == 429 || responseCode == 403 || responseCode == 400) {
+          val isQuotaOrRateLimit = responseCode == 429 ||
+            responseCode == 403 ||
+            rawErrorBody.contains("RESOURCE_EXHAUSTED", ignoreCase = true) ||
+            rawErrorBody.contains("quota", ignoreCase = true)
+
+          if (isQuotaOrRateLimit) {
+            ApiKeyManager.rotateOnQuotaExceeded(activeKey)
+            keyIndex = (keyIndex + 1) % validPool.size
+            activeClassroomKeyIndex = keyIndex
+            continue
+          } else if (responseCode == 400) {
             keyIndex = (keyIndex + 1) % validPool.size
             activeClassroomKeyIndex = keyIndex
             continue
@@ -2274,7 +2383,13 @@ Convert the document into high-yield active-recall flashcards using these strict
         }
       } catch (e: GeminiBatchExtractionException) {
         lastException = e
-        if (e.statusCode == 429 || e.statusCode == 403) {
+        val isQuotaOrRateLimit = e.statusCode == 429 ||
+          e.statusCode == 403 ||
+          e.message?.contains("RESOURCE_EXHAUSTED", ignoreCase = true) == true ||
+          e.message?.contains("quota", ignoreCase = true) == true
+
+        if (isQuotaOrRateLimit) {
+          ApiKeyManager.rotateOnQuotaExceeded(activeKey)
           keyIndex = (keyIndex + 1) % validPool.size
           activeClassroomKeyIndex = keyIndex
           continue
@@ -3772,9 +3887,25 @@ class LocalStorageManager(context: Context) {
     }
   }
 
+  fun loadCloudSyncKey(): String {
+    val existing = prefs.getString(KEY_CLOUD_SYNC_KEY, null)?.trim()
+    if (!existing.isNullOrBlank()) return existing
+    val generated = "CE-${(1000..9999).random()}"
+    saveCloudSyncKey(generated)
+    return generated
+  }
+
+  fun saveCloudSyncKey(key: String) {
+    val clean = key.trim().uppercase(Locale.US)
+    if (clean.isNotBlank()) {
+      prefs.edit().putString(KEY_CLOUD_SYNC_KEY, clean).apply()
+    }
+  }
+
   companion object {
     const val GUEST_ACCOUNT_KEY = "guest"
     const val GUEST_DISPLAY_NAME = "Guest User"
+    const val KEY_CLOUD_SYNC_KEY = "cloud_sync_workspace_key"
     const val KEY_AUTH_USERNAME = "auth_username"
     const val KEY_AUTH_DISPLAY_NAME = "auth_display_name"
     const val KEY_AUTH_PASSWORD_HASH = "auth_password_hash"
@@ -3944,41 +4075,56 @@ class TaskViewModel(
   val isFirestoreSyncing: Boolean
     get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings
 
-  private var activeFirestoreUserId: String? = null
+  private var activeFirestoreWorkspaceKey: String? = null
+  var cloudSyncKey by mutableStateOf("")
+    private set
+
   private var tasksSnapshotListener: ListenerRegistration? = null
   private var scheduleSnapshotListener: ListenerRegistration? = null
   private var flashcardsSnapshotListener: ListenerRegistration? = null
   private var settingsSnapshotListener: ListenerRegistration? = null
-  private var hasSeededTasksForUser: String? = null
-  private var hasSeededScheduleForUser: String? = null
-  private var hasSeededFlashcardsForUser: String? = null
-  private var hasSeededSettingsForUser: String? = null
+  private var hasSeededTasksForWorkspace: String? = null
+  private var hasSeededScheduleForWorkspace: String? = null
+  private var hasSeededFlashcardsForWorkspace: String? = null
+  private var hasSeededSettingsForWorkspace: String? = null
 
-  private fun resolveActiveCloudUserId(): String? {
-    if (isGuestMode) return null
-    return try {
-      FirebaseAuth.getInstance().currentUser?.uid?.takeIf { it.isNotBlank() }
-    } catch (_: Throwable) {
-      null
-    }
+  fun getActiveSyncKey(): String {
+    if (cloudSyncKey.isNotBlank()) return cloudSyncKey
+    val key = storageManager?.loadCloudSyncKey()?.trim().orEmpty()
+    val resolved = if (key.isNotBlank()) key else "CE-${(1000..9999).random()}"
+    cloudSyncKey = resolved
+    return resolved
+  }
+
+  fun updateCloudSyncKey(newKey: String): Boolean {
+    val clean = newKey.trim().uppercase(Locale.US)
+    if (clean.isBlank()) return false
+    cloudSyncKey = clean
+    storageManager?.saveCloudSyncKey(clean)
+    startFirestoreSync(clean)
+    return true
+  }
+
+  private fun resolveActiveWorkspaceKey(): String? {
+    return getActiveSyncKey().takeIf { it.isNotBlank() }
   }
 
   /**
-   * Starts real-time Firestore snapshot listeners isolated by [userId]:
-   * - `db.collection("users").document(userId).collection("tasks")`
-   * - `db.collection("users").document(userId).collection("schedule")`
-   * - `db.collection("users").document(userId).collection("flashcards")`
-   * - `db.collection("users").document(userId).collection("settings")`
-   * If `FirebaseAuth.getInstance().currentUser == null` (Offline Scholar mode), falls back gracefully to local state.
+   * Starts real-time Firestore snapshot listeners targeting the isolated workspace:
+   * - `db.collection("workspaces").document(activeSyncKey).collection("tasks")`
+   * - `db.collection("workspaces").document(activeSyncKey).collection("schedule")`
+   * - `db.collection("workspaces").document(activeSyncKey).collection("flashcards")`
+   * - `db.collection("workspaces").document(activeSyncKey).collection("settings")`
+   * If offline or Firebase is unprovisioned, falls back gracefully to local state.
    */
-  fun startFirestoreSyncForUser(userId: String) {
-    val cleanUid = userId.trim()
-    if (cleanUid.isEmpty() || isGuestMode) {
+  fun startFirestoreSync(syncKey: String = getActiveSyncKey()) {
+    val cleanKey = syncKey.trim().ifEmpty { getActiveSyncKey() }
+    if (cleanKey.isEmpty()) {
       stopFirestoreSync()
       return
     }
     if (
-      activeFirestoreUserId == cleanUid &&
+      activeFirestoreWorkspaceKey == cleanKey &&
       tasksSnapshotListener != null &&
       scheduleSnapshotListener != null &&
       flashcardsSnapshotListener != null &&
@@ -3988,7 +4134,8 @@ class TaskViewModel(
     }
 
     stopFirestoreSync()
-    activeFirestoreUserId = cleanUid
+    activeFirestoreWorkspaceKey = cleanKey
+    cloudSyncKey = cleanKey
     isSyncingTasks = true
     isSyncingSchedule = true
     isSyncingFlashcards = true
@@ -3996,27 +4143,71 @@ class TaskViewModel(
 
     try {
       val db = FirebaseFirestore.getInstance()
-      val userDoc = db.collection("users").document(cleanUid)
+      val workspaceDoc = db.collection("workspaces").document(cleanKey)
 
       // 1. Real-time Snapshot Listener for Tasks
-      tasksSnapshotListener = userDoc.collection("tasks")
+      tasksSnapshotListener = workspaceDoc.collection("tasks")
         .addSnapshotListener { snapshot, error ->
           isSyncingTasks = false
-          if (error != null || snapshot == null) return@addSnapshotListener
+          if (error != null) {
+            Log.e("SibilSync", "Tasks snapshot listener error: ${error.message}", error)
+            return@addSnapshotListener
+          }
+          if (snapshot == null) return@addSnapshotListener
           val remoteTasks = snapshot.documents.mapNotNull { doc ->
             doc.toTaskItemOrNull()
           }.sortedByDescending { it.id }
 
-          if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForUser != cleanUid) {
-            hasSeededTasksForUser = cleanUid
-            val localSnapshot = _tasks.toList()
-            localSnapshot.forEach { taskItem ->
-              userDoc.collection("tasks")
+          if (remoteTasks.isEmpty() && _tasks.isEmpty() && hasSeededTasksForWorkspace != cleanKey) {
+            hasSeededTasksForWorkspace = cleanKey
+            val initialSampleTasks = listOf(
+              Task(
+                id = 1,
+                title = "Review Surveying & Highway Engineering Formulas",
+                dueDate = "Today",
+                isCompleted = false,
+                subjectCategory = "MSTE"
+              ),
+              Task(
+                id = 2,
+                title = "Solve Structural Concrete Design Problems",
+                dueDate = "Tomorrow",
+                isCompleted = false,
+                subjectCategory = "PSAD"
+              ),
+              Task(
+                id = 3,
+                title = "Hydraulics & Fluid Mechanics Quick Check",
+                dueDate = "Upcoming",
+                isCompleted = false,
+                subjectCategory = "HPGE"
+              )
+            )
+            initialSampleTasks.forEach { taskItem ->
+              workspaceDoc.collection("tasks")
                 .document(taskItem.id.toString())
                 .set(taskItem.toFirestoreMap())
+                .addOnFailureListener { e ->
+                  Log.e("SibilSync", "Failed to seed sample task: ${e.message}", e)
+                }
+            }
+            _tasks.clear()
+            _tasks.addAll(initialSampleTasks)
+            nextId = 4
+            storageManager?.saveTasks(_tasks, currentAccountKey)
+          } else if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForWorkspace != cleanKey) {
+            hasSeededTasksForWorkspace = cleanKey
+            val localSnapshot = _tasks.toList()
+            localSnapshot.forEach { taskItem ->
+              workspaceDoc.collection("tasks")
+                .document(taskItem.id.toString())
+                .set(taskItem.toFirestoreMap())
+                .addOnFailureListener { e ->
+                  Log.e("SibilSync", "Failed to upload local task: ${e.message}", e)
+                }
             }
           } else {
-            hasSeededTasksForUser = cleanUid
+            hasSeededTasksForWorkspace = cleanKey
             _tasks.clear()
             _tasks.addAll(remoteTasks)
             nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
@@ -4025,10 +4216,14 @@ class TaskViewModel(
         }
 
       // 2. Real-time Snapshot Listener for Schedule
-      scheduleSnapshotListener = userDoc.collection("schedule")
+      scheduleSnapshotListener = workspaceDoc.collection("schedule")
         .addSnapshotListener { snapshot, error ->
           isSyncingSchedule = false
-          if (error != null || snapshot == null) return@addSnapshotListener
+          if (error != null) {
+            Log.e("SibilSync", "Schedule snapshot listener error: ${error.message}", error)
+            return@addSnapshotListener
+          }
+          if (snapshot == null) return@addSnapshotListener
           val remoteSchedules = snapshot.documents.mapNotNull { doc ->
             doc.toScheduleItemOrNull()
           }.sortedBy { parseTimeToFloat(it.startTime) }
@@ -4036,17 +4231,20 @@ class TaskViewModel(
           if (
             remoteSchedules.isEmpty() &&
             _classSchedules.isNotEmpty() &&
-            hasSeededScheduleForUser != cleanUid
+            hasSeededScheduleForWorkspace != cleanKey
           ) {
-            hasSeededScheduleForUser = cleanUid
+            hasSeededScheduleForWorkspace = cleanKey
             val localSnapshot = _classSchedules.toList()
             localSnapshot.forEach { scheduleItem ->
-              userDoc.collection("schedule")
+              workspaceDoc.collection("schedule")
                 .document(scheduleItem.id.toString())
                 .set(scheduleItem.toFirestoreMap())
+                .addOnFailureListener { e ->
+                  Log.e("SibilSync", "Failed to upload local schedule: ${e.message}", e)
+                }
             }
           } else {
-            hasSeededScheduleForUser = cleanUid
+            hasSeededScheduleForWorkspace = cleanKey
             _classSchedules.clear()
             _classSchedules.addAll(remoteSchedules)
             nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
@@ -4059,10 +4257,14 @@ class TaskViewModel(
         }
 
       // 3. Real-time Snapshot Listener for Flashcards
-      flashcardsSnapshotListener = userDoc.collection("flashcards")
+      flashcardsSnapshotListener = workspaceDoc.collection("flashcards")
         .addSnapshotListener { snapshot, error ->
           isSyncingFlashcards = false
-          if (error != null || snapshot == null) return@addSnapshotListener
+          if (error != null) {
+            Log.e("SibilSync", "Flashcards snapshot listener error: ${error.message}", error)
+            return@addSnapshotListener
+          }
+          if (snapshot == null) return@addSnapshotListener
           val remoteDecks = snapshot.documents.mapNotNull { doc ->
             doc.toFlashcardDeckOrNull()
           }.sortedByDescending { it.id }
@@ -4070,17 +4272,20 @@ class TaskViewModel(
           if (
             remoteDecks.isEmpty() &&
             _flashcardDecks.isNotEmpty() &&
-            hasSeededFlashcardsForUser != cleanUid
+            hasSeededFlashcardsForWorkspace != cleanKey
           ) {
-            hasSeededFlashcardsForUser = cleanUid
+            hasSeededFlashcardsForWorkspace = cleanKey
             val localSnapshot = _flashcardDecks.toList()
             localSnapshot.forEach { deck ->
-              userDoc.collection("flashcards")
+              workspaceDoc.collection("flashcards")
                 .document(deck.id.toString())
                 .set(deck.toFirestoreMap())
+                .addOnFailureListener { e ->
+                  Log.e("SibilSync", "Failed to upload local deck: ${e.message}", e)
+                }
             }
           } else {
-            hasSeededFlashcardsForUser = cleanUid
+            hasSeededFlashcardsForWorkspace = cleanKey
             _flashcardDecks.clear()
             _flashcardDecks.addAll(remoteDecks)
             nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
@@ -4091,20 +4296,24 @@ class TaskViewModel(
         }
 
       // 4. Real-time Snapshot Listener for Settings (Dark Mode & Profile Name)
-      settingsSnapshotListener = userDoc.collection("settings")
+      settingsSnapshotListener = workspaceDoc.collection("settings")
         .addSnapshotListener { snapshot, error ->
           isSyncingSettings = false
-          if (error != null || snapshot == null) return@addSnapshotListener
+          if (error != null) {
+            Log.e("SibilSync", "Settings snapshot listener error: ${error.message}", error)
+            return@addSnapshotListener
+          }
+          if (snapshot == null) return@addSnapshotListener
           val settingsDoc = snapshot.documents.firstOrNull { it.id == "preferences" }
             ?: snapshot.documents.firstOrNull()
 
           if (settingsDoc == null) {
-            if (hasSeededSettingsForUser != cleanUid) {
-              hasSeededSettingsForUser = cleanUid
+            if (hasSeededSettingsForWorkspace != cleanKey) {
+              hasSeededSettingsForWorkspace = cleanKey
               syncSettingsToFirestore()
             }
           } else {
-            hasSeededSettingsForUser = cleanUid
+            hasSeededSettingsForWorkspace = cleanKey
             val remoteDark = settingsDoc.getBoolean("isDarkMode")
               ?: settingsDoc.getBoolean("darkMode")
             if (remoteDark != null && remoteDark != isDarkMode) {
@@ -4121,12 +4330,18 @@ class TaskViewModel(
             }
           }
         }
-    } catch (_: Throwable) {
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Failed to start workspace sync: ${e.message}", e)
       isSyncingTasks = false
       isSyncingSchedule = false
       isSyncingFlashcards = false
       isSyncingSettings = false
     }
+  }
+
+  fun startFirestoreSyncForUser(userId: String) {
+    // Retain compatibility: syncs with active workspace key
+    startFirestoreSync(getActiveSyncKey())
   }
 
   /**
@@ -4141,7 +4356,7 @@ class TaskViewModel(
     flashcardsSnapshotListener = null
     settingsSnapshotListener?.remove()
     settingsSnapshotListener = null
-    activeFirestoreUserId = null
+    activeFirestoreWorkspaceKey = null
     isSyncingTasks = false
     isSyncingSchedule = false
     isSyncingFlashcards = false
@@ -4156,7 +4371,7 @@ class TaskViewModel(
   }
 
   private fun syncSettingsToFirestore() {
-    val userId = resolveActiveCloudUserId() ?: return
+    val syncKey = resolveActiveWorkspaceKey() ?: return
     try {
       val db = FirebaseFirestore.getInstance()
       val settingsPayload = hashMapOf(
@@ -4167,12 +4382,16 @@ class TaskViewModel(
         "username" to username,
         "updatedAt" to System.currentTimeMillis()
       )
-      db.collection("users")
-        .document(userId)
+      db.collection("workspaces")
+        .document(syncKey)
         .collection("settings")
         .document("preferences")
         .set(settingsPayload, SetOptions.merge())
-    } catch (_: Throwable) {
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to sync settings: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in syncSettingsToFirestore: ${e.message}", e)
     }
   }
 
@@ -4216,6 +4435,7 @@ class TaskViewModel(
 
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
     savedGeminiApiKey = manager.loadSavedGeminiApiKey()
+    cloudSyncKey = manager.loadCloudSyncKey()
 
     val firebaseUser = try {
       FirebaseAuth.getInstance().currentUser
@@ -4238,19 +4458,19 @@ class TaskViewModel(
       hasSavedSession = true
       manager.saveUserProfile(resolvedUser, resolvedDisplay)
       loadAccountDataForKey(manager, currentAccountKey)
-      startFirestoreSyncForUser(firebaseUser.uid)
+      startFirestoreSync(getActiveSyncKey())
     } else if (manager.isAuthGuest()) {
-      stopFirestoreSync()
       isGuestMode = true
       username = LocalStorageManager.GUEST_DISPLAY_NAME
       displayName = LocalStorageManager.GUEST_DISPLAY_NAME
       hasSavedSession = true
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
+      startFirestoreSync(getActiveSyncKey())
     } else {
-      stopFirestoreSync()
       isGuestMode = false
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
+      startFirestoreSync(getActiveSyncKey())
     }
   }
 
@@ -4380,15 +4600,19 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("schedule")
             .document(newSchedule.id.toString())
             .set(newSchedule.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to write schedule: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in addClassSchedule: ${e.message}", e)
         }
       }
     }
@@ -4426,15 +4650,19 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("schedule")
             .document(updatedSchedule.id.toString())
             .set(updatedSchedule.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to update schedule: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in updateClassSchedule: ${e.message}", e)
         }
       }
     }
@@ -4443,15 +4671,19 @@ class TaskViewModel(
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
     storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-    resolveActiveCloudUserId()?.let { userId ->
+    resolveActiveWorkspaceKey()?.let { syncKey ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(userId)
+        db.collection("workspaces")
+          .document(syncKey)
           .collection("schedule")
           .document(scheduleId.toString())
           .delete()
-      } catch (_: Throwable) {
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to delete schedule: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in deleteClassSchedule: ${e.message}", e)
       }
     }
   }
@@ -4678,8 +4910,8 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
       manager.saveUserProfile(username, displayName)
     }
-    resolveActiveCloudUserId()?.let { uid ->
-      startFirestoreSyncForUser(uid)
+    resolveActiveWorkspaceKey()?.let { syncKey ->
+      startFirestoreSync(syncKey)
       if (explicitDisplayName.isNotBlank()) {
         syncSettingsToFirestore()
       }
@@ -4687,7 +4919,6 @@ class TaskViewModel(
   }
 
   fun loginAsGuest() {
-    stopFirestoreSync()
     isGuestMode = true
     username = LocalStorageManager.GUEST_DISPLAY_NAME
     displayName = LocalStorageManager.GUEST_DISPLAY_NAME
@@ -4696,6 +4927,7 @@ class TaskViewModel(
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
       manager.saveUserProfile(LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
+    startFirestoreSync(getActiveSyncKey())
   }
 
   /**
@@ -4713,6 +4945,7 @@ class TaskViewModel(
     hasSavedSession = false
     storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
+    startFirestoreSync(getActiveSyncKey())
   }
 
   fun addAlarm(
@@ -4834,15 +5067,19 @@ class TaskViewModel(
     )
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveActiveCloudUserId()?.let { userId ->
+    resolveActiveWorkspaceKey()?.let { syncKey ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(userId)
+        db.collection("workspaces")
+          .document(syncKey)
           .collection("flashcards")
           .document(newDeck.id.toString())
           .set(newDeck.toFirestoreMap())
-      } catch (_: Throwable) {
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to write deck: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in addFlashcardDeck: ${e.message}", e)
       }
     }
     return newDeck
@@ -4875,15 +5112,19 @@ class TaskViewModel(
       )
       _flashcardDecks[index] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to update deck cards: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in addCardToDeck: ${e.message}", e)
         }
       }
     }
@@ -4965,15 +5206,19 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to update flashcard mastery: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in updateFlashcardMastery: ${e.message}", e)
         }
       }
     }
@@ -4994,15 +5239,19 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to reset deck mastery: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in resetDeckMastery: ${e.message}", e)
         }
       }
     }
@@ -5011,15 +5260,19 @@ class TaskViewModel(
   fun deleteFlashcardDeck(deckId: Int) {
     _flashcardDecks.removeAll { it.id == deckId }
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveActiveCloudUserId()?.let { userId ->
+    resolveActiveWorkspaceKey()?.let { syncKey ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(userId)
+        db.collection("workspaces")
+          .document(syncKey)
           .collection("flashcards")
           .document(deckId.toString())
           .delete()
-      } catch (_: Throwable) {
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to delete deck: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in deleteFlashcardDeck: ${e.message}", e)
       }
     }
   }
@@ -5042,15 +5295,19 @@ class TaskViewModel(
       )
       _tasks.add(0, newTask)
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("tasks")
             .document(newTask.id.toString())
             .set(newTask.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to write task: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in addTask: ${e.message}", e)
         }
       }
     }
@@ -5063,15 +5320,19 @@ class TaskViewModel(
       val updatedTask = current.copy(isCompleted = !current.isCompleted)
       _tasks[index] = updatedTask
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveActiveCloudUserId()?.let { userId ->
+      resolveActiveWorkspaceKey()?.let { syncKey ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(userId)
+          db.collection("workspaces")
+            .document(syncKey)
             .collection("tasks")
             .document(updatedTask.id.toString())
             .set(updatedTask.toFirestoreMap())
-        } catch (_: Throwable) {
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to toggle task: ${e.message}", e)
+            }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Error in toggleTaskCompletion: ${e.message}", e)
         }
       }
     }
@@ -5081,15 +5342,19 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    resolveActiveCloudUserId()?.let { userId ->
+    resolveActiveWorkspaceKey()?.let { syncKey ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(userId)
+        db.collection("workspaces")
+          .document(syncKey)
           .collection("tasks")
           .document(taskId.toString())
           .delete()
-      } catch (_: Throwable) {
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to delete task: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in deleteTask: ${e.message}", e)
       }
     }
   }
@@ -5528,6 +5793,22 @@ fun CivilEngineeringProductivityApp(
       }
 
       LaunchedEffect(Unit) {
+        // Auto-authenticate anonymously if currentUser == null to support instant cross-device syncing
+        try {
+          val auth = FirebaseAuth.getInstance()
+          if (auth.currentUser == null) {
+            auth.signInAnonymously()
+              .addOnSuccessListener {
+                Log.d("SibilSync", "Auto anonymous auth success: ${it.user?.uid}")
+              }
+              .addOnFailureListener { e ->
+                Log.w("SibilSync", "Auto anonymous auth skipped: ${e.message}")
+              }
+          }
+        } catch (e: Throwable) {
+          Log.e("SibilSync", "Safe auto auth: ${e.message}", e)
+        }
+
         val user = try {
           FirebaseAuth.getInstance().currentUser
         } catch (_: Throwable) {
@@ -5542,32 +5823,22 @@ fun CivilEngineeringProductivityApp(
             FirebaseAuth.getInstance().signOut()
           } catch (_: Throwable) {
           }
-          resolvedViewModel.stopFirestoreSync()
           isLoggedIn = false
         } else if (resolvedViewModel.isGuestMode || isGuestMode) {
-          resolvedViewModel.stopFirestoreSync()
           isGuestMode = true
           isLoggedIn = true
         } else {
-          resolvedViewModel.stopFirestoreSync()
           isLoggedIn = false
         }
+        resolvedViewModel.startFirestoreSync()
       }
 
-      // Connect real-time Firestore snapshot listeners whenever an authenticated user is logged in,
-      // or fall back to local Offline Scholar state when FirebaseAuth.getInstance().currentUser == null.
-      DisposableEffect(isLoggedIn, isGuestMode, resolvedViewModel.username) {
-        val activeUser = try {
-          FirebaseAuth.getInstance().currentUser?.takeIf { it.isEmailVerified }
-        } catch (_: Throwable) {
-          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { it.isEmailVerified }
-        }
-        if (isLoggedIn && !isGuestMode && activeUser != null) {
-          resolvedViewModel.startFirestoreSyncForUser(activeUser.uid)
-        } else if (isGuestMode || activeUser == null) {
+      // Connect real-time Firestore snapshot listeners for the workspace
+      DisposableEffect(Unit) {
+        resolvedViewModel.startFirestoreSync()
+        onDispose {
           resolvedViewModel.stopFirestoreSync()
         }
-        onDispose { }
       }
 
       // Safety timeout so loading indicators never remain stuck if offline while logged in
@@ -7640,6 +7911,8 @@ private fun MainProductivityScaffold(
           CeNavTab.DASHBOARD -> DashboardScreen(
             viewModel = taskViewModel,
             onProfileIconClick = { isProfileSettingsDialogOpen = true },
+            onNavigateToTab = { selectedTab = it },
+            onAddTaskClick = { isAddTaskDialogOpen = true },
             modifier = Modifier.fillMaxSize()
           )
           CeNavTab.TASKS -> CourseworkTaskManagerScreen(
@@ -8072,6 +8345,8 @@ private fun CustomSideBottomBarItem(
 fun DashboardScreen(
   viewModel: TaskViewModel,
   onProfileIconClick: () -> Unit,
+  onNavigateToTab: (CeNavTab) -> Unit = {},
+  onAddTaskClick: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -8084,6 +8359,68 @@ fun DashboardScreen(
   val totalTasks = tasksSnapshot.size
   val completedTasks = remember(tasksSnapshot) { tasksSnapshot.count { it.isCompleted } }
   val activeTasks = remember(tasksSnapshot) { tasksSnapshot.filter { !it.isCompleted } }
+
+  val taskUpcomingItems = remember(activeTasks) {
+    activeTasks.map { task ->
+      val (days, label, urgency) = parseDaysRemainingAndUrgency(task.dueDate)
+      DashboardUpcomingItem(
+        id = task.id,
+        title = task.title,
+        category = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+        dueDateDisplay = if (task.dueDate.isNotBlank()) task.dueDate else label,
+        daysRemaining = days,
+        urgencyLabel = label,
+        urgencyType = urgency,
+        isCompleted = task.isCompleted,
+        isScheduleItem = false
+      )
+    }
+  }
+
+  val schedulesSnapshot = viewModel.classSchedules.toList()
+  val scheduleUpcomingItems = remember(schedulesSnapshot) {
+    schedulesSnapshot.mapNotNull { schedule ->
+      val minDays = schedule.days.mapNotNull { dayStr ->
+        val dow = when (dayStr.trim().uppercase()) {
+          "M", "MON", "MONDAY" -> DayOfWeek.MONDAY
+          "TUE", "TUESDAY", "T" -> DayOfWeek.TUESDAY
+          "W", "WED", "WEDNESDAY" -> DayOfWeek.WEDNESDAY
+          "TH", "THU", "THURSDAY" -> DayOfWeek.THURSDAY
+          "F", "FRI", "FRIDAY" -> DayOfWeek.FRIDAY
+          "SAT", "SATURDAY", "S" -> DayOfWeek.SATURDAY
+          "SUN", "SUNDAY" -> DayOfWeek.SUNDAY
+          else -> null
+        }
+        dow?.let { (it.value - LocalDate.now().dayOfWeek.value + 7) % 7 }
+      }.minOrNull()
+
+      if (minDays != null && minDays in 0..1) {
+        val (label, urgency) = when (minDays) {
+          0 -> "Today" to DeadlineUrgencyType.TODAY
+          1 -> "Tomorrow" to DeadlineUrgencyType.TOMORROW
+          else -> "In $minDays days" to DeadlineUrgencyType.UPCOMING
+        }
+        DashboardUpcomingItem(
+          id = 100_000 + schedule.id,
+          title = schedule.subjectName,
+          category = schedule.room.ifBlank { "Class" },
+          dueDateDisplay = "${schedule.timeRange} ($label)",
+          daysRemaining = minDays,
+          urgencyLabel = label,
+          urgencyType = urgency,
+          isCompleted = false,
+          isScheduleItem = true,
+          scheduleId = schedule.id
+        )
+      } else null
+    }
+  }
+
+  val combinedUpcoming = remember(taskUpcomingItems, scheduleUpcomingItems) {
+    (taskUpcomingItems + scheduleUpcomingItems).sortedWith(
+      compareBy({ it.daysRemaining }, { it.isScheduleItem }, { it.title })
+    )
+  }
 
   // Runtime permission launcher for ACCESS_COARSE_LOCATION
   val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -8531,11 +8868,23 @@ fun DashboardScreen(
       // 3. Bottom Section: Dynamic "Upcoming Deadlines" Task List in Frosted Glass
       item {
         UpcomingDeadlinesSectionCard(
-          activeTasks = activeTasks,
+          upcomingItems = combinedUpcoming,
           metrics = metrics,
-          onToggleComplete = { taskId ->
-            viewModel.toggleTaskCompletion(taskId)
-          }
+          onToggleComplete = { itemId ->
+            if (itemId >= 100_000) {
+              onNavigateToTab(CeNavTab.SCHEDULE)
+            } else {
+              viewModel.toggleTaskCompletion(itemId)
+            }
+          },
+          onItemClick = { item ->
+            if (item.isScheduleItem) {
+              onNavigateToTab(CeNavTab.SCHEDULE)
+            } else {
+              onNavigateToTab(CeNavTab.TASKS)
+            }
+          },
+          onAddTaskClick = onAddTaskClick
         )
       }
     }
@@ -10245,15 +10594,122 @@ private fun TodaysScheduleInteractiveCard(
   }
 }
 
+enum class DeadlineUrgencyType {
+  OVERDUE,
+  TODAY,
+  TOMORROW,
+  UPCOMING
+}
+
+data class DashboardUpcomingItem(
+  val id: Int = 0,
+  val title: String = "",
+  val category: String = DEFAULT_TASK_CATEGORY,
+  val dueDateDisplay: String = "",
+  val daysRemaining: Int = 0,
+  val urgencyLabel: String = "Upcoming",
+  val urgencyType: DeadlineUrgencyType = DeadlineUrgencyType.UPCOMING,
+  val isCompleted: Boolean = false,
+  val isScheduleItem: Boolean = false,
+  val scheduleId: Int? = null
+)
+
+fun parseDaysRemainingAndUrgency(dueDate: String): Triple<Int, String, DeadlineUrgencyType> {
+  val clean = dueDate.trim()
+  if (clean.isEmpty() || clean.equals("Upcoming", ignoreCase = true)) {
+    return Triple(3, "In 3 days", DeadlineUrgencyType.UPCOMING)
+  }
+  if (clean.equals("Overdue", ignoreCase = true) || clean.equals("Yesterday", ignoreCase = true)) {
+    return Triple(-1, "Overdue", DeadlineUrgencyType.OVERDUE)
+  }
+  if (clean.equals("Today", ignoreCase = true)) {
+    return Triple(0, "Today", DeadlineUrgencyType.TODAY)
+  }
+  if (clean.equals("Tomorrow", ignoreCase = true)) {
+    return Triple(1, "Tomorrow", DeadlineUrgencyType.TOMORROW)
+  }
+
+  val inDaysMatch = Regex("""(?i)(?:in\s+)?(\d+)\s*days?""").find(clean)
+  if (inDaysMatch != null) {
+    val days = inDaysMatch.groupValues[1].toIntOrNull() ?: 2
+    return when {
+      days <= 0 -> Triple(0, "Today", DeadlineUrgencyType.TODAY)
+      days == 1 -> Triple(1, "Tomorrow", DeadlineUrgencyType.TOMORROW)
+      else -> Triple(days, "In $days days", DeadlineUrgencyType.UPCOMING)
+    }
+  }
+
+  val now = try {
+    LocalDate.now()
+  } catch (_: Throwable) {
+    null
+  }
+
+  if (now != null) {
+    val currentYear = now.year
+    val datePatterns = listOf(
+      "yyyy-MM-dd",
+      "MM/dd/yyyy",
+      "M/d/yyyy",
+      "MMM d, yyyy",
+      "MMM dd, yyyy",
+      "MMMM d, yyyy",
+      "dd MMM yyyy",
+      "d MMM yyyy",
+      "MMM d",
+      "MMM dd",
+      "MMMM d"
+    )
+
+    for (pattern in datePatterns) {
+      try {
+        val formatter = DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH)
+        val targetDate = if (pattern.contains("y")) {
+          LocalDate.parse(clean, formatter)
+        } else {
+          val parsedMonthDay = MonthDay.parse(clean, formatter)
+          parsedMonthDay.atYear(currentYear)
+        }
+        val diff = ChronoUnit.DAYS.between(now, targetDate).toInt()
+        return when {
+          diff < 0 -> Triple(diff, "Overdue", DeadlineUrgencyType.OVERDUE)
+          diff == 0 -> Triple(0, "Today", DeadlineUrgencyType.TODAY)
+          diff == 1 -> Triple(1, "Tomorrow", DeadlineUrgencyType.TOMORROW)
+          else -> Triple(diff, "In $diff days", DeadlineUrgencyType.UPCOMING)
+        }
+      } catch (_: Throwable) {
+        // try next pattern
+      }
+    }
+
+    for (dow in DayOfWeek.values()) {
+      if (clean.contains(dow.name, ignoreCase = true) ||
+        clean.contains(dow.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), ignoreCase = true)
+      ) {
+        val daysUntil = (dow.value - now.dayOfWeek.value + 7) % 7
+        return when {
+          daysUntil == 0 -> Triple(0, "Today", DeadlineUrgencyType.TODAY)
+          daysUntil == 1 -> Triple(1, "Tomorrow", DeadlineUrgencyType.TOMORROW)
+          else -> Triple(daysUntil, "In $daysUntil days", DeadlineUrgencyType.UPCOMING)
+        }
+      }
+    }
+  }
+
+  return Triple(4, "In 4 days", DeadlineUrgencyType.UPCOMING)
+}
+
 /**
- * Frosted Glass "Upcoming Deadlines" section (`LiquidGlassCard`) with translucent glass tiles
- * and subtle glowing status dots.
+ * Frosted Glass "Upcoming Deadlines" section (`LiquidGlassCard`) with translucent glass tiles,
+ * live urgency badges, and empty state with "Add Task" button.
  */
 @Composable
 private fun UpcomingDeadlinesSectionCard(
-  activeTasks: List<Task>,
+  upcomingItems: List<DashboardUpcomingItem>,
   metrics: ResponsiveMetrics,
-  onToggleComplete: (Int) -> Unit
+  onToggleComplete: (Int) -> Unit,
+  onItemClick: (DashboardUpcomingItem) -> Unit = {},
+  onAddTaskClick: () -> Unit = {}
 ) {
   val palette = currentGlassPalette()
   LiquidGlassCard(
@@ -10295,7 +10751,7 @@ private fun UpcomingDeadlinesSectionCard(
             .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
         ) {
           Text(
-            text = "${activeTasks.size} Active",
+            text = "${upcomingItems.size} Active",
             style = MaterialTheme.typography.labelMedium.copy(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.Bold
@@ -10310,18 +10766,35 @@ private fun UpcomingDeadlinesSectionCard(
         }
       }
 
-      if (activeTasks.isEmpty()) {
-        Box(
+      if (upcomingItems.isEmpty()) {
+        Column(
           modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = metrics.scaledDp(24))
             .testTag("no_upcoming_deadlines_box"),
-          contentAlignment = Alignment.Center
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
         ) {
+          Box(
+            modifier = Modifier
+              .size(52.dp)
+              .clip(CircleShape)
+              .background(palette.nestedCardFill)
+              .border(palette.glassBorder, CircleShape),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = Icons.Filled.CheckCircle,
+              contentDescription = null,
+              tint = LiquidCyanGlow,
+              modifier = Modifier.size(28.dp)
+            )
+          }
+
           Text(
-            text = stringResource(R.string.no_upcoming_deadlines),
+            text = "All caught up! No upcoming deadlines scheduled.",
             style = MaterialTheme.typography.bodyLarge.copy(
-              fontSize = metrics.scaledSp(16),
+              fontSize = metrics.scaledSp(15),
               fontWeight = FontWeight.SemiBold
             ),
             color = palette.textSecondary,
@@ -10329,16 +10802,47 @@ private fun UpcomingDeadlinesSectionCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
           )
+
+          Button(
+            onClick = onAddTaskClick,
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = palette.accentIndigo,
+              contentColor = Color.White
+            ),
+            contentPadding = PaddingValues(
+              horizontal = metrics.scaledDp(20),
+              vertical = metrics.scaledDp(10)
+            ),
+            modifier = Modifier
+              .testTag("upcoming_add_task_button")
+              .minimumInteractiveComponentSize()
+          ) {
+            Icon(
+              imageVector = Icons.Default.Add,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Add Task",
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = metrics.scaledSp(14),
+                fontWeight = FontWeight.Bold
+              )
+            )
+          }
         }
       } else {
         Column(
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
         ) {
-          activeTasks.forEach { task ->
-            DashboardTaskMiniCard(
-              task = task,
+          upcomingItems.forEach { item ->
+            DashboardUpcomingItemCard(
+              item = item,
               metrics = metrics,
-              onToggleComplete = { onToggleComplete(task.id) }
+              onToggleComplete = { onToggleComplete(item.id) },
+              onClick = { onItemClick(item) }
             )
           }
         }
@@ -10348,23 +10852,80 @@ private fun UpcomingDeadlinesSectionCard(
 }
 
 /**
- * Translucent glass tile (`LiquidGlassContainer`) for each active task in Upcoming Deadlines,
- * featuring a subtle glowing status dot and frosted category pill.
+ * Backward compatibility overload for UpcomingDeadlinesSectionCard taking activeTasks
  */
 @Composable
-private fun DashboardTaskMiniCard(
-  task: Task,
+private fun UpcomingDeadlinesSectionCard(
+  activeTasks: List<Task>,
   metrics: ResponsiveMetrics,
-  onToggleComplete: () -> Unit
+  onToggleComplete: (Int) -> Unit
+) = UpcomingDeadlinesSectionCard(
+  upcomingItems = activeTasks.map { task ->
+    val (days, label, urgency) = parseDaysRemainingAndUrgency(task.dueDate)
+    DashboardUpcomingItem(
+      id = task.id,
+      title = task.title,
+      category = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+      dueDateDisplay = if (task.dueDate.isNotBlank()) task.dueDate else label,
+      daysRemaining = days,
+      urgencyLabel = label,
+      urgencyType = urgency,
+      isCompleted = task.isCompleted,
+      isScheduleItem = false
+    )
+  },
+  metrics = metrics,
+  onToggleComplete = onToggleComplete
+)
+
+/**
+ * Dynamic translucent glass tile for each upcoming deadline, with urgency badge,
+ * interactive completion ring, and fluid responsiveness.
+ */
+@Composable
+private fun DashboardUpcomingItemCard(
+  item: DashboardUpcomingItem,
+  metrics: ResponsiveMetrics,
+  onToggleComplete: () -> Unit,
+  onClick: () -> Unit
 ) {
   val palette = currentGlassPalette()
+  val context = LocalContext.current
+  val localView = LocalView.current
+
+  val (urgencyBg, urgencyBorder, urgencyTextColor) = when (item.urgencyType) {
+    DeadlineUrgencyType.OVERDUE -> Triple(
+      Color(0xFFEF4444).copy(alpha = 0.16f),
+      Color(0xFFEF4444).copy(alpha = 0.40f),
+      Color(0xFFF87171)
+    )
+    DeadlineUrgencyType.TODAY -> Triple(
+      Color(0xFFF59E0B).copy(alpha = 0.18f),
+      Color(0xFFF59E0B).copy(alpha = 0.45f),
+      Color(0xFFF59E0B)
+    )
+    DeadlineUrgencyType.TOMORROW -> Triple(
+      Color(0xFFEAB308).copy(alpha = 0.16f),
+      Color(0xFFEAB308).copy(alpha = 0.38f),
+      Color(0xFFFACC15)
+    )
+    DeadlineUrgencyType.UPCOMING -> Triple(
+      LiquidRoyalPeriwinkle.copy(alpha = 0.16f),
+      LiquidRoyalPeriwinkle.copy(alpha = 0.35f),
+      palette.accentIndigo
+    )
+  }
+
   LiquidGlassContainer(
     cornerRadius = 18.dp,
     fillAlpha = 0.75f,
-    onClick = onToggleComplete,
+    onClick = {
+      playCardHapticSound(context, localView)
+      onClick()
+    },
     modifier = Modifier
       .fillMaxWidth()
-      .testTag("dashboard_deadline_card_${task.id}")
+      .testTag("dashboard_deadline_card_${item.id}")
   ) {
     Row(
       modifier = Modifier
@@ -10376,25 +10937,46 @@ private fun DashboardTaskMiniCard(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
     ) {
-      // Glowing status dot + interactive completion ring
-      Box(
-        modifier = Modifier
-          .size(28.dp)
-          .clip(CircleShape)
-          .background(palette.checkboxUncheckedFill)
-          .border(
-            BorderStroke(1.5.dp, palette.checkboxUncheckedBorder),
-            CircleShape
-          ),
-        contentAlignment = Alignment.Center
-      ) {
-        Box(
+      if (item.isScheduleItem) {
+        Surface(
+          shape = CircleShape,
+          color = LiquidRoyalPeriwinkle.copy(alpha = 0.15f),
+          border = BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)),
+          modifier = Modifier.size(32.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Outlined.Schedule,
+              contentDescription = "Class Schedule",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+        }
+      } else {
+        // Glowing status dot + interactive completion ring
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            onToggleComplete()
+          },
+          shape = CircleShape,
+          color = palette.checkboxUncheckedFill,
+          border = BorderStroke(1.5.dp, palette.checkboxUncheckedBorder),
           modifier = Modifier
-            .size(9.dp)
-            .shadow(4.dp, CircleShape, spotColor = LiquidCyanGlow)
-            .clip(CircleShape)
-            .background(brush = LiquidCyanVioletGradient)
-        )
+            .size(32.dp)
+            .minimumInteractiveComponentSize()
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Box(
+              modifier = Modifier
+                .size(9.dp)
+                .shadow(4.dp, CircleShape, spotColor = LiquidCyanGlow)
+                .clip(CircleShape)
+                .background(brush = LiquidCyanVioletGradient)
+            )
+          }
+        }
       }
 
       Column(
@@ -10402,9 +10984,9 @@ private fun DashboardTaskMiniCard(
         verticalArrangement = Arrangement.spacedBy(4.dp)
       ) {
         Text(
-          text = task.title,
+          text = item.title,
           style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(16),
+            fontSize = metrics.scaledSp(15),
             fontWeight = FontWeight.Bold
           ),
           color = palette.textPrimary,
@@ -10422,10 +11004,10 @@ private fun DashboardTaskMiniCard(
             imageVector = Icons.Outlined.CalendarToday,
             contentDescription = null,
             tint = palette.accentIndigo,
-            modifier = Modifier.size(15.dp)
+            modifier = Modifier.size(14.dp)
           )
           Text(
-            text = "Due ${task.dueDate}",
+            text = "Due ${item.dueDateDisplay}",
             style = MaterialTheme.typography.labelMedium.copy(
               fontSize = metrics.scaledSp(12),
               fontWeight = FontWeight.SemiBold
@@ -10442,7 +11024,7 @@ private fun DashboardTaskMiniCard(
               .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
           ) {
             Text(
-              text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+              text = item.category.ifBlank { DEFAULT_TASK_CATEGORY },
               style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = metrics.scaledSp(10),
                 fontWeight = FontWeight.Bold
@@ -10457,8 +11039,57 @@ private fun DashboardTaskMiniCard(
           }
         }
       }
+
+      // Urgency Badge Pill
+      Box(
+        modifier = Modifier
+          .clip(RoundedCornerShape(12.dp))
+          .background(urgencyBg)
+          .border(BorderStroke(1.dp, urgencyBorder), RoundedCornerShape(12.dp))
+          .padding(horizontal = 10.dp, vertical = 5.dp)
+      ) {
+        Text(
+          text = item.urgencyLabel,
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = metrics.scaledSp(11),
+            fontWeight = FontWeight.Bold
+          ),
+          color = urgencyTextColor,
+          maxLines = 1
+        )
+      }
     }
   }
+}
+
+/**
+ * Translucent glass tile (`LiquidGlassContainer`) for each active task in Upcoming Deadlines,
+ * featuring a subtle glowing status dot and frosted category pill.
+ */
+@Composable
+private fun DashboardTaskMiniCard(
+  task: Task,
+  metrics: ResponsiveMetrics,
+  onToggleComplete: () -> Unit
+) {
+  val (days, label, urgency) = parseDaysRemainingAndUrgency(task.dueDate)
+  val item = DashboardUpcomingItem(
+    id = task.id,
+    title = task.title,
+    category = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+    dueDateDisplay = if (task.dueDate.isNotBlank()) task.dueDate else label,
+    daysRemaining = days,
+    urgencyLabel = label,
+    urgencyType = urgency,
+    isCompleted = task.isCompleted,
+    isScheduleItem = false
+  )
+  DashboardUpcomingItemCard(
+    item = item,
+    metrics = metrics,
+    onToggleComplete = onToggleComplete,
+    onClick = onToggleComplete
+  )
 }
 
 /**
@@ -15807,7 +16438,8 @@ fun FlashcardMainView(
 
   fun launchTextBatchExtraction(deckTitle: String, subjectTag: String, rawText: String) {
     val activeKey = viewModel.getActiveGeminiApiKey()
-    if (GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey).isEmpty()) {
+    val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey)
+    if (validKeyPool.isEmpty() && !ApiKeyManager.hasValidKey(context)) {
       isApiKeyDialogOpen = true
       Toast.makeText(
         context,
@@ -15884,7 +16516,8 @@ fun FlashcardMainView(
   ) { uri: Uri? ->
     if (uri != null) {
       val activeKey = viewModel.getActiveGeminiApiKey()
-      if (GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey).isEmpty()) {
+      val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey)
+      if (validKeyPool.isEmpty() && !ApiKeyManager.hasValidKey(context)) {
         isApiKeyDialogOpen = true
         Toast.makeText(
           context,
@@ -21322,6 +21955,10 @@ private fun ProfileAndSettingsDialog(
   var restoreJsonInput by rememberSaveable { mutableStateOf("") }
   var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
 
+  // Cloud Sync Workspace link state
+  var isLinkSyncKeyDialogOpen by rememberSaveable { mutableStateOf(false) }
+  var inputSyncKey by rememberSaveable { mutableStateOf("") }
+
   // Manual "Check for Updates" state
   var isCheckingUpdates by remember { mutableStateOf(false) }
   var updateStatusMessage by remember { mutableStateOf<String?>(null) }
@@ -21652,7 +22289,173 @@ private fun ProfileAndSettingsDialog(
 
             HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-            // 3. "AUTO BACKUP & SYNC" COMPACT LIST TILE + COMPACT ACTIONS
+            // 3. "CROSS-DEVICE CLOUD SYNC" TILE (TASKS, SCHEDULES, FLASHCARDS)
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(rowTileSurfaceColor)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .testTag("extras_cloud_sync_card"),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Surface(
+                    color = palette.nestedCardFill.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.size(32.dp)
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      Icon(
+                        imageVector = Icons.Default.CloudSync,
+                        contentDescription = null,
+                        tint = palette.accentIndigo,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
+                  }
+
+                  Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                      text = "Cloud Device Sync",
+                      style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = palette.textPrimary,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                      text = "Real-time sync across Phone & Tablet",
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textSecondary,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                }
+
+                Surface(
+                  color = palette.accentIndigo.copy(alpha = 0.14f),
+                  shape = RoundedCornerShape(8.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f))
+                ) {
+                  Text(
+                    text = viewModel.getActiveSyncKey(),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.accentIndigo,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                      .padding(horizontal = 8.dp, vertical = 4.dp)
+                      .testTag("cloud_sync_key_chip")
+                  )
+                }
+              }
+
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                OutlinedButton(
+                  onClick = {
+                    val key = viewModel.getActiveSyncKey()
+                    val clipboard =
+                      context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    val clip = ClipData.newPlainText("Sibil Cloud Sync Key", key)
+                    clipboard?.setPrimaryClip(clip)
+                    Toast.makeText(
+                      context,
+                      "Sync Key $key copied! Enter on your other device.",
+                      Toast.LENGTH_SHORT
+                    ).show()
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+                  colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
+                    contentColor = palette.accentIndigo
+                  ),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .testTag("copy_sync_key_button")
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.ContentCopy,
+                      contentDescription = null,
+                      modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                      text = "Copy Sync Key",
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      maxLines = 1,
+                      softWrap = false
+                    )
+                  }
+                }
+
+                OutlinedButton(
+                  onClick = {
+                    inputSyncKey = ""
+                    isLinkSyncKeyDialogOpen = true
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+                  colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
+                    contentColor = palette.accentIndigo
+                  ),
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .testTag("link_device_sync_button")
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.CloudSync,
+                      contentDescription = null,
+                      modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                      text = "Link Device",
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      maxLines = 1,
+                      softWrap = false
+                    )
+                  }
+                }
+              }
+            }
+
+            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
+
+            // 4. "AUTO BACKUP & SYNC" COMPACT LIST TILE + COMPACT ACTIONS
             Column(
               modifier = Modifier
                 .fillMaxWidth()
@@ -22114,6 +22917,82 @@ private fun ProfileAndSettingsDialog(
       },
       dismissButton = {
         TextButton(onClick = { isRestoreDialogOpen = false }) {
+          Text("Cancel", color = palette.textSecondary)
+        }
+      }
+    )
+  }
+
+  // Link Cloud Sync Key Modal Dialog
+  if (isLinkSyncKeyDialogOpen) {
+    AlertDialog(
+      onDismissRequest = { isLinkSyncKeyDialogOpen = false },
+      shape = RoundedCornerShape(22.dp),
+      containerColor = modalBackgroundColor,
+      title = {
+        Text(
+          text = "Link Device Workspace",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textPrimary
+        )
+      },
+      text = {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "Enter the Cloud Sync Key from your other device (e.g., CE-9842) to instantly sync your Tasks, Schedules, and Flashcards across both devices.",
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+            color = palette.textSecondary
+          )
+          OutlinedTextField(
+            value = inputSyncKey,
+            onValueChange = { inputSyncKey = it.uppercase(Locale.US) },
+            label = { Text("Cloud Sync Key", fontSize = 12.sp) },
+            placeholder = { Text("e.g. CE-9842", fontSize = 12.sp) },
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp),
+            colors = sibilOutlinedTextFieldColors(),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("sync_key_text_field")
+          )
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            val trimmed = inputSyncKey.trim().uppercase(Locale.US)
+            if (trimmed.length >= 3) {
+              val updated = viewModel.updateCloudSyncKey(trimmed)
+              if (updated) {
+                Toast.makeText(
+                  context,
+                  "Linked to workspace $trimmed! Syncing...",
+                  Toast.LENGTH_SHORT
+                ).show()
+                isLinkSyncKeyDialogOpen = false
+              }
+            } else {
+              Toast.makeText(
+                context,
+                "Please enter a valid key (e.g., CE-9842)",
+                Toast.LENGTH_SHORT
+              ).show()
+            }
+          },
+          shape = RoundedCornerShape(10.dp),
+          modifier = Modifier.testTag("confirm_link_sync_key_button")
+        ) {
+          Text("Link & Sync", fontWeight = FontWeight.Bold)
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { isLinkSyncKeyDialogOpen = false }) {
           Text("Cancel", color = palette.textSecondary)
         }
       }
