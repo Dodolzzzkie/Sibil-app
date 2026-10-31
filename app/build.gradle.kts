@@ -143,4 +143,9 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   // "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
+  // Google Play Services Code Scanner (No camera permissions needed in manifest)
+  implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+  // Lightweight QR Generator
+  implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
 }
