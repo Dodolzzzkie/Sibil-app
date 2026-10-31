@@ -60,13 +60,13 @@ jobs:
 
       - name: Restore Release Keystore
         env:
-          K_DATA: ${{ secrets.KEYSTORE_BASE64 }}
+          K_DATA: ${{ secrets.KEYSTORE_BASE_64 }}
         run: |
           if [ -n "$K_DATA" ]; then
             echo "$K_DATA" | base64 -d > app/sibil-release.jks
             echo "Keystore restored successfully from KEYSTORE_BASE64 secret."
           else
-            echo "ERROR: KEYSTORE_BASE64 secret is missing or empty!"
+            echo "ERROR: KEYSTORE_BASE_64 secret is missing or empty!"
             exit 1
           fi
 
