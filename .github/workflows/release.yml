@@ -10,7 +10,7 @@ on:
       release_notes:
         description: 'Release notes'
         required: false
-        default: 'Flashcards multi-key rotation, cloud sync fixes, and UI improvements.'
+        default: 'Cloud sync updates, flashcard multi-key rotation, and UI improvements.'
 
 permissions:
   contents: write
@@ -30,17 +30,45 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Auto-Bump Version in build.gradle.kts
+        run: |
+          VER="${{ github.event.inputs.version_name }}"
+          # Automatically generates an incrementing integer code based on GitHub run count
+          CODE=$((100 + ${{ github.run_number }}))
+          echo "Applying version stamp: versionName = $VER, versionCode = $CODE"
+          sed -i -E "s/versionCode\s*=\s*[0-9]+/versionCode = $CODE/" app/build.gradle.kts
+          sed -i -E "s/versionName\s*=\s*\"[^\"]*\"/versionName = \"$VER\"/" app/build.gradle.kts
+          echo "Verified gradle version lines:"
+          grep -E "versionCode|versionName" app/build.gradle.kts
+
       - name: Restore Google Services JSON
         env:
           G_DATA: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
           if [ -n "$G_DATA" ]; then
             echo "$G_DATA" | base64 -d > app/google-services.json
+            echo "google-services.json successfully restored."
+          else
+            echo "Warning: GOOGLE_SERVICES_JSON_BASE64 secret not found."
           fi
 
       - name: Inject Gemini API Key
+        env:
+          KEY_VAL: ${{ secrets.GEMINI_KEYS || secrets.GEMINI_KEYS }}
         run: |
-          sed -i "s|__KEY_INJECTION_PLACEHOLDER__|${{ secrets.GEMINI_KEYS }}|g" app/src/main/java/com/example/MainActivity.kt || true
+          sed -i "s|__KEY_INJECTION_PLACEHOLDER__|$KEY_VAL|g" app/src/main/java/com/example/MainActivity.kt || true
+
+      - name: Restore Release Keystore
+        env:
+          K_DATA: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$K_DATA" ]; then
+            echo "$K_DATA" | base64 -d > app/sibil-release.jks
+            echo "Keystore restored successfully from KEYSTORE_BASE64 secret."
+          else
+            echo "ERROR: KEYSTORE_BASE64 secret is missing or empty!"
+            exit 1
+          fi
 
       - name: Grant Execute Permission to Gradle
         run: chmod +x gradlew
@@ -48,9 +76,9 @@ jobs:
       - name: Build Production APK
         env:
           KEYSTORE_PATH: "sibil-release.jks"
-          KEYSTORE_PASSWORD: "sibil12345"
-          KEY_ALIAS: "sibil"
-          KEY_PASSWORD: "sibil12345"
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'sibil12345' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'sibil' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'sibil12345' }}
         run: ./gradlew assembleRelease
 
       - name: Prepare Release Artifact
