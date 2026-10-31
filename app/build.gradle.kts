@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.civildesk.ceprod"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.0.1"
+    versionCode = 102
+    versionName = "1.0.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -27,11 +27,15 @@ android {
   // and updating Android apps in AI Studio.
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+      val keystorePath = System.getenv("KEYSTORE_PATH")
+        ?: (if (file("${rootDir}/app/release.jks").exists()) "${rootDir}/app/release.jks"
+            else if (file("${rootDir}/release.jks").exists()) "${rootDir}/release.jks"
+            else if (file("${rootDir}/my-upload-key.jks").exists()) "${rootDir}/my-upload-key.jks"
+            else "${rootDir}/debug.keystore")
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
+      keyAlias = System.getenv("KEY_ALIAS") ?: (if (keystorePath.endsWith("debug.keystore")) "androiddebugkey" else "upload")
+      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")

@@ -392,8 +392,8 @@ private val DEFAULT_GEMINI_API_KEY: String
 
 const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
 const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
-const val APP_VERSION_CODE = 101            // Incremented with builds
-const val APP_VERSION_NAME = "v1.0.1"
+const val APP_VERSION_CODE = 102            // Incremented with builds
+const val APP_VERSION_NAME = "v1.0.2"
 const val SIBIL_APP_VERSION_TAG = "Sibil $APP_VERSION_NAME (Official Release)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.52
