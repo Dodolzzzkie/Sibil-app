@@ -80,6 +80,7 @@ import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -292,6 +293,8 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.google.zxing.BarcodeFormat
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -485,8 +488,8 @@ private val DEFAULT_GEMINI_API_KEY: String
 
 const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
 const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
-const val APP_VERSION_CODE = 103            // Incremented with builds
-const val APP_VERSION_NAME = "v1.0.3"
+const val APP_VERSION_CODE = 105            // Incremented with builds
+const val APP_VERSION_NAME = "v1.0.5"
 const val SIBIL_APP_VERSION_TAG = "Sibil $APP_VERSION_NAME (Official Release)"
 
 private const val DEFAULT_FALLBACK_LATITUDE = 10.52
@@ -1150,7 +1153,9 @@ fun DocumentSnapshot.toTaskItemOrNull(): TaskItem? {
   val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: parsed.id
   val resolvedCompleted = getBoolean("isCompleted") ?: getBoolean("completed") ?: parsed.isCompleted
   val resolvedTitle = (getString("title") ?: parsed.title).trim()
-  if (resolvedTitle.isEmpty()) return null
+  if (resolvedTitle.isEmpty() || LocalStorageManager.isLegacyPlaceholderTaskTitle(resolvedTitle)) {
+    return null
+  }
   val resolvedDueDate = (getString("dueDate") ?: parsed.dueDate).trim().ifEmpty { "Upcoming" }
   val resolvedCategory = (getString("subjectCategory") ?: parsed.subjectCategory).trim().ifEmpty {
     DEFAULT_TASK_CATEGORY
@@ -2726,7 +2731,6 @@ class LocalStorageManager(context: Context) {
   init {
     migrateTaskSchemaIfNeeded()
     clearLegacyPlaceholderFlashcardDecksIfNeeded()
-    restoreFromDeviceBackupIfUnauthenticated()
   }
 
   /**
@@ -2740,175 +2744,6 @@ class LocalStorageManager(context: Context) {
     } catch (_: Exception) {
       "default_device"
     }
-  }
-
-  fun getDeviceBackupFileName(): String {
-    return "sibil_device_backup_${getDeviceAndroidId()}.json"
-  }
-
-  /**
-   * On app startup, if `SharedPreferences` has no active session (such as after an uninstall
-   * and fresh reinstall), automatically looks for `"sibil_device_backup_${androidId}.json"` in
-   * `MediaStore.Downloads` or `Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)`.
-   * If found, silently restores the account, tasks, schedules, alarms, and flashcard decks.
-   */
-  private fun restoreFromDeviceBackupIfUnauthenticated() {
-    val existingUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
-    val hasAuthAccount = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty().isNotBlank()
-    val isLoggedIn = prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false)
-    val isGuest = prefs.getBoolean(KEY_AUTH_IS_GUEST, false)
-    if (existingUser.isNotBlank() || hasAuthAccount || isLoggedIn || isGuest) return
-
-    val backupJson = readDeviceBackupFileFromDownloads()
-    if (!backupJson.isNullOrBlank()) {
-      importBackupJson(
-        rawBackupInput = backupJson,
-        fallbackAccountKey = GUEST_ACCOUNT_KEY,
-        syncToDeviceAfterImport = false
-      )
-    }
-  }
-
-  /**
-   * Triggers `BackupManager(context).dataChanged()` and writes `"sibil_device_backup_${androidId}.json"`
-   * into public shared storage (`MediaStore.Downloads` on Android 10+ and `DIRECTORY_DOWNLOADS`).
-   */
-  fun syncToDeviceStorage(activeAccountKey: String = GUEST_ACCOUNT_KEY) {
-    try {
-      BackupManager(appContext).dataChanged()
-    } catch (_: Exception) {
-    }
-
-    val currentSavedUser = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
-    val currentAuthUser = prefs.getString(KEY_AUTH_USERNAME, "")?.trim().orEmpty()
-    val hasRegisteredAccounts = getRegisteredUsers().isNotEmpty() || getRegisteredAccountsMap().isNotEmpty()
-    if (currentSavedUser.isBlank() && currentAuthUser.isBlank() && !hasRegisteredAccounts) {
-      return
-    }
-
-    val backupPayload = exportBackupJson(activeAccountKey)
-    writeDeviceBackupFileToDownloads(backupPayload)
-  }
-
-  private fun writeDeviceBackupFileToDownloads(jsonContent: String) {
-    val fileName = getDeviceBackupFileName()
-    val bytes = jsonContent.toByteArray(Charsets.UTF_8)
-
-    // 1. Android 10+ (API 29+): Write via MediaStore.Downloads
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      try {
-        val resolver = appContext.contentResolver
-        val downloadsUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
-        val selectionArgs = arrayOf(fileName)
-
-        var existingUri: Uri? = null
-        resolver.query(
-          downloadsUri,
-          arrayOf(MediaStore.MediaColumns._ID),
-          selection,
-          selectionArgs,
-          "${MediaStore.MediaColumns._ID} DESC"
-        )?.use { cursor ->
-          if (cursor.moveToFirst()) {
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            val id = cursor.getLong(idCol)
-            existingUri = ContentUris.withAppendedId(downloadsUri, id)
-          }
-        }
-
-        val targetUri = existingUri ?: run {
-          val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-          }
-          resolver.insert(downloadsUri, values)
-        }
-
-        if (targetUri != null) {
-          resolver.openOutputStream(targetUri, "wt")?.use { out ->
-            out.write(bytes)
-            out.flush()
-          }
-        }
-      } catch (_: Exception) {
-      }
-    }
-
-    // 2. Direct Public Downloads File Fallback
-    try {
-      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-      if (downloadsDir != null) {
-        if (!downloadsDir.exists()) {
-          downloadsDir.mkdirs()
-        }
-        val targetFile = File(downloadsDir, fileName)
-        targetFile.writeText(jsonContent, Charsets.UTF_8)
-      }
-    } catch (_: Exception) {
-    }
-  }
-
-  private fun readDeviceBackupFileFromDownloads(): String? {
-    val androidId = getDeviceAndroidId()
-    val exactFileName = "sibil_device_backup_${androidId}.json"
-    val prefixPattern = "sibil_device_backup_${androidId}%"
-
-    // 1. Android 10+ (API 29+): Query MediaStore.Downloads
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      try {
-        val resolver = appContext.contentResolver
-        val downloadsUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        val selection =
-          "${MediaStore.MediaColumns.DISPLAY_NAME} = ? OR ${MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?"
-        val selectionArgs = arrayOf(exactFileName, prefixPattern)
-
-        resolver.query(
-          downloadsUri,
-          arrayOf(MediaStore.MediaColumns._ID),
-          selection,
-          selectionArgs,
-          "${MediaStore.MediaColumns._ID} DESC"
-        )?.use { cursor ->
-          while (cursor.moveToNext()) {
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            val id = cursor.getLong(idCol)
-            val itemUri = ContentUris.withAppendedId(downloadsUri, id)
-            val text = resolver.openInputStream(itemUri)?.bufferedReader(Charsets.UTF_8)?.use {
-              it.readText()
-            }?.trim()
-            if (!text.isNullOrBlank()) {
-              return text
-            }
-          }
-        }
-      } catch (_: Exception) {
-      }
-    }
-
-    // 2. Direct Public Downloads Directory Fallback
-    try {
-      val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-      if (downloadsDir != null && downloadsDir.exists()) {
-        val exactFile = File(downloadsDir, exactFileName)
-        if (exactFile.exists() && exactFile.canRead()) {
-          val text = exactFile.readText(Charsets.UTF_8).trim()
-          if (text.isNotBlank()) return text
-        }
-        val matchingFiles = downloadsDir.listFiles { file ->
-          file.name.startsWith("sibil_device_backup_${androidId}") && file.name.endsWith(".json")
-        }
-        val newestFile = matchingFiles?.maxByOrNull { it.lastModified() }
-        if (newestFile != null && newestFile.canRead()) {
-          val text = newestFile.readText(Charsets.UTF_8).trim()
-          if (text.isNotBlank()) return text
-        }
-      }
-    } catch (_: Exception) {
-    }
-
-    return null
   }
 
   /**
@@ -2964,18 +2799,17 @@ class LocalStorageManager(context: Context) {
     val savedSchemaVersion = prefs.getInt(KEY_TASK_SCHEMA_VERSION, 1)
     if (savedSchemaVersion >= CURRENT_TASK_SCHEMA_VERSION) return
 
-    val legacyStarterTitles = setOf(
-      "Reinforced Concrete Design - Plate 3",
-      "Hydraulics Quiz",
-      "Complete Surveying Field Report",
-      "Read Steel Design Chapter 4",
-      "Prepare Soil Mechanics Sieve Analysis Data"
-    )
-
     val editor = prefs.edit()
+    // Purge stale guest tasks so Guest Mode starts strictly empty without leftover 2/2 completed tasks
+    editor.remove(tasksKeyFor(GUEST_ACCOUNT_KEY))
+
     val allEntries = prefs.all
     for ((key, value) in allEntries) {
       if (!key.startsWith(KEY_TASKS_PREFIX)) continue
+      if (key == tasksKeyFor(GUEST_ACCOUNT_KEY)) {
+        editor.remove(key)
+        continue
+      }
       val rawJson = value as? String
       if (rawJson.isNullOrBlank()) {
         editor.remove(key)
@@ -2987,7 +2821,7 @@ class LocalStorageManager(context: Context) {
         for (i in 0 until jsonArray.length()) {
           val obj = jsonArray.optJSONObject(i) ?: continue
           val title = obj.optString("title", "").trim()
-          if (title.isEmpty() || title in legacyStarterTitles) {
+          if (title.isEmpty() || isLegacyPlaceholderTaskTitle(title)) {
             continue
           }
           val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
@@ -3235,7 +3069,6 @@ class LocalStorageManager(context: Context) {
       editor.putString(KEY_AUTH_RECOVERY_PIN_HASH, canonicalPinHash)
     }
     editor.apply()
-    syncToDeviceStorage(normalizedUsername)
     return true
   }
 
@@ -3280,7 +3113,6 @@ class LocalStorageManager(context: Context) {
       .putBoolean(KEY_AUTH_IS_GUEST, false)
       .putString(KEY_USER_NAME, cleanUsername)
       .apply()
-    syncToDeviceStorage(normalizedUsername)
   }
 
   fun getDisplayNameForUser(username: String): String {
@@ -3312,7 +3144,6 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(tasksKeyFor(username), jsonArray.toString()).apply()
-    syncToDeviceStorage(username)
   }
 
   fun loadTasks(username: String = GUEST_ACCOUNT_KEY): List<Task>? {
@@ -3327,7 +3158,7 @@ class LocalStorageManager(context: Context) {
         try {
           val obj = jsonArray.optJSONObject(i) ?: continue
           val title = obj.optString("title", "").trim()
-          if (title.isEmpty()) continue
+          if (title.isEmpty() || isLegacyPlaceholderTaskTitle(title)) continue
           val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
             .trim()
             .ifEmpty { DEFAULT_TASK_CATEGORY }
@@ -3368,7 +3199,6 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(schedulesKeyFor(username), jsonArray.toString()).apply()
-    syncToDeviceStorage(username)
   }
 
   fun loadSchedules(username: String = GUEST_ACCOUNT_KEY): List<ClassSchedule>? {
@@ -3437,7 +3267,6 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(obj)
     }
     prefs.edit().putString(alarmsKeyFor(username), jsonArray.toString()).apply()
-    syncToDeviceStorage(username)
   }
 
   fun loadAlarms(username: String = GUEST_ACCOUNT_KEY): List<AlarmItem>? {
@@ -3514,7 +3343,6 @@ class LocalStorageManager(context: Context) {
       jsonArray.put(deckObj)
     }
     prefs.edit().putString(flashcardDecksKeyFor(username), jsonArray.toString()).apply()
-    syncToDeviceStorage(username)
   }
 
   fun loadFlashcardDecks(username: String = GUEST_ACCOUNT_KEY): List<FlashcardDeck> {
@@ -3629,7 +3457,6 @@ class LocalStorageManager(context: Context) {
         .putBoolean(KEY_AUTH_IS_LOGGED_IN, false)
         .putString(KEY_USER_NAME, GUEST_DISPLAY_NAME)
         .apply()
-      syncToDeviceStorage(GUEST_ACCOUNT_KEY)
     } else {
       val norm = normalizeAccountKey(clean)
       val acct = getRegisteredAccountsMap()[norm]
@@ -3651,7 +3478,6 @@ class LocalStorageManager(context: Context) {
         }
       }
       editor.apply()
-      syncToDeviceStorage(clean)
     }
   }
 
@@ -3690,7 +3516,6 @@ class LocalStorageManager(context: Context) {
 
   fun saveDarkMode(enabled: Boolean) {
     prefs.edit().putBoolean(KEY_DARK_MODE, enabled).apply()
-    syncToDeviceStorage(loadUserName().orEmpty())
   }
 
   fun loadDarkMode(defaultValue: Boolean = false): Boolean {
@@ -3699,7 +3524,6 @@ class LocalStorageManager(context: Context) {
 
   fun saveGeminiApiKey(apiKey: String) {
     prefs.edit().putString(KEY_GEMINI_API_KEY, apiKey.trim()).apply()
-    syncToDeviceStorage(loadUserName().orEmpty())
   }
 
   fun loadSavedGeminiApiKey(): String {
@@ -3723,189 +3547,18 @@ class LocalStorageManager(context: Context) {
     prefs.edit().putInt(PREF_LAST_SEEN_VERSION, currentVersionCode).apply()
   }
 
-  /**
-   * Reads all stored JSON strings from `SharedPreferences` (Schedules, Tasks, Alarms, Flashcards,
-   * User Profile, and all per-account keys) and combines them into a single encoded JSON string
-   * for One-Tap Clipboard Backup & Device-Bound Auto-Persistence.
-   */
-  fun exportBackupJson(activeAccountKey: String = GUEST_ACCOUNT_KEY): String {
-    val resolvedAccount = normalizeAccountKey(activeAccountKey.ifBlank { loadUserName() })
-    val savedUser = prefs.getString(KEY_USER_NAME, "") ?: ""
-    val darkMode = prefs.getBoolean(KEY_DARK_MODE, false)
-    val registeredUsersJson = prefs.getString(KEY_REGISTERED_USERS, "{}") ?: "{}"
-    val registeredAccountsV2Json = prefs.getString(KEY_REGISTERED_ACCOUNTS_JSON, "{}") ?: "{}"
-    val schedulesJson = prefs.getString(schedulesKeyFor(resolvedAccount), "[]") ?: "[]"
-    val tasksJson = prefs.getString(tasksKeyFor(resolvedAccount), "[]") ?: "[]"
-    val alarmsJson = prefs.getString(alarmsKeyFor(resolvedAccount), "[]") ?: "[]"
-    val flashcardsJson = prefs.getString(flashcardDecksKeyFor(resolvedAccount), "[]") ?: "[]"
-
-    val allPrefsObj = JSONObject()
-    for ((key, value) in prefs.all) {
-      if (value is String) {
-        allPrefsObj.put(key, value)
-      }
-    }
-
-    return JSONObject().apply {
-      put("app", "Sibil")
-      put("version", SIBIL_APP_VERSION_TAG)
-      put("deviceId", getDeviceAndroidId())
-      put("backupTimestamp", System.currentTimeMillis())
-      put("userProfile", savedUser)
-      put("activeAccountKey", resolvedAccount)
-      put("isDarkMode", darkMode)
-      put("auth_username", prefs.getString(KEY_AUTH_USERNAME, "") ?: "")
-      put("auth_display_name", prefs.getString(KEY_AUTH_DISPLAY_NAME, "") ?: "")
-      put("auth_password_hash", prefs.getString(KEY_AUTH_PASSWORD_HASH, "") ?: "")
-      put("auth_recovery_pin_hash", prefs.getString(KEY_AUTH_RECOVERY_PIN_HASH, "") ?: "")
-      put("auth_is_logged_in", prefs.getBoolean(KEY_AUTH_IS_LOGGED_IN, false))
-      put("auth_is_guest", prefs.getBoolean(KEY_AUTH_IS_GUEST, false))
-      put("registeredUsers", registeredUsersJson)
-      put("registeredAccountsV2", registeredAccountsV2Json)
-      put("schedules", schedulesJson)
-      put("tasks", tasksJson)
-      put("alarms", alarmsJson)
-      put("flashcards", flashcardsJson)
-      put("allPreferences", allPrefsObj)
-    }.toString()
+  fun saveLastSyncedTimestamp(timestampMillis: Long) {
+    prefs.edit().putLong(KEY_LAST_SYNCED_TIMESTAMP, timestampMillis).apply()
   }
 
-  /**
-   * Parses a backup JSON string (from Clipboard Restore or Device Auto-Restore), repopulates `SharedPreferences`
-   * for Schedules, Tasks, Alarms, Flashcards, and User Profile, and returns `true` on success.
-   */
-  fun importBackupJson(
-    rawBackupInput: String,
-    fallbackAccountKey: String = GUEST_ACCOUNT_KEY,
-    syncToDeviceAfterImport: Boolean = true
-  ): Boolean {
-    val trimmed = rawBackupInput.trim()
-    if (trimmed.isEmpty()) return false
-
-    return try {
-      val normalizedJsonText = if (trimmed.startsWith("{")) {
-        trimmed
-      } else {
-        String(Base64.decode(trimmed, Base64.DEFAULT), Charsets.UTF_8).trim()
-      }
-      val rootObj = JSONObject(normalizedJsonText)
-      val editor = prefs.edit()
-
-      // 1. Restore full string preferences map if included
-      val allPrefsObj = rootObj.optJSONObject("allPreferences")
-      if (allPrefsObj != null) {
-        val keys = allPrefsObj.keys()
-        while (keys.hasNext()) {
-          val k = keys.next()
-          val v = allPrefsObj.optString(k, "")
-          editor.putString(k, v)
-        }
-      }
-
-      // 2. Restore User Profile, Auth Schema, & Dark Mode
-      val restoredUserProfile = rootObj.optString("userProfile", "").trim()
-      if (restoredUserProfile.isNotEmpty()) {
-        editor.putString(KEY_USER_NAME, restoredUserProfile)
-      }
-      if (rootObj.has("auth_username")) {
-        editor.putString(KEY_AUTH_USERNAME, rootObj.optString("auth_username", ""))
-      }
-      if (rootObj.has("auth_display_name")) {
-        editor.putString(KEY_AUTH_DISPLAY_NAME, rootObj.optString("auth_display_name", ""))
-      }
-      if (rootObj.has("auth_password_hash")) {
-        editor.putString(KEY_AUTH_PASSWORD_HASH, rootObj.optString("auth_password_hash", ""))
-      }
-      if (rootObj.has("auth_recovery_pin_hash")) {
-        editor.putString(KEY_AUTH_RECOVERY_PIN_HASH, rootObj.optString("auth_recovery_pin_hash", ""))
-      }
-      if (rootObj.has("auth_is_logged_in")) {
-        editor.putBoolean(KEY_AUTH_IS_LOGGED_IN, rootObj.optBoolean("auth_is_logged_in", false))
-      }
-      if (rootObj.has("auth_is_guest")) {
-        editor.putBoolean(KEY_AUTH_IS_GUEST, rootObj.optBoolean("auth_is_guest", false))
-      }
-      if (rootObj.has("isDarkMode")) {
-        editor.putBoolean(KEY_DARK_MODE, rootObj.optBoolean("isDarkMode", false))
-      }
-
-      val regUsersRaw = rootObj.optJSONObject("registeredUsers")?.toString()
-        ?: rootObj.optString("registeredUsers", "").trim()
-      if (regUsersRaw.isNotEmpty()) {
-        editor.putString(KEY_REGISTERED_USERS, regUsersRaw)
-      }
-
-      val regAccountsV2Raw = rootObj.optJSONObject("registeredAccountsV2")?.toString()
-        ?: rootObj.optString("registeredAccountsV2", "").trim()
-      if (regAccountsV2Raw.isNotEmpty()) {
-        editor.putString(KEY_REGISTERED_ACCOUNTS_JSON, regAccountsV2Raw)
-      }
-
-      // 3. Determine target account key for Schedules, Tasks, Alarms, and Flashcards
-      val explicitAccountKey = rootObj.optString("activeAccountKey", "").trim()
-      val targetAccountKey = normalizeAccountKey(
-        when {
-          explicitAccountKey.isNotEmpty() -> explicitAccountKey
-          restoredUserProfile.isNotEmpty() -> restoredUserProfile
-          else -> fallbackAccountKey
-        }
-      )
-
-      val schedulesRaw = rootObj.optJSONArray("schedules")?.toString()
-        ?: rootObj.optString("schedules", "").trim()
-      if (schedulesRaw.isNotEmpty()) {
-        editor.putString(schedulesKeyFor(targetAccountKey), schedulesRaw)
-      }
-
-      val tasksRaw = rootObj.optJSONArray("tasks")?.toString()
-        ?: rootObj.optString("tasks", "").trim()
-      if (tasksRaw.isNotEmpty()) {
-        editor.putString(tasksKeyFor(targetAccountKey), tasksRaw)
-      }
-
-      val alarmsRaw = rootObj.optJSONArray("alarms")?.toString()
-        ?: rootObj.optString("alarms", "").trim()
-      if (alarmsRaw.isNotEmpty()) {
-        editor.putString(alarmsKeyFor(targetAccountKey), alarmsRaw)
-      }
-
-      val flashcardsRaw = rootObj.optJSONArray("flashcards")?.toString()
-        ?: rootObj.optString("flashcards", "").trim()
-      if (flashcardsRaw.isNotEmpty()) {
-        editor.putString(flashcardDecksKeyFor(targetAccountKey), flashcardsRaw)
-      }
-
-      editor.putInt(KEY_TASK_SCHEMA_VERSION, CURRENT_TASK_SCHEMA_VERSION)
-      editor.putInt(KEY_FLASHCARD_SCHEMA_VERSION, CURRENT_FLASHCARD_SCHEMA_VERSION)
-      editor.commit()
-      if (syncToDeviceAfterImport) {
-        syncToDeviceStorage(targetAccountKey)
-      }
-      true
-    } catch (_: Exception) {
-      false
-    }
-  }
-
-  fun loadCloudSyncKey(): String {
-    val existing = prefs.getString(KEY_CLOUD_SYNC_KEY, null)?.trim()
-    if (!existing.isNullOrBlank()) return existing
-    val generated = "CE-${(1000..9999).random()}"
-    saveCloudSyncKey(generated)
-    return generated
-  }
-
-  fun saveCloudSyncKey(key: String) {
-    val clean = key.trim().uppercase(Locale.US)
-    if (clean.isNotBlank()) {
-      prefs.edit().putString(KEY_CLOUD_SYNC_KEY, clean).apply()
-    }
+  fun loadLastSyncedTimestamp(): Long {
+    return prefs.getLong(KEY_LAST_SYNCED_TIMESTAMP, 0L)
   }
 
   companion object {
     const val GUEST_ACCOUNT_KEY = "guest"
     const val GUEST_DISPLAY_NAME = "Guest User"
-    const val KEY_CLOUD_SYNC_KEY = "cloud_sync_workspace_key"
+    const val KEY_LAST_SYNCED_TIMESTAMP = "last_firestore_synced_timestamp_ms"
     const val KEY_AUTH_USERNAME = "auth_username"
     const val KEY_AUTH_DISPLAY_NAME = "auth_display_name"
     const val KEY_AUTH_PASSWORD_HASH = "auth_password_hash"
@@ -3924,9 +3577,27 @@ class LocalStorageManager(context: Context) {
     const val PREF_LAST_SEEN_VERSION = "last_seen_version_code"
     private const val KEY_GEMINI_API_KEY = "saved_gemini_api_key"
     private const val KEY_TASK_SCHEMA_VERSION = "task_schema_version"
-    private const val CURRENT_TASK_SCHEMA_VERSION = 2
+    private const val CURRENT_TASK_SCHEMA_VERSION = 4
     private const val KEY_FLASHCARD_SCHEMA_VERSION = "flashcard_schema_version"
     private const val CURRENT_FLASHCARD_SCHEMA_VERSION = 2
+    private val LEGACY_PLACEHOLDER_TASK_TITLES = setOf(
+      "Reinforced Concrete Design - Plate 3",
+      "Hydraulics Quiz",
+      "Complete Surveying Field Report",
+      "Read Steel Design Chapter 4",
+      "Prepare Soil Mechanics Sieve Analysis Data",
+      "Review Surveying & Highway Engineering",
+      "Solve Structural Concrete Design",
+      "Hydraulics & Fluid Mechanics Quick Check",
+      "Review Surveying",
+      "Solve Structural Concrete"
+    )
+
+    fun isLegacyPlaceholderTaskTitle(rawTitle: String): Boolean {
+      val clean = rawTitle.trim()
+      if (clean.isEmpty()) return true
+      return LEGACY_PLACEHOLDER_TASK_TITLES.any { it.equals(clean, ignoreCase = true) }
+    }
 
     fun shouldShowWhatsNew(context: Context, currentVersionCode: Int): Boolean {
       val sharedPrefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -4071,60 +3742,138 @@ class TaskViewModel(
     private set
   var isSyncingSettings by mutableStateOf(false)
     private set
+  var isManualSyncing by mutableStateOf(false)
+    private set
+  var lastSyncedTimestamp by mutableLongStateOf(0L)
+    private set
 
   val isFirestoreSyncing: Boolean
-    get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings
+    get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings || isManualSyncing
 
-  private var activeFirestoreWorkspaceKey: String? = null
-  var cloudSyncKey by mutableStateOf("")
-    private set
+  private var activeFirestoreAccountId: String? = null
 
   private var tasksSnapshotListener: ListenerRegistration? = null
   private var scheduleSnapshotListener: ListenerRegistration? = null
   private var flashcardsSnapshotListener: ListenerRegistration? = null
   private var settingsSnapshotListener: ListenerRegistration? = null
-  private var hasSeededTasksForWorkspace: String? = null
-  private var hasSeededScheduleForWorkspace: String? = null
-  private var hasSeededFlashcardsForWorkspace: String? = null
-  private var hasSeededSettingsForWorkspace: String? = null
+  private var hasSeededTasksForAccount: String? = null
+  private var hasSeededScheduleForAccount: String? = null
+  private var hasSeededFlashcardsForAccount: String? = null
+  private var hasSeededSettingsForAccount: String? = null
 
-  fun getActiveSyncKey(): String {
-    if (cloudSyncKey.isNotBlank()) return cloudSyncKey
-    val key = storageManager?.loadCloudSyncKey()?.trim().orEmpty()
-    val resolved = if (key.isNotBlank()) key else "CE-${(1000..9999).random()}"
-    cloudSyncKey = resolved
-    return resolved
+  /**
+   * Resolves the active user account identifier for Firestore (`users/{userAccountIdentifier}`).
+   * Ties cloud synchronization directly to the logged-in user account without manual pairing codes:
+   * 1. `FirebaseAuth.getInstance().currentUser?.email`
+   * 2. Active logged-in Sibil scholar email/username (e.g., `manzoalbertojr@gmail.com`)
+   * 3. `FirebaseAuth.getInstance().currentUser?.uid`
+   */
+  fun resolveUserAccountIdentifier(): String? {
+    if (isGuestMode) return null
+    val firebaseUser = try {
+      FirebaseAuth.getInstance().currentUser
+    } catch (_: Throwable) {
+      null
+    }
+    val firebaseEmail = firebaseUser?.email?.trim()?.lowercase(Locale.US).orEmpty()
+    if (firebaseEmail.isNotBlank()) {
+      return firebaseEmail.replace("/", "_")
+    }
+    val localAccount = username.trim().lowercase(Locale.US)
+    if (
+      localAccount.isNotBlank() &&
+      !localAccount.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
+      !localAccount.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
+      !localAccount.equals("offline scholar", ignoreCase = true)
+    ) {
+      return localAccount.replace("/", "_")
+    }
+    val savedAccount = storageManager?.loadUserName()?.trim()?.lowercase(Locale.US).orEmpty()
+    if (
+      savedAccount.isNotBlank() &&
+      !savedAccount.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
+      !savedAccount.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
+      !savedAccount.equals("offline scholar", ignoreCase = true)
+    ) {
+      return savedAccount.replace("/", "_")
+    }
+    val firebaseUid = firebaseUser?.uid?.trim().orEmpty()
+    if (firebaseUid.isNotBlank()) {
+      return firebaseUid.replace("/", "_")
+    }
+    return null
   }
 
-  fun updateCloudSyncKey(newKey: String): Boolean {
-    val clean = newKey.trim().uppercase(Locale.US)
-    if (clean.isBlank()) return false
-    cloudSyncKey = clean
-    storageManager?.saveCloudSyncKey(clean)
-    startFirestoreSync(clean)
-    return true
+  fun getConnectedAccountLabel(): String {
+    val firebaseUser = try {
+      FirebaseAuth.getInstance().currentUser
+    } catch (_: Throwable) {
+      null
+    }
+    val firebaseEmail = firebaseUser?.email?.trim().orEmpty()
+    if (firebaseEmail.isNotBlank()) return firebaseEmail
+    val cleanUser = username.trim()
+    if (
+      !isGuestMode &&
+      cleanUser.isNotBlank() &&
+      !cleanUser.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
+      !cleanUser.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true)
+    ) {
+      return cleanUser
+    }
+    val savedUser = storageManager?.loadUserName()?.trim().orEmpty()
+    if (
+      !isGuestMode &&
+      savedUser.isNotBlank() &&
+      !savedUser.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
+      !savedUser.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true)
+    ) {
+      return savedUser
+    }
+    val uid = firebaseUser?.uid?.trim().orEmpty()
+    if (uid.isNotBlank()) return "Scholar Account (${uid.take(8)})"
+    return if (isGuestMode) "Guest Session" else "Scholar Account"
   }
 
-  private fun resolveActiveWorkspaceKey(): String? {
-    return getActiveSyncKey().takeIf { it.isNotBlank() }
+  fun markSyncedNow() {
+    val now = System.currentTimeMillis()
+    lastSyncedTimestamp = now
+    storageManager?.saveLastSyncedTimestamp(now)
+  }
+
+  fun formatLastSyncedLabel(nowMillis: Long = System.currentTimeMillis()): String {
+    val ts = lastSyncedTimestamp
+    if (ts <= 0L) return "Just now"
+    val diffMs = (nowMillis - ts).coerceAtLeast(0L)
+    val diffMins = diffMs / 60_000L
+    return when {
+      diffMins < 1L -> "Just now"
+      diffMins == 1L -> "Synced 1 min ago"
+      diffMins < 60L -> "Synced $diffMins mins ago"
+      diffMins < 120L -> "Synced 1 hr ago"
+      diffMins < 1440L -> "Synced ${diffMins / 60L} hrs ago"
+      else -> "Synced ${diffMins / 1440L}d ago"
+    }
   }
 
   /**
-   * Starts real-time Firestore snapshot listeners targeting the isolated workspace:
-   * - `db.collection("workspaces").document(activeSyncKey).collection("tasks")`
-   * - `db.collection("workspaces").document(activeSyncKey).collection("schedule")`
-   * - `db.collection("workspaces").document(activeSyncKey).collection("flashcards")`
-   * - `db.collection("workspaces").document(activeSyncKey).collection("settings")`
+   * Starts real-time Firestore snapshot listeners targeting the logged-in user's account:
+   * - `db.collection("users").document(userAccountIdentifier).collection("tasks")`
+   * - `db.collection("users").document(userAccountIdentifier).collection("schedule")`
+   * - `db.collection("users").document(userAccountIdentifier).collection("flashcards")`
+   * - `db.collection("users").document(userAccountIdentifier).collection("settings")`
    * If offline or Firebase is unprovisioned, falls back gracefully to local state.
    */
-  fun startFirestoreSync(syncKey: String = getActiveSyncKey()) {
-    val cleanKey = syncKey.trim().ifEmpty { getActiveSyncKey() }
-    if (cleanKey.isEmpty()) {
+  fun startFirestoreSync(explicitAccountId: String? = null) {
+    val accountId = explicitAccountId?.trim()?.lowercase(Locale.US)?.replace("/", "_")
+      ?.takeIf { it.isNotBlank() }
+      ?: resolveUserAccountIdentifier()
+    if (accountId.isNullOrBlank()) {
       stopFirestoreSync()
       return
     }
     if (
-      activeFirestoreWorkspaceKey == cleanKey &&
+      activeFirestoreAccountId == accountId &&
       tasksSnapshotListener != null &&
       scheduleSnapshotListener != null &&
       flashcardsSnapshotListener != null &&
@@ -4134,8 +3883,7 @@ class TaskViewModel(
     }
 
     stopFirestoreSync()
-    activeFirestoreWorkspaceKey = cleanKey
-    cloudSyncKey = cleanKey
+    activeFirestoreAccountId = accountId
     isSyncingTasks = true
     isSyncingSchedule = true
     isSyncingFlashcards = true
@@ -4143,10 +3891,10 @@ class TaskViewModel(
 
     try {
       val db = FirebaseFirestore.getInstance()
-      val workspaceDoc = db.collection("workspaces").document(cleanKey)
+      val userDoc = db.collection("users").document(accountId)
 
-      // 1. Real-time Snapshot Listener for Tasks
-      tasksSnapshotListener = workspaceDoc.collection("tasks")
+      // 1. Real-time Snapshot Listener for Tasks (/users/{userAccountIdentifier}/tasks)
+      tasksSnapshotListener = userDoc.collection("tasks")
         .addSnapshotListener { snapshot, error ->
           isSyncingTasks = false
           if (error != null) {
@@ -4158,65 +3906,31 @@ class TaskViewModel(
             doc.toTaskItemOrNull()
           }.sortedByDescending { it.id }
 
-          if (remoteTasks.isEmpty() && _tasks.isEmpty() && hasSeededTasksForWorkspace != cleanKey) {
-            hasSeededTasksForWorkspace = cleanKey
-            val initialSampleTasks = listOf(
-              Task(
-                id = 1,
-                title = "Review Surveying & Highway Engineering Formulas",
-                dueDate = "Today",
-                isCompleted = false,
-                subjectCategory = "MSTE"
-              ),
-              Task(
-                id = 2,
-                title = "Solve Structural Concrete Design Problems",
-                dueDate = "Tomorrow",
-                isCompleted = false,
-                subjectCategory = "PSAD"
-              ),
-              Task(
-                id = 3,
-                title = "Hydraulics & Fluid Mechanics Quick Check",
-                dueDate = "Upcoming",
-                isCompleted = false,
-                subjectCategory = "HPGE"
-              )
-            )
-            initialSampleTasks.forEach { taskItem ->
-              workspaceDoc.collection("tasks")
-                .document(taskItem.id.toString())
-                .set(taskItem.toFirestoreMap())
-                .addOnFailureListener { e ->
-                  Log.e("SibilSync", "Failed to seed sample task: ${e.message}", e)
-                }
-            }
-            _tasks.clear()
-            _tasks.addAll(initialSampleTasks)
-            nextId = 4
-            storageManager?.saveTasks(_tasks, currentAccountKey)
-          } else if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForWorkspace != cleanKey) {
-            hasSeededTasksForWorkspace = cleanKey
+          if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForAccount != accountId) {
+            hasSeededTasksForAccount = accountId
             val localSnapshot = _tasks.toList()
             localSnapshot.forEach { taskItem ->
-              workspaceDoc.collection("tasks")
+              userDoc.collection("tasks")
                 .document(taskItem.id.toString())
                 .set(taskItem.toFirestoreMap())
+                .addOnSuccessListener { markSyncedNow() }
                 .addOnFailureListener { e ->
                   Log.e("SibilSync", "Failed to upload local task: ${e.message}", e)
                 }
             }
+            markSyncedNow()
           } else {
-            hasSeededTasksForWorkspace = cleanKey
+            hasSeededTasksForAccount = accountId
             _tasks.clear()
             _tasks.addAll(remoteTasks)
             nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
             storageManager?.saveTasks(_tasks, currentAccountKey)
+            markSyncedNow()
           }
         }
 
-      // 2. Real-time Snapshot Listener for Schedule
-      scheduleSnapshotListener = workspaceDoc.collection("schedule")
+      // 2. Real-time Snapshot Listener for Schedule (/users/{userAccountIdentifier}/schedule)
+      scheduleSnapshotListener = userDoc.collection("schedule")
         .addSnapshotListener { snapshot, error ->
           isSyncingSchedule = false
           if (error != null) {
@@ -4231,20 +3945,22 @@ class TaskViewModel(
           if (
             remoteSchedules.isEmpty() &&
             _classSchedules.isNotEmpty() &&
-            hasSeededScheduleForWorkspace != cleanKey
+            hasSeededScheduleForAccount != accountId
           ) {
-            hasSeededScheduleForWorkspace = cleanKey
+            hasSeededScheduleForAccount = accountId
             val localSnapshot = _classSchedules.toList()
             localSnapshot.forEach { scheduleItem ->
-              workspaceDoc.collection("schedule")
+              userDoc.collection("schedule")
                 .document(scheduleItem.id.toString())
                 .set(scheduleItem.toFirestoreMap())
+                .addOnSuccessListener { markSyncedNow() }
                 .addOnFailureListener { e ->
                   Log.e("SibilSync", "Failed to upload local schedule: ${e.message}", e)
                 }
             }
+            markSyncedNow()
           } else {
-            hasSeededScheduleForWorkspace = cleanKey
+            hasSeededScheduleForAccount = accountId
             _classSchedules.clear()
             _classSchedules.addAll(remoteSchedules)
             nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
@@ -4253,11 +3969,12 @@ class TaskViewModel(
             if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
               selectedTaskFolder = DEFAULT_TASK_CATEGORY
             }
+            markSyncedNow()
           }
         }
 
-      // 3. Real-time Snapshot Listener for Flashcards
-      flashcardsSnapshotListener = workspaceDoc.collection("flashcards")
+      // 3. Real-time Snapshot Listener for Flashcards (/users/{userAccountIdentifier}/flashcards)
+      flashcardsSnapshotListener = userDoc.collection("flashcards")
         .addSnapshotListener { snapshot, error ->
           isSyncingFlashcards = false
           if (error != null) {
@@ -4272,31 +3989,34 @@ class TaskViewModel(
           if (
             remoteDecks.isEmpty() &&
             _flashcardDecks.isNotEmpty() &&
-            hasSeededFlashcardsForWorkspace != cleanKey
+            hasSeededFlashcardsForAccount != accountId
           ) {
-            hasSeededFlashcardsForWorkspace = cleanKey
+            hasSeededFlashcardsForAccount = accountId
             val localSnapshot = _flashcardDecks.toList()
             localSnapshot.forEach { deck ->
-              workspaceDoc.collection("flashcards")
+              userDoc.collection("flashcards")
                 .document(deck.id.toString())
                 .set(deck.toFirestoreMap())
+                .addOnSuccessListener { markSyncedNow() }
                 .addOnFailureListener { e ->
                   Log.e("SibilSync", "Failed to upload local deck: ${e.message}", e)
                 }
             }
+            markSyncedNow()
           } else {
-            hasSeededFlashcardsForWorkspace = cleanKey
+            hasSeededFlashcardsForAccount = accountId
             _flashcardDecks.clear()
             _flashcardDecks.addAll(remoteDecks)
             nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
             val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
             nextCardId = maxOf(1000, maxCardId + 1)
             storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+            markSyncedNow()
           }
         }
 
       // 4. Real-time Snapshot Listener for Settings (Dark Mode & Profile Name)
-      settingsSnapshotListener = workspaceDoc.collection("settings")
+      settingsSnapshotListener = userDoc.collection("settings")
         .addSnapshotListener { snapshot, error ->
           isSyncingSettings = false
           if (error != null) {
@@ -4308,12 +4028,12 @@ class TaskViewModel(
             ?: snapshot.documents.firstOrNull()
 
           if (settingsDoc == null) {
-            if (hasSeededSettingsForWorkspace != cleanKey) {
-              hasSeededSettingsForWorkspace = cleanKey
+            if (hasSeededSettingsForAccount != accountId) {
+              hasSeededSettingsForAccount = accountId
               syncSettingsToFirestore()
             }
           } else {
-            hasSeededSettingsForWorkspace = cleanKey
+            hasSeededSettingsForAccount = accountId
             val remoteDark = settingsDoc.getBoolean("isDarkMode")
               ?: settingsDoc.getBoolean("darkMode")
             if (remoteDark != null && remoteDark != isDarkMode) {
@@ -4328,10 +4048,11 @@ class TaskViewModel(
               displayName = remoteProfileName
               storageManager?.saveUserProfile(username, remoteProfileName)
             }
+            markSyncedNow()
           }
         }
     } catch (e: Throwable) {
-      Log.e("SibilSync", "Failed to start workspace sync: ${e.message}", e)
+      Log.e("SibilSync", "Failed to start account sync: ${e.message}", e)
       isSyncingTasks = false
       isSyncingSchedule = false
       isSyncingFlashcards = false
@@ -4340,8 +4061,115 @@ class TaskViewModel(
   }
 
   fun startFirestoreSyncForUser(userId: String) {
-    // Retain compatibility: syncs with active workspace key
-    startFirestoreSync(getActiveSyncKey())
+    startFirestoreSync(resolveUserAccountIdentifier() ?: userId)
+  }
+
+  /**
+   * Forces an immediate cloud refresh ("Sync Now") against `users/{userAccountIdentifier}`
+   * for `/tasks`, `/schedule`, `/flashcards`, and `/settings`.
+   */
+  fun syncNow(onComplete: ((Boolean) -> Unit)? = null) {
+    val accountId = resolveUserAccountIdentifier()
+    if (accountId.isNullOrBlank()) {
+      isManualSyncing = false
+      onComplete?.invoke(false)
+      return
+    }
+    isManualSyncing = true
+    startFirestoreSync(accountId)
+
+    try {
+      val db = FirebaseFirestore.getInstance()
+      val userDoc = db.collection("users").document(accountId)
+      var completedCollections = 0
+      val totalCollections = 3
+
+      fun onCollectionFinished() {
+        completedCollections++
+        if (completedCollections >= totalCollections) {
+          isManualSyncing = false
+          markSyncedNow()
+          onComplete?.invoke(true)
+        }
+      }
+
+      // 1. Force sync Tasks
+      userDoc.collection("tasks").get()
+        .addOnSuccessListener { snapshot ->
+          val remoteTasks = snapshot.documents.mapNotNull { it.toTaskItemOrNull() }
+            .sortedByDescending { it.id }
+          if (remoteTasks.isEmpty() && _tasks.isNotEmpty()) {
+            _tasks.toList().forEach { taskItem ->
+              userDoc.collection("tasks")
+                .document(taskItem.id.toString())
+                .set(taskItem.toFirestoreMap())
+            }
+          } else if (remoteTasks.isNotEmpty()) {
+            _tasks.clear()
+            _tasks.addAll(remoteTasks)
+            nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
+            storageManager?.saveTasks(_tasks, currentAccountKey)
+          }
+          onCollectionFinished()
+        }
+        .addOnFailureListener {
+          onCollectionFinished()
+        }
+
+      // 2. Force sync Schedule
+      userDoc.collection("schedule").get()
+        .addOnSuccessListener { snapshot ->
+          val remoteSchedules = snapshot.documents.mapNotNull { it.toScheduleItemOrNull() }
+            .sortedBy { parseTimeToFloat(it.startTime) }
+          if (remoteSchedules.isEmpty() && _classSchedules.isNotEmpty()) {
+            _classSchedules.toList().forEach { scheduleItem ->
+              userDoc.collection("schedule")
+                .document(scheduleItem.id.toString())
+                .set(scheduleItem.toFirestoreMap())
+            }
+          } else if (remoteSchedules.isNotEmpty()) {
+            _classSchedules.clear()
+            _classSchedules.addAll(remoteSchedules)
+            nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
+            storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+          }
+          onCollectionFinished()
+        }
+        .addOnFailureListener {
+          onCollectionFinished()
+        }
+
+      // 3. Force sync Flashcards
+      userDoc.collection("flashcards").get()
+        .addOnSuccessListener { snapshot ->
+          val remoteDecks = snapshot.documents.mapNotNull { it.toFlashcardDeckOrNull() }
+            .sortedByDescending { it.id }
+          if (remoteDecks.isEmpty() && _flashcardDecks.isNotEmpty()) {
+            _flashcardDecks.toList().forEach { deck ->
+              userDoc.collection("flashcards")
+                .document(deck.id.toString())
+                .set(deck.toFirestoreMap())
+            }
+          } else if (remoteDecks.isNotEmpty()) {
+            _flashcardDecks.clear()
+            _flashcardDecks.addAll(remoteDecks)
+            nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
+            val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
+            nextCardId = maxOf(1000, maxCardId + 1)
+            storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+          }
+          onCollectionFinished()
+        }
+        .addOnFailureListener {
+          onCollectionFinished()
+        }
+
+      syncSettingsToFirestore()
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in manual syncNow: ${e.message}", e)
+      isManualSyncing = false
+      onComplete?.invoke(false)
+    }
   }
 
   /**
@@ -4356,11 +4184,12 @@ class TaskViewModel(
     flashcardsSnapshotListener = null
     settingsSnapshotListener?.remove()
     settingsSnapshotListener = null
-    activeFirestoreWorkspaceKey = null
+    activeFirestoreAccountId = null
     isSyncingTasks = false
     isSyncingSchedule = false
     isSyncingFlashcards = false
     isSyncingSettings = false
+    isManualSyncing = false
   }
 
   fun clearInitialSyncIndicators() {
@@ -4368,10 +4197,11 @@ class TaskViewModel(
     isSyncingSchedule = false
     isSyncingFlashcards = false
     isSyncingSettings = false
+    isManualSyncing = false
   }
 
   private fun syncSettingsToFirestore() {
-    val syncKey = resolveActiveWorkspaceKey() ?: return
+    val accountId = resolveUserAccountIdentifier() ?: return
     try {
       val db = FirebaseFirestore.getInstance()
       val settingsPayload = hashMapOf(
@@ -4382,11 +4212,12 @@ class TaskViewModel(
         "username" to username,
         "updatedAt" to System.currentTimeMillis()
       )
-      db.collection("workspaces")
-        .document(syncKey)
+      db.collection("users")
+        .document(accountId)
         .collection("settings")
         .document("preferences")
         .set(settingsPayload, SetOptions.merge())
+        .addOnSuccessListener { markSyncedNow() }
         .addOnFailureListener { e ->
           Log.e("SibilSync", "Failed to sync settings: ${e.message}", e)
         }
@@ -4406,11 +4237,13 @@ class TaskViewModel(
    * extracted directly from the `ClassSchedule` list.
    */
   fun getSubjectFolders(): List<String> {
-    val uniqueScheduleSubjects = _classSchedules
-      .map { it.subjectName.trim() }
+    val combinedSubjects = (
+      _classSchedules.map { it.subjectName.trim() } +
+        _tasks.map { it.subjectCategory.trim() }
+      )
       .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
       .distinctBy { it.lowercase(Locale.US) }
-    return listOf(DEFAULT_TASK_CATEGORY) + uniqueScheduleSubjects
+    return listOf(DEFAULT_TASK_CATEGORY) + combinedSubjects
   }
 
   init {
@@ -4435,7 +4268,7 @@ class TaskViewModel(
 
     isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
     savedGeminiApiKey = manager.loadSavedGeminiApiKey()
-    cloudSyncKey = manager.loadCloudSyncKey()
+    lastSyncedTimestamp = manager.loadLastSyncedTimestamp()
 
     val firebaseUser = try {
       FirebaseAuth.getInstance().currentUser
@@ -4458,19 +4291,29 @@ class TaskViewModel(
       hasSavedSession = true
       manager.saveUserProfile(resolvedUser, resolvedDisplay)
       loadAccountDataForKey(manager, currentAccountKey)
-      startFirestoreSync(getActiveSyncKey())
+      startFirestoreSync()
+    } else if (!savedUserName.isNullOrBlank() && manager.isAuthLoggedIn()) {
+      val resolvedDisplay = manager.loadDisplayName().ifBlank {
+        savedUserName.substringBefore("@").ifBlank { savedUserName }
+      }
+      isGuestMode = false
+      username = savedUserName
+      displayName = resolvedDisplay
+      hasSavedSession = true
+      loadAccountDataForKey(manager, currentAccountKey)
+      startFirestoreSync()
     } else if (manager.isAuthGuest()) {
       isGuestMode = true
       username = LocalStorageManager.GUEST_DISPLAY_NAME
       displayName = LocalStorageManager.GUEST_DISPLAY_NAME
       hasSavedSession = true
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
-      startFirestoreSync(getActiveSyncKey())
+      startFirestoreSync()
     } else {
       isGuestMode = false
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
-      startFirestoreSync(getActiveSyncKey())
+      startFirestoreSync()
     }
   }
 
@@ -4489,7 +4332,7 @@ class TaskViewModel(
     }.ifBlank { resolvedUser.substringBefore("@").ifBlank { resolvedUser } }
     isGuestMode = false
     loginWithUsername(resolvedUser, resolvedDisplay)
-    startFirestoreSyncForUser(firebaseUser.uid)
+    startFirestoreSync()
   }
 
   private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
@@ -4600,14 +4443,15 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("schedule")
             .document(newSchedule.id.toString())
             .set(newSchedule.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to write schedule: ${e.message}", e)
             }
@@ -4650,14 +4494,15 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("schedule")
             .document(updatedSchedule.id.toString())
             .set(updatedSchedule.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to update schedule: ${e.message}", e)
             }
@@ -4671,14 +4516,15 @@ class TaskViewModel(
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
     storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-    resolveActiveWorkspaceKey()?.let { syncKey ->
+    resolveUserAccountIdentifier()?.let { accountId ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("workspaces")
-          .document(syncKey)
+        db.collection("users")
+          .document(accountId)
           .collection("schedule")
           .document(scheduleId.toString())
           .delete()
+          .addOnSuccessListener { markSyncedNow() }
           .addOnFailureListener { e ->
             Log.e("SibilSync", "Failed to delete schedule: ${e.message}", e)
           }
@@ -4910,8 +4756,8 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
       manager.saveUserProfile(username, displayName)
     }
-    resolveActiveWorkspaceKey()?.let { syncKey ->
-      startFirestoreSync(syncKey)
+    resolveUserAccountIdentifier()?.let { accountId ->
+      startFirestoreSync(accountId)
       if (explicitDisplayName.isNotBlank()) {
         syncSettingsToFirestore()
       }
@@ -4927,7 +4773,7 @@ class TaskViewModel(
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
       manager.saveUserProfile(LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
-    startFirestoreSync(getActiveSyncKey())
+    startFirestoreSync()
   }
 
   /**
@@ -4945,7 +4791,6 @@ class TaskViewModel(
     hasSavedSession = false
     storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
-    startFirestoreSync(getActiveSyncKey())
   }
 
   fun addAlarm(
@@ -5067,14 +4912,15 @@ class TaskViewModel(
     )
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveActiveWorkspaceKey()?.let { syncKey ->
+    resolveUserAccountIdentifier()?.let { accountId ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("workspaces")
-          .document(syncKey)
+        db.collection("users")
+          .document(accountId)
           .collection("flashcards")
           .document(newDeck.id.toString())
           .set(newDeck.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
           .addOnFailureListener { e ->
             Log.e("SibilSync", "Failed to write deck: ${e.message}", e)
           }
@@ -5112,14 +4958,15 @@ class TaskViewModel(
       )
       _flashcardDecks[index] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to update deck cards: ${e.message}", e)
             }
@@ -5206,14 +5053,15 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to update flashcard mastery: ${e.message}", e)
             }
@@ -5239,14 +5087,15 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("flashcards")
             .document(updatedDeck.id.toString())
             .set(updatedDeck.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to reset deck mastery: ${e.message}", e)
             }
@@ -5260,14 +5109,15 @@ class TaskViewModel(
   fun deleteFlashcardDeck(deckId: Int) {
     _flashcardDecks.removeAll { it.id == deckId }
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveActiveWorkspaceKey()?.let { syncKey ->
+    resolveUserAccountIdentifier()?.let { accountId ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("workspaces")
-          .document(syncKey)
+        db.collection("users")
+          .document(accountId)
           .collection("flashcards")
           .document(deckId.toString())
           .delete()
+          .addOnSuccessListener { markSyncedNow() }
           .addOnFailureListener { e ->
             Log.e("SibilSync", "Failed to delete deck: ${e.message}", e)
           }
@@ -5295,14 +5145,15 @@ class TaskViewModel(
       )
       _tasks.add(0, newTask)
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("tasks")
             .document(newTask.id.toString())
             .set(newTask.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to write task: ${e.message}", e)
             }
@@ -5320,14 +5171,15 @@ class TaskViewModel(
       val updatedTask = current.copy(isCompleted = !current.isCompleted)
       _tasks[index] = updatedTask
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveActiveWorkspaceKey()?.let { syncKey ->
+      resolveUserAccountIdentifier()?.let { accountId ->
         try {
           val db = FirebaseFirestore.getInstance()
-          db.collection("workspaces")
-            .document(syncKey)
+          db.collection("users")
+            .document(accountId)
             .collection("tasks")
             .document(updatedTask.id.toString())
             .set(updatedTask.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
             .addOnFailureListener { e ->
               Log.e("SibilSync", "Failed to toggle task: ${e.message}", e)
             }
@@ -5342,14 +5194,15 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    resolveActiveWorkspaceKey()?.let { syncKey ->
+    resolveUserAccountIdentifier()?.let { accountId ->
       try {
         val db = FirebaseFirestore.getInstance()
-        db.collection("workspaces")
-          .document(syncKey)
+        db.collection("users")
+          .document(accountId)
           .collection("tasks")
           .document(taskId.toString())
           .delete()
+          .addOnSuccessListener { markSyncedNow() }
           .addOnFailureListener { e ->
             Log.e("SibilSync", "Failed to delete task: ${e.message}", e)
           }
@@ -5360,35 +5213,66 @@ class TaskViewModel(
   }
 
   /**
-   * Syncs active in-memory lists to `SharedPreferences` and returns a combined JSON backup string
-   * containing Schedules, Tasks, Alarms, Flashcards, and User Profile.
+   * Resets completed tasks at the start of a new study block by unchecking all completed tasks
+   * (`isCompleted = false`) and syncing the updated state to local storage and Firestore.
    */
-  fun createBackupJsonString(context: Context): String {
-    val manager = storageManager ?: LocalStorageManager(context).also { storageManager = it }
-    manager.saveTasks(_tasks, currentAccountKey)
-    manager.saveSchedules(_classSchedules, currentAccountKey)
-    manager.saveAlarms(_alarms, currentAccountKey)
-    manager.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    manager.saveDarkMode(isDarkMode)
-    if (hasSavedSession || !isGuestMode) {
-      manager.saveUserProfile(username)
+  fun resetTaskProgress() {
+    var hasChanges = false
+    val resetTasks = _tasks.map { task ->
+      if (task.isCompleted) {
+        hasChanges = true
+        task.copy(isCompleted = false)
+      } else {
+        task
+      }
     }
-    return manager.exportBackupJson(currentAccountKey)
+    if (!hasChanges) return
+    _tasks.clear()
+    _tasks.addAll(resetTasks)
+    storageManager?.saveTasks(_tasks, currentAccountKey)
+    resolveUserAccountIdentifier()?.let { accountId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        val tasksCol = db.collection("users").document(accountId).collection("tasks")
+        resetTasks.forEach { updatedTask ->
+          tasksCol.document(updatedTask.id.toString())
+            .set(updatedTask.toFirestoreMap())
+            .addOnSuccessListener { markSyncedNow() }
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to reset task progress: ${e.message}", e)
+            }
+        }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in resetTaskProgress: ${e.message}", e)
+      }
+    }
   }
 
   /**
-   * Restores all Sibil data from a backup JSON string into `SharedPreferences`
-   * and immediately refreshes the active ViewModel states.
+   * Clears all completed tasks from the active list and Firestore so the scholar can start
+   * a fresh study block with 0/0 Done when desired.
    */
-  fun restoreFromBackupJsonString(context: Context, backupJson: String): Boolean {
-    val manager = storageManager ?: LocalStorageManager(context).also { storageManager = it }
-    val success = manager.importBackupJson(backupJson, currentAccountKey)
-    if (success) {
-      hasLoadedFromStorage = false
-      loadFromStorage(manager)
-      loadAccountDataForKey(manager, currentAccountKey)
+  fun clearCompletedTasks() {
+    val completedIds = _tasks.filter { it.isCompleted }.map { it.id }
+    if (completedIds.isEmpty()) return
+    _tasks.removeAll { it.isCompleted }
+    storageManager?.saveTasks(_tasks, currentAccountKey)
+    resolveUserAccountIdentifier()?.let { accountId ->
+      try {
+        val db = FirebaseFirestore.getInstance()
+        val tasksCol = db.collection("users").document(accountId).collection("tasks")
+        completedIds.forEach { id ->
+          tasksCol.document(id.toString())
+            .delete()
+            .addOnSuccessListener { markSyncedNow() }
+            .addOnFailureListener { e ->
+              Log.e("SibilSync", "Failed to clear completed task: ${e.message}", e)
+            }
+        }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in clearCompletedTasks: ${e.message}", e)
+      }
     }
-    return success
   }
 
   companion object {
@@ -8354,20 +8238,20 @@ fun DashboardScreen(
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
 
-  val allTasks = viewModel.tasks
-  val tasksSnapshot = allTasks.toList()
-  val totalTasks = tasksSnapshot.size
-  val completedTasks = remember(tasksSnapshot) { tasksSnapshot.count { it.isCompleted } }
-  val activeTasks = remember(tasksSnapshot) { tasksSnapshot.filter { !it.isCompleted } }
-
-  val taskUpcomingItems = remember(activeTasks) {
-    activeTasks.map { task ->
+  val taskList = viewModel.tasks
+  val activeTasks = taskList.filter { it.title.isNotBlank() }
+  val totalTasks = activeTasks.size
+  val completedTasks = activeTasks.count { it.isCompleted }
+  val progressRatio = if (totalTasks > 0) completedTasks.toFloat() / totalTasks else 0f
+  val dueTasks = activeTasks
+    .filter { !it.isCompleted && it.dueDate.trim().isNotEmpty() }
+    .map { task ->
       val (days, label, urgency) = parseDaysRemainingAndUrgency(task.dueDate)
       DashboardUpcomingItem(
         id = task.id,
         title = task.title,
         category = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
-        dueDateDisplay = if (task.dueDate.isNotBlank()) task.dueDate else label,
+        dueDateDisplay = task.dueDate.trim().ifBlank { label },
         daysRemaining = days,
         urgencyLabel = label,
         urgencyType = urgency,
@@ -8375,52 +8259,11 @@ fun DashboardScreen(
         isScheduleItem = false
       )
     }
-  }
-
-  val schedulesSnapshot = viewModel.classSchedules.toList()
-  val scheduleUpcomingItems = remember(schedulesSnapshot) {
-    schedulesSnapshot.mapNotNull { schedule ->
-      val minDays = schedule.days.mapNotNull { dayStr ->
-        val dow = when (dayStr.trim().uppercase()) {
-          "M", "MON", "MONDAY" -> DayOfWeek.MONDAY
-          "TUE", "TUESDAY", "T" -> DayOfWeek.TUESDAY
-          "W", "WED", "WEDNESDAY" -> DayOfWeek.WEDNESDAY
-          "TH", "THU", "THURSDAY" -> DayOfWeek.THURSDAY
-          "F", "FRI", "FRIDAY" -> DayOfWeek.FRIDAY
-          "SAT", "SATURDAY", "S" -> DayOfWeek.SATURDAY
-          "SUN", "SUNDAY" -> DayOfWeek.SUNDAY
-          else -> null
-        }
-        dow?.let { (it.value - LocalDate.now().dayOfWeek.value + 7) % 7 }
-      }.minOrNull()
-
-      if (minDays != null && minDays in 0..1) {
-        val (label, urgency) = when (minDays) {
-          0 -> "Today" to DeadlineUrgencyType.TODAY
-          1 -> "Tomorrow" to DeadlineUrgencyType.TOMORROW
-          else -> "In $minDays days" to DeadlineUrgencyType.UPCOMING
-        }
-        DashboardUpcomingItem(
-          id = 100_000 + schedule.id,
-          title = schedule.subjectName,
-          category = schedule.room.ifBlank { "Class" },
-          dueDateDisplay = "${schedule.timeRange} ($label)",
-          daysRemaining = minDays,
-          urgencyLabel = label,
-          urgencyType = urgency,
-          isCompleted = false,
-          isScheduleItem = true,
-          scheduleId = schedule.id
-        )
-      } else null
-    }
-  }
-
-  val combinedUpcoming = remember(taskUpcomingItems, scheduleUpcomingItems) {
-    (taskUpcomingItems + scheduleUpcomingItems).sortedWith(
-      compareBy({ it.daysRemaining }, { it.isScheduleItem }, { it.title })
+    .sortedWith(
+      compareBy<DashboardUpcomingItem> { it.daysRemaining }
+        .thenBy { it.dueDateDisplay }
+        .thenBy { it.id }
     )
-  }
 
   // Runtime permission launcher for ACCESS_COARSE_LOCATION
   val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -8848,6 +8691,11 @@ fun DashboardScreen(
           CompactDailyProgressCard(
             completedCount = completedTasks,
             totalCount = totalTasks,
+            progressRatio = progressRatio,
+            onResetProgress = {
+              viewModel.resetTaskProgress()
+              Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
+            },
             metrics = metrics,
             modifier = Modifier
               .weight(0.95f)
@@ -8868,21 +8716,13 @@ fun DashboardScreen(
       // 3. Bottom Section: Dynamic "Upcoming Deadlines" Task List in Frosted Glass
       item {
         UpcomingDeadlinesSectionCard(
-          upcomingItems = combinedUpcoming,
+          upcomingItems = dueTasks,
           metrics = metrics,
           onToggleComplete = { itemId ->
-            if (itemId >= 100_000) {
-              onNavigateToTab(CeNavTab.SCHEDULE)
-            } else {
-              viewModel.toggleTaskCompletion(itemId)
-            }
+            viewModel.toggleTaskCompletion(itemId)
           },
-          onItemClick = { item ->
-            if (item.isScheduleItem) {
-              onNavigateToTab(CeNavTab.SCHEDULE)
-            } else {
-              onNavigateToTab(CeNavTab.TASKS)
-            }
+          onItemClick = { _ ->
+            onNavigateToTab(CeNavTab.TASKS)
           },
           onAddTaskClick = onAddTaskClick
         )
@@ -10252,11 +10092,13 @@ private fun CompactDailyProgressCard(
   completedCount: Int,
   totalCount: Int,
   metrics: ResponsiveMetrics,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  progressRatio: Float = if (totalCount > 0) completedCount.toFloat() / totalCount else 0f,
+  onResetProgress: (() -> Unit)? = null
 ) {
   val palette = currentGlassPalette()
   val rawProgress = if (totalCount > 0) {
-    (completedCount.toFloat() / totalCount.toFloat()).coerceIn(0f, 1f)
+    progressRatio.coerceIn(0f, 1f)
   } else {
     0f
   }
@@ -10298,6 +10140,27 @@ private fun CompactDailyProgressCard(
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.weight(1f)
         )
+
+        if (completedCount > 0 && onResetProgress != null) {
+          Surface(
+            onClick = onResetProgress,
+            shape = CircleShape,
+            color = palette.accentIndigo.copy(alpha = 0.14f),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f)),
+            modifier = Modifier
+              .size(28.dp)
+              .testTag("dashboard_reset_progress_button")
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "Reset Progress",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(15.dp)
+              )
+            }
+          }
+        }
       }
 
       Box(
@@ -10792,7 +10655,7 @@ private fun UpcomingDeadlinesSectionCard(
           }
 
           Text(
-            text = "All caught up! No upcoming deadlines scheduled.",
+            text = "No upcoming deadlines. All caught up!",
             style = MaterialTheme.typography.bodyLarge.copy(
               fontSize = metrics.scaledSp(15),
               fontWeight = FontWeight.SemiBold
@@ -12071,7 +11934,7 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
     fullTitle = "",
     subtitle = "Engineering Algebra & Number Theory",
     departmentCode = "MSTE / CE-01",
-    pageBadge = "ACTIVE • A4 SHEET",
+    pageBadge = "ACTIVE • 10 SECTIONS",
     isActive = true,
     spineAccentColor = Color(0xFF6366F1),
     secondaryAccentColor = Color(0xFF8B5CF6)
@@ -12509,7 +12372,7 @@ fun FormulaVaultMainView(
             it.categoryTab.equals("Mathematics", ignoreCase = true) &&
               it.mathSubTab.equals("Algebra", ignoreCase = true)
           }
-          AlgebraA4PaperViewer(
+          MsteAlgebraSheet(
             metrics = metrics,
             lazyListState = a4LazyListState,
             highlightedSectionIndex = highlightedSectionIndex,
@@ -13253,7 +13116,7 @@ private fun EngineeringNotebookBinderCard(
             )
           ) {
             Text(
-              text = if (customFormulasCount > 0) {
+              text = if (customFormulasCount > 0 && notebook.id != "algebra") {
                 "${notebook.pageBadge} + $customFormulasCount"
               } else {
                 notebook.pageBadge
@@ -13340,107 +13203,233 @@ private data class AlgebraHandbookSection(
 
 private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listOf(
   AlgebraHandbookSection(
-    sectionTitle = "Basic Laws of Natural Numbers",
+    sectionTitle = "1. Law of Natural Numbers (Real Number Properties)",
     items = listOf(
-      AlgebraHandbookRuleItem(1, "Closure Law of Addition", "a + b ∈ ℕ"),
-      AlgebraHandbookRuleItem(2, "Closure Law of Multiplication", "a · b ∈ ℕ"),
-      AlgebraHandbookRuleItem(3, "Commutative Law of Addition", "a + b = b + a"),
-      AlgebraHandbookRuleItem(4, "Commutative Law of Multiplication", "a · b = b · a"),
-      AlgebraHandbookRuleItem(5, "Associative Law of Addition", "(a + b) + c = a + (b + c)"),
-      AlgebraHandbookRuleItem(6, "Associative Law of Multiplication", "(a · b) · c = a · (b · c)"),
-      AlgebraHandbookRuleItem(7, "Distributive Law of Multiplication over Addition", "a(b + c) = ab + ac"),
-      AlgebraHandbookRuleItem(8, "Identity Law of Addition", "a + 0 = a", "(0 is additive identity)"),
-      AlgebraHandbookRuleItem(9, "Identity Law of Multiplication", "a · 1 = a", "(1 is multiplicative identity)"),
-      AlgebraHandbookRuleItem(10, "Inverse Law of Addition", "a + (-a) = 0"),
-      AlgebraHandbookRuleItem(11, "Inverse Law of Multiplication", "a · (1/a) = 1", "(where a ≠ 0)")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Basic Laws of Equality & Inequality",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Reflexive Property", "a = a"),
-      AlgebraHandbookRuleItem(2, "Symmetric Property", "If a = b, then b = a"),
-      AlgebraHandbookRuleItem(3, "Transitive Property", "If a = b and b = c, then a = c"),
-      AlgebraHandbookRuleItem(4, "Addition / Subtraction Property", "If a = b, then a ± c = b ± c"),
-      AlgebraHandbookRuleItem(5, "Multiplication / Division Property", "If a = b, then ac = bc and a/c = b/c", "(c ≠ 0)"),
-      AlgebraHandbookRuleItem(6, "Substitution Property", "If a = b, a may be substituted for b in any expression"),
-      AlgebraHandbookRuleItem(7, "Trichotomy Property", "Exactly one is true: a < b, a = b, or a > b")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Theorems on Inequalities",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Sense Preservation", "If a > b and c > 0, then ac > bc and a/c > b/c"),
-      AlgebraHandbookRuleItem(2, "Sense Reversal", "If a > b and c < 0, then ac < bc and a/c < b/c"),
-      AlgebraHandbookRuleItem(3, "Addition of Inequalities", "If a > b and c > d, then (a + c) > (b + d)"),
-      AlgebraHandbookRuleItem(4, "Transitivity of Inequalities", "If a > b and b > c, then a > c"),
-      AlgebraHandbookRuleItem(5, "Reciprocal Reversal", "If a > b > 0, then 1/a < 1/b"),
-      AlgebraHandbookRuleItem(6, "Non-Negative Square", "For any real number a, a² ≥ 0"),
-      AlgebraHandbookRuleItem(7, "Absolute Value Inequality", "|x| < k  ⇔  -k < x < k ;   |x| > k  ⇔  x < -k or x > k", "(k > 0)")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Laws of Exponents",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Product Rule", "aᵐ · aⁿ = aᵐ⁺ⁿ"),
-      AlgebraHandbookRuleItem(2, "Quotient Rule", "aᵐ / aⁿ = aᵐ⁻ⁿ", "(a ≠ 0)"),
-      AlgebraHandbookRuleItem(3, "Power of a Power Rule", "(aᵐ)ⁿ = aᵐⁿ"),
-      AlgebraHandbookRuleItem(4, "Power of a Product Rule", "(ab)ⁿ = aⁿbⁿ"),
-      AlgebraHandbookRuleItem(5, "Power of a Quotient Rule", "(a / b)ⁿ = aⁿ / bⁿ", "(b ≠ 0)"),
-      AlgebraHandbookRuleItem(6, "Zero Exponent Rule", "a⁰ = 1", "(a ≠ 0)"),
-      AlgebraHandbookRuleItem(7, "Negative Exponent Rule", "a⁻ⁿ = 1 / aⁿ and (a / b)⁻ⁿ = (b / a)ⁿ"),
-      AlgebraHandbookRuleItem(8, "Fractional Exponent Rule", "aᵐ/ⁿ = ⁿ√(aᵐ) = (ⁿ√a)ᵐ")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Properties of Radicals",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Equivalence & Root-Power Identity", "ⁿ√a = b ⇔ bⁿ = a ;   (ⁿ√a)ⁿ = a"),
-      AlgebraHandbookRuleItem(2, "Product of Radicals", "ⁿ√a · ⁿ√b = ⁿ√(ab)"),
-      AlgebraHandbookRuleItem(3, "Quotient of Radicals", "ⁿ√a / ⁿ√b = ⁿ√(a / b)", "(b ≠ 0)"),
-      AlgebraHandbookRuleItem(4, "Nested / Index Multiplication", "ᵐ√(ⁿ√a) = ᵐⁿ√a"),
-      AlgebraHandbookRuleItem(5, "Index Cancellation (Even vs. Odd)", "ⁿ√(aⁿ) = |a| (if n is even) ;   ⁿ√(aⁿ) = a (if n is odd)"),
-      AlgebraHandbookRuleItem(6, "Conjugate Rationalization", "1 / (√a ± √b) = (√a ∓ √b) / (a - b)")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Properties of Logarithms",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Fundamental Definition", "y = log_b(x)  ⇔  bʸ = x", "(b > 0, b ≠ 1, x > 0)"),
-      AlgebraHandbookRuleItem(2, "Natural & Common Logarithms", "ln(x) = log_e(x) ;   log(x) = log₁₀(x)"),
-      AlgebraHandbookRuleItem(3, "Product Property", "log_b(MN) = log_b(M) + log_b(N)"),
-      AlgebraHandbookRuleItem(4, "Quotient Property", "log_b(M / N) = log_b(M) - log_b(N)"),
-      AlgebraHandbookRuleItem(5, "Power Property", "log_b(Mᵏ) = k · log_b(M)"),
-      AlgebraHandbookRuleItem(6, "Identity & Base Properties", "log_b(1) = 0 ;   log_b(b) = 1 ;   log_b(bˣ) = x ;   b^(log_b x) = x"),
-      AlgebraHandbookRuleItem(7, "Change of Base & Reciprocal", "log_b(M) = ln(M) / ln(b) = log₁₀(M) / log₁₀(b) ;   log_b(a) = 1 / log_a(b)")
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Polynomials & Factoring",
-    items = listOf(
-      AlgebraHandbookRuleItem(1, "Standard Polynomial Form", "P(x) = aₙxⁿ + aₙ₋₁xⁿ⁻¹ + ... + a₁x + a₀"),
-      AlgebraHandbookRuleItem(2, "Difference of Two Squares", "a² - b² = (a - b)(a + b)"),
-      AlgebraHandbookRuleItem(3, "Square of a Binomial", "(a ± b)² = a² ± 2ab + b²"),
-      AlgebraHandbookRuleItem(4, "Cube of a Binomial", "(a ± b)³ = a³ ± 3a²b + 3ab² ± b³"),
-      AlgebraHandbookRuleItem(5, "Sum & Difference of Two Cubes", "a³ ± b³ = (a ± b)(a² ∓ ab + b²)"),
-      AlgebraHandbookRuleItem(6, "Square of a Trinomial", "(a + b + c)² = a² + b² + c² + 2(ab + bc + ca)"),
-      AlgebraHandbookRuleItem(7, "Remainder & Factor Theorems", "Remainder R = P(c) when divided by (x - c) ;   (x - c) is a factor ⇔ P(c) = 0"),
       AlgebraHandbookRuleItem(
-        number = 8,
-        title = "Quadratic Formula & Discriminant Analysis (ax² + bx + c = 0)",
-        formulaOrStatement = "x = (-b ± √(b² - 4ac)) / (2a)",
-        subItems = listOf(
-          "Discriminant: D = b² - 4ac",
-          "Roots Nature: D > 0 (Real & Unequal), D = 0 (Real & Equal), D < 0 (Complex Conjugates)",
-          "Vieta's Relations: r₁ + r₂ = -b/a ;   r₁ · r₂ = c/a"
-        )
+        number = 1,
+        title = "Commutative",
+        formulaOrStatement = "[ a + b = b + a ] | [ a · b = b · a ]",
+        note = "Order of real terms in addition or multiplication does not affect the result."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Associative",
+        formulaOrStatement = "[ (a + b) + c = a + (b + c) ] | [ (a · b) · c = a · (b · c) ]",
+        note = "Grouping of real numbers in addition or multiplication leaves the sum or product invariant."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Distributive",
+        formulaOrStatement = "[ a(b + c) = ab + ac ]",
+        note = "Multiplication distributes over addition and subtraction across grouped expressions."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "2. Law of Equality",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Reflexive",
+        formulaOrStatement = "[ a = a ]",
+        note = "Any real or complex quantity is identically equal to itself."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Symmetric",
+        formulaOrStatement = "[ If a = b, then b = a ]",
+        note = "An equation holds equivalently when its left-hand and right-hand sides are interchanged."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Transitive",
+        formulaOrStatement = "[ If a = b and b = c, then a = c ]",
+        note = "Two quantities equal to the same third quantity are equal to each other."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 4,
+        title = "Addition/Multiplication",
+        formulaOrStatement = "[ If a = b, then a + c = b + c and ac = bc ]",
+        note = "Adding or multiplying both sides of an equation by the same value preserves equality."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "3. Inequality",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Trichotomy",
+        formulaOrStatement = "[ Exactly one is true: a < b, a = b, or a > b ]",
+        note = "For any two real numbers a and b, exactly one order relation holds."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Transitive",
+        formulaOrStatement = "[ If a < b and b < c, then a < c ]",
+        note = "Strict inequality chains propagate consistently across ordered real values."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Multiplication by Negative",
+        formulaOrStatement = "[ If a < b and c < 0, then ac > bc (Sign Flips!) ]",
+        note = "Multiplying or dividing both sides of an inequality by a negative number reverses the inequality direction."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "4. Laws of Exponents",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Product / Quotient",
+        formulaOrStatement = "[ x^a · x^b = x^(a+b) ] | [ x^a / x^b = x^(a-b) ]",
+        note = "For identical base x ≠ 0, add exponents when multiplying and subtract exponents when dividing."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Power of a Power",
+        formulaOrStatement = "[ (x^a)^b = x^(ab) ]",
+        note = "Raising an exponential term to an outer power multiplies the inner and outer exponents."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Power of a Product",
+        formulaOrStatement = "[ (xy)^a = x^a · y^a ]",
+        note = "An outer exponent distributes across each factor in a product or quotient."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 4,
+        title = "Negative / Zero",
+        formulaOrStatement = "[ x^(-a) = 1 / x^a ] | [ x^0 = 1 (where x ≠ 0) ]",
+        note = "A negative exponent denotes the reciprocal power, and any non-zero base raised to zero equals 1."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "5. Properties of Radicals",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Fractional Exponent",
+        formulaOrStatement = "[ x^(m/n) = ^n√(x^m) = (^n√x)^m ]",
+        note = "In a rational exponent m/n, the denominator n is the root index and the numerator m is the power."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Product / Quotient",
+        formulaOrStatement = "[ ^n√(xy) = ^n√x · ^n√y ] | [ ^n√(x/y) = ^n√x / ^n√y ]",
+        note = "Radicals of the same index n split across products and quotients (where y ≠ 0)."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Root of a Root",
+        formulaOrStatement = "[ ^m√(^n√x) = ^(mn)√x ]",
+        note = "Nested radicals combine into a single radical whose index is the product of the indices m and n."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "6. Logarithms",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Product / Quotient",
+        formulaOrStatement = "[ log_b(xy) = log_b(x) + log_b(y) ] | [ log_b(x/y) = log_b(x) - log_b(y) ]",
+        note = "Logarithm of a product equals the sum of logs; logarithm of a quotient equals the difference of logs (x > 0, y > 0)."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Power Rule",
+        formulaOrStatement = "[ log_b(x^k) = k · log_b(x) ]",
+        note = "The exponent of the argument inside a logarithm factors out as a scalar multiplier."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Change of Base",
+        formulaOrStatement = "[ log_b(x) = ln(x) / ln(b) = log_10(x) / log_10(b) ]",
+        note = "Converts any base-b logarithm (b > 0, b ≠ 1) into natural (ln) or common (log_10) logarithms."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "7. Polynomials",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Remainder Theorem",
+        formulaOrStatement = "[ If P(x) is divided by (x - c), the remainder is P(c) ]",
+        note = "Direct substitution of x = c into polynomial P(x) yields the division remainder R = P(c)."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Factor Theorem",
+        formulaOrStatement = "[ (x - c) is a factor of P(x) if and only if P(c) = 0 ]",
+        note = "A linear binomial (x - c) divides P(x) evenly without remainder precisely when c is a root of P(x) = 0."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "8. Binomial Theorem",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Expansion",
+        formulaOrStatement = "[ (a + b)^n = ∑_{k=0..n} C(n, k) · a^(n-k) · b^k ]",
+        note = "Expands a binomial power into n + 1 terms where powers of a decrease from n to 0 and powers of b increase from 0 to n."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "General r-th Term (1-indexed)",
+        formulaOrStatement = "[ T_r = C(n, r-1) · a^(n - r + 1) · b^(r - 1) ]",
+        note = "Directly computes the r-th term (1 ≤ r ≤ n + 1) of (a + b)^n without expanding the full series."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "9. Pascal's Triangle",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Combinatorial Relation",
+        formulaOrStatement = "[ C(n, k) = C(n-1, k-1) + C(n-1, k) ]",
+        note = "Each interior binomial entry equals the sum of the two adjacent binomial entries directly above it."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Row Sum",
+        formulaOrStatement = "[ Sum of coefficients in row n is 2^n ]",
+        note = "Adding all binomial coefficients C(n, 0) + C(n, 1) + ... + C(n, n) in row n (0-indexed) yields 2^n."
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "10. Quadratic Formula",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Roots",
+        formulaOrStatement = "[ x = [-b ± √(b² - 4ac)] / (2a) ]",
+        note = "Solves the general quadratic equation ax² + bx + c = 0 where leading coefficient a ≠ 0."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Discriminant (Δ = b² - 4ac)",
+        formulaOrStatement = "[ Δ > 0 (Real & Unequal), Δ = 0 (Real & Equal), Δ < 0 (Imaginary) ]",
+        note = "Classifies the nature of the two roots of ax² + bx + c = 0 prior to full root extraction."
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Sum & Product of Roots",
+        formulaOrStatement = "[ x₁ + x₂ = -b/a ] | [ x₁ · x₂ = c/a ]",
+        note = "Vieta's root relations connecting roots x₁ and x₂ directly to quadratic coefficients a, b, and c."
       )
     )
   )
 )
 
 @Composable
-private fun AlgebraA4PaperViewer(
+private fun MsteAlgebraSheet(
   metrics: ResponsiveMetrics,
   lazyListState: androidx.compose.foundation.lazy.LazyListState,
   highlightedSectionIndex: Int?,
@@ -13454,6 +13443,18 @@ private fun AlgebraA4PaperViewer(
 ) {
   val palette = currentGlassPalette()
   val allSections = remember { buildAlgebraHandbookSections() }
+  var selectedSectionForDetailModal by remember { mutableStateOf<Pair<Int, AlgebraHandbookSection>?>(null) }
+  val scrollState = rememberScrollState()
+  val sectionYOffsets = remember { mutableMapOf<Int, Int>() }
+
+  LaunchedEffect(highlightedSectionIndex) {
+    if (highlightedSectionIndex != null) {
+      val targetY = sectionYOffsets[highlightedSectionIndex]
+      if (targetY != null) {
+        scrollState.animateScrollTo(targetY)
+      }
+    }
+  }
 
   val filteredSections = remember(allSections, searchQuery) {
     if (searchQuery.isEmpty()) {
@@ -13479,172 +13480,168 @@ private fun AlgebraA4PaperViewer(
     }
   }
 
-  // Crisp paper background (Color(0xFFFAFAFC) in Light Mode, deep slate paper Color(0xFF1E222B) in Dark Mode)
-  val a4PaperColor = if (palette.isDark) Color(0xFF1E222B) else Color(0xFFFAFAFC)
-  val a4BorderColor = if (palette.isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFCBD5E1)
-  val a4HeadingColor = if (palette.isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
-  val a4SubtleTextColor = if (palette.isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-
-  // Soft tinted glass fill & 1.dp Color(0xFF6366F1).copy(alpha = 0.25f) hairline border for formula callouts
   val mathCalloutBg = if (palette.isDark) {
-    palette.cardSurface.copy(alpha = 0.9f)
+    palette.cardSurface.copy(alpha = 0.90f)
   } else {
-    Color(0xFFEEF2FF).copy(alpha = 0.92f)
+    Color(0xFFEEF2FF).copy(alpha = 0.94f)
   }
-  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.25f)
-  // High-contrast primary accent (deep indigo/violet in light mode, bright electric violet in dark mode)
+  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.28f)
   val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
 
-  LazyColumn(
-    state = lazyListState,
-    contentPadding = PaddingValues(bottom = 120.dp),
+  val noteContainerBg = if (palette.isDark) {
+    Color.White.copy(alpha = 0.045f)
+  } else {
+    Color(0xFFF8FAFC).copy(alpha = 0.92f)
+  }
+  val noteContainerBorder = if (palette.isDark) {
+    Color.White.copy(alpha = 0.10f)
+  } else {
+    Color(0xFFCBD5E1).copy(alpha = 0.65f)
+  }
+
+  Column(
     horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(14.dp),
     modifier = modifier
       .fillMaxSize()
+      .verticalScroll(scrollState)
+      .padding(bottom = 120.dp)
       .testTag("algebra_a4_paper_sheet")
   ) {
     // ====================================================================
-    // ITEM 0: Breadcrumb Bar + A4 Running Header & Title ("ALGEBRA")
+    // HEADER: Breadcrumb Bar + Liquid Glass Algebra Reference Banner
     // ====================================================================
-    item(key = "a4_header_item_0") {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .widthIn(max = 680.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        // Subtle Breadcrumb Bar to return to MSTE Sub-Topics Shelf + Quick TOC Chip
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Surface(
-            onClick = onBackToShelf,
-            shape = RoundedCornerShape(10.dp),
-            color = palette.cardFill,
-            border = palette.glassBorder,
-            modifier = Modifier.testTag("back_to_notebook_shelf_chip")
-          ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                contentDescription = "Back to MSTE Library",
-                tint = palette.accentIndigo,
-                modifier = Modifier.size(16.dp)
-              )
-              Text(
-                text = "MSTE Library",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 11.5.sp
-                ),
-                color = palette.accentIndigo
-              )
-            }
-          }
-
-          Surface(
-            onClick = onOpenToc,
-            shape = RoundedCornerShape(10.dp),
-            color = palette.cardFill,
-            border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.30f))
-          ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.ViewList,
-                contentDescription = "Table of Contents",
-                tint = palette.accentIndigo,
-                modifier = Modifier.size(14.dp)
-              )
-              Text(
-                text = "MSTE / CE-01 • TOC",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.Bold,
-                  letterSpacing = 0.8.sp
-                ),
-                color = palette.accentIndigo
-              )
-            }
-          }
-        }
-
-        // Top of the A4 Paper Sheet
         Surface(
-          shape = if (filteredSections.isEmpty()) {
-            RoundedCornerShape(6.dp)
-          } else {
-            RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
-          },
-          color = a4PaperColor,
-          border = BorderStroke(1.dp, a4BorderColor),
-          shadowElevation = 4.dp,
-          modifier = Modifier.fillMaxWidth()
+          onClick = onBackToShelf,
+          shape = RoundedCornerShape(10.dp),
+          color = palette.cardFill,
+          border = palette.glassBorder,
+          modifier = Modifier.testTag("back_to_notebook_shelf_chip")
         ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
           ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+              contentDescription = "Back to MSTE Library",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
             Text(
-              text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER I: ALGEBRA",
+              text = "MSTE Library",
               style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = 1.2.sp
+                fontSize = 11.5.sp
               ),
               color = palette.accentIndigo
             )
+          }
+        }
 
-            HorizontalDivider(
-              thickness = 1.5.dp,
-              color = palette.accentIndigo.copy(alpha = 0.45f)
+        Surface(
+          onClick = onOpenToc,
+          shape = RoundedCornerShape(10.dp),
+          color = palette.cardFill,
+          border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f))
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ViewList,
+              contentDescription = "Table of Contents",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(14.dp)
             )
-
             Text(
-              text = "ALGEBRA",
-              style = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = 22.sp,
+              text = "MSTE / CE-01 • TOC",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = 0.5.sp
+                letterSpacing = 0.8.sp
               ),
-              color = a4HeadingColor
+              color = palette.accentIndigo
             )
+          }
+        }
+      }
 
-            if (filteredSections.isEmpty()) {
-              Text(
-                text = "No Algebra laws match \"$searchQuery\".",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                color = a4SubtleTextColor,
-                modifier = Modifier.padding(vertical = 16.dp)
-              )
-            }
+      LiquidGlassCard(
+        cornerRadius = 22.dp,
+        elevation = 8.dp,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER I: ALGEBRA",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = FontFamily.Monospace,
+              fontSize = 10.5.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 1.2.sp
+            ),
+            color = palette.accentIndigo,
+            softWrap = true,
+            modifier = Modifier.fillMaxWidth()
+          )
+
+          HorizontalDivider(
+            thickness = 1.5.dp,
+            color = palette.accentIndigo.copy(alpha = 0.45f)
+          )
+
+          Text(
+            text = "ENGINEERING ALGEBRA & NUMBER THEORY",
+            style = MaterialTheme.typography.headlineSmall.copy(
+              fontSize = 20.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 0.4.sp
+            ),
+            color = palette.textPrimary,
+            softWrap = true,
+            modifier = Modifier.fillMaxWidth()
+          )
+
+          if (filteredSections.isEmpty()) {
+            Text(
+              text = "No Algebra formulas match \"$searchQuery\".",
+              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+              color = palette.textSecondary,
+              softWrap = true,
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp)
+            )
           }
         }
       }
     }
 
     // ====================================================================
-    // ITEMS 1..7: Each Algebra Section + All Numbered Bold Formula Callouts
+    // SECTIONS 1..10: Liquid Glass Formula Cards with Strict Vertical Stacking
     // ====================================================================
-    items(
-      count = filteredSections.size,
-      key = { idx -> "a4_section_item_${filteredSections[idx].first + 1}" }
-    ) { listIdx ->
-      val (originalSectionIndex, section) = filteredSections[listIdx]
-      val isLastSection = listIdx == filteredSections.lastIndex
+    filteredSections.forEach { (originalSectionIndex, section) ->
       val isHighlighted = highlightedSectionIndex == originalSectionIndex
 
       val sectionHeaderBgAlpha by animateFloatAsState(
@@ -13658,206 +13655,396 @@ private fun AlgebraA4PaperViewer(
         label = "toc_arrival_border_alpha"
       )
 
-      Surface(
-        shape = if (isLastSection) {
-          RoundedCornerShape(bottomStart = 6.dp, bottomEnd = 6.dp)
-        } else {
-          RoundedCornerShape(0.dp)
-        },
-        color = a4PaperColor,
-        border = BorderStroke(1.dp, a4BorderColor),
-        shadowElevation = 4.dp,
+      Box(
         modifier = Modifier
           .fillMaxWidth()
           .widthIn(max = 680.dp)
+          .onGloballyPositioned { coords ->
+            sectionYOffsets[originalSectionIndex] = coords.positionInParent().y.toInt()
+          }
+          .clickable { selectedSectionForDetailModal = originalSectionIndex to section }
           .testTag("algebra_section_${originalSectionIndex + 1}")
       ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-              start = 22.dp,
-              end = 22.dp,
-              top = 14.dp,
-              bottom = if (isLastSection) 24.dp else 14.dp
-            ),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+        LiquidGlassCard(
+          cornerRadius = 22.dp,
+          elevation = 6.dp,
+          modifier = Modifier.fillMaxWidth()
         ) {
-          // Section Bullet Heading with Subtle Arrival Highlight Glow
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .clip(RoundedCornerShape(10.dp))
-              .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
-              .border(
-                width = 1.dp,
-                color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
-                shape = RoundedCornerShape(10.dp)
-              )
-              .padding(
-                horizontal = if (isHighlighted) 10.dp else 0.dp,
-                vertical = if (isHighlighted) 6.dp else 2.dp
-              ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            Text(
-              text = "•",
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = 19.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = palette.accentIndigo
-            )
-            Text(
-              text = section.sectionTitle,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = 16.5.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = a4HeadingColor
-            )
-          }
-
-          // Indented Highlighted Math Callout Blocks (1., 2., 3., ...)
           Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(start = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+              .padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
           ) {
-            section.items.forEach { rule ->
-              Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-              ) {
-                // Law Title with Number Prefix + Optional Note placed ABOVE the formula container
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+            // Section Heading Container (Full-Width Vertical Stack)
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
+                .border(
+                  width = 1.dp,
+                  color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
+                  shape = RoundedCornerShape(10.dp)
+                )
+                .padding(
+                  horizontal = if (isHighlighted) 10.dp else 0.dp,
+                  vertical = if (isHighlighted) 6.dp else 2.dp
+                )
+            ) {
+              Text(
+                text = "• ${section.sectionTitle}",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = 16.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary,
+                softWrap = true,
+                modifier = Modifier.fillMaxWidth()
+              )
+            }
+
+            HorizontalDivider(
+              thickness = 0.8.dp,
+              color = palette.accentIndigo.copy(alpha = 0.25f)
+            )
+
+            // Vertically Stacked Formula Rules (NEVER side-by-side Row with explanatory text)
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+              section.items.forEach { rule ->
+                Column(
+                  modifier = Modifier.fillMaxWidth()
                 ) {
+                  // 1. Rule Title (Full Width)
                   Text(
                     text = "${rule.number}. ${rule.title}",
                     style = MaterialTheme.typography.bodyMedium.copy(
                       fontSize = 14.sp,
                       fontWeight = FontWeight.Bold
                     ),
-                    color = a4HeadingColor
-                  )
-                  if (rule.note.isNotEmpty()) {
-                    Text(
-                      text = rule.note,
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                      ),
-                      color = a4SubtleTextColor
-                    )
-                  }
-                }
-
-                // Elevated Rounded Formula Callout Capsule (8.dp radius, 12.dp horizontal / 8.dp vertical padding, 0.25f border)
-                Surface(
-                  shape = RoundedCornerShape(8.dp),
-                  color = mathCalloutBg,
-                  border = BorderStroke(1.dp, mathCalloutBorder),
-                  shadowElevation = 2.dp,
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp)
-                ) {
-                  Column(
+                    color = palette.textPrimary,
+                    softWrap = true,
                     modifier = Modifier
                       .fillMaxWidth()
-                      .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                  ) {
-                    Text(
-                      text = rule.formulaOrStatement,
-                      style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        fontSize = 17.5.sp,
-                        lineHeight = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.2.sp
-                      ),
-                      color = mathTextColor
-                    )
+                      .padding(bottom = 6.dp)
+                  )
 
-                    if (rule.subItems.isNotEmpty()) {
-                      HorizontalDivider(
-                        thickness = 1.dp,
-                        color = mathCalloutBorder
-                      )
-                      Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                  // 2. Monospace / LaTeX Formula Capsule(s) (Full Width, 15.sp, Monospace, softWrap = true)
+                  val allFormulaCapsules = remember(rule) {
+                    listOf(rule.formulaOrStatement) + rule.subItems
+                  }
+                  Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    allFormulaCapsules.forEach { formulaLine ->
+                      Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = mathCalloutBg,
+                        border = BorderStroke(1.dp, mathCalloutBorder),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth()
                       ) {
-                        rule.subItems.forEach { subLine ->
-                          Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                          ) {
-                            Text(
-                              text = "•",
-                              style = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
-                              ),
-                              color = palette.accentIndigo
-                            )
-                            Text(
-                              text = subLine,
-                              style = MaterialTheme.typography.bodyMedium.copy(
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                fontSize = 15.5.sp,
-                                lineHeight = 22.sp,
-                                fontWeight = FontWeight.Bold
-                              ),
-                              color = mathTextColor,
-                              modifier = Modifier.weight(1f)
-                            )
-                          }
-                        }
+                        Text(
+                          text = formulaLine,
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 15.sp,
+                          softWrap = true,
+                          style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.15.sp
+                          ),
+                          color = mathTextColor,
+                          modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 9.dp)
+                        )
                       }
+                    }
+                  }
+
+                  // 3. Explanatory Note in Secondary Full-Width Container Directly Below Formula
+                  if (rule.note.isNotEmpty()) {
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = noteContainerBg,
+                      border = BorderStroke(1.dp, noteContainerBorder),
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                    ) {
+                      Text(
+                        text = rule.note,
+                        softWrap = true,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 12.5.sp,
+                          lineHeight = 18.sp,
+                          fontWeight = FontWeight.Medium
+                        ),
+                        color = palette.textSecondary,
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(horizontal = 10.dp, vertical = 7.dp)
+                      )
                     }
                   }
                 }
               }
             }
           }
-
-          if (!isLastSection) {
-            HorizontalDivider(
-              thickness = 0.8.dp,
-              color = a4BorderColor.copy(alpha = 0.55f),
-              modifier = Modifier.padding(top = 6.dp)
-            )
-          }
         }
       }
     }
 
-    // Custom scholar formulas below the A4 paper sheet
+    // Custom scholar formulas below the 10 Algebra sections
     if (customFormulas.isNotEmpty()) {
-      item(key = "a4_custom_formulas_footer") {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .padding(top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        customFormulas.forEach { formula ->
+          InteractiveReferenceFormulaCard(
+            formula = formula,
+            isStarred = starredIds.contains(formula.id),
+            onToggleStar = { onToggleStar(formula.id) },
+            metrics = metrics
+          )
+        }
+      }
+    }
+  }
+
+  selectedSectionForDetailModal?.let { (secIndex, secData) ->
+    AlgebraSectionDetailGlassModal(
+      sectionNumber = secIndex + 1,
+      section = secData,
+      onDismiss = { selectedSectionForDetailModal = null }
+    )
+  }
+}
+
+@Composable
+private fun AlgebraA4PaperViewer(
+  metrics: ResponsiveMetrics,
+  lazyListState: androidx.compose.foundation.lazy.LazyListState,
+  highlightedSectionIndex: Int?,
+  searchQuery: String,
+  customFormulas: List<ReferenceFormulaCardData>,
+  starredIds: Set<String>,
+  onToggleStar: (String) -> Unit,
+  onBackToShelf: () -> Unit,
+  onOpenToc: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  MsteAlgebraSheet(
+    metrics = metrics,
+    lazyListState = lazyListState,
+    highlightedSectionIndex = highlightedSectionIndex,
+    searchQuery = searchQuery,
+    customFormulas = customFormulas,
+    starredIds = starredIds,
+    onToggleStar = onToggleStar,
+    onBackToShelf = onBackToShelf,
+    onOpenToc = onOpenToc,
+    modifier = modifier
+  )
+}
+
+@Composable
+private fun AlgebraSectionDetailGlassModal(
+  sectionNumber: Int,
+  section: AlgebraHandbookSection,
+  onDismiss: () -> Unit
+) {
+  val palette = currentGlassPalette()
+  val mathCalloutBg = if (palette.isDark) {
+    palette.cardSurface.copy(alpha = 0.92f)
+  } else {
+    Color(0xFFEEF2FF).copy(alpha = 0.95f)
+  }
+  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.30f)
+  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+
+  val noteContainerBg = if (palette.isDark) {
+    Color.White.copy(alpha = 0.045f)
+  } else {
+    Color(0xFFF8FAFC).copy(alpha = 0.92f)
+  }
+  val noteContainerBorder = if (palette.isDark) {
+    Color.White.copy(alpha = 0.10f)
+  } else {
+    Color(0xFFCBD5E1).copy(alpha = 0.65f)
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = 0.55f))
+        .padding(horizontal = 16.dp, vertical = 28.dp),
+      contentAlignment = Alignment.Center
+    ) {
+      LiquidGlassCard(
+        cornerRadius = 26.dp,
+        elevation = 16.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 640.dp)
+          .testTag("algebra_section_detail_modal_$sectionNumber")
+      ) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .widthIn(max = 680.dp)
-            .padding(top = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-          customFormulas.forEach { formula ->
-            InteractiveReferenceFormulaCard(
-              formula = formula,
-              isStarred = starredIds.contains(formula.id),
-              onToggleStar = { onToggleStar(formula.id) },
-              metrics = metrics
-            )
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Surface(
+              shape = RoundedCornerShape(8.dp),
+              color = Color(0xFF6366F1).copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
+            ) {
+              Text(
+                text = String.format(Locale.US, "MSTE / CE-01 • SECTION %02d", sectionNumber),
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = FontFamily.Monospace,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.accentIndigo,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+              )
+            }
+
+            Surface(
+              onClick = onDismiss,
+              shape = CircleShape,
+              color = palette.nestedCardFill,
+              border = palette.nestedBorder,
+              modifier = Modifier
+                .size(36.dp)
+                .testTag("algebra_section_detail_close_button")
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Close Section Detail",
+                  tint = palette.textPrimary,
+                  modifier = Modifier.size(18.dp)
+                )
+              }
+            }
+          }
+
+          Text(
+            text = section.sectionTitle,
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = 18.sp,
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = palette.textPrimary,
+            softWrap = true,
+            modifier = Modifier.fillMaxWidth()
+          )
+
+          HorizontalDivider(
+            thickness = 1.dp,
+            color = Color(0xFF6366F1).copy(alpha = 0.25f)
+          )
+
+          section.items.forEach { rule ->
+            Column(
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = "${rule.number}. ${rule.title}",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 14.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary,
+                softWrap = true,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(bottom = 6.dp)
+              )
+
+              val allFormulaCapsules = listOf(rule.formulaOrStatement) + rule.subItems
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                allFormulaCapsules.forEach { formulaLine ->
+                  Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = mathCalloutBg,
+                    border = BorderStroke(1.dp, mathCalloutBorder),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                  ) {
+                    Text(
+                      text = formulaLine,
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 15.sp,
+                      softWrap = true,
+                      style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.15.sp
+                      ),
+                      color = mathTextColor,
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 9.dp)
+                    )
+                  }
+                }
+              }
+
+              if (rule.note.isNotEmpty()) {
+                Surface(
+                  shape = RoundedCornerShape(8.dp),
+                  color = noteContainerBg,
+                  border = BorderStroke(1.dp, noteContainerBorder),
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                ) {
+                  Text(
+                    text = rule.note,
+                    softWrap = true,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.5.sp,
+                      lineHeight = 18.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 10.dp, vertical = 7.dp)
+                  )
+                }
+              }
+            }
           }
         }
       }
@@ -14652,6 +14839,7 @@ private fun HolographicTriangleModal(
         modifier = Modifier
           .fillMaxWidth()
           .widthIn(max = 640.dp)
+          .fillMaxHeight(0.92f)
           .testTag("holographic_triangle_modal")
       ) {
         Column(
@@ -14669,6 +14857,7 @@ private fun HolographicTriangleModal(
             )
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 18.dp)
+            .padding(bottom = 36.dp)
             .navigationBarsPadding(),
           verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -14744,7 +14933,8 @@ private fun HolographicTriangleModal(
             ),
             modifier = Modifier
               .fillMaxWidth()
-              .height(236.dp)
+              .heightIn(min = 200.dp, max = 260.dp)
+              .height(228.dp)
               .testTag("holographic_triangle_canvas")
           ) {
             Box(modifier = Modifier.fillMaxSize()) {
@@ -15095,6 +15285,7 @@ private fun HolographicTriangleModal(
             border = BorderStroke(1.2.dp, selectedTopic.accentColor.copy(alpha = 0.48f)),
             modifier = Modifier
               .fillMaxWidth()
+              .padding(bottom = 36.dp)
               .testTag("holographic_triangle_concept_card")
           ) {
             Column(
@@ -15154,24 +15345,34 @@ private fun HolographicTriangleModal(
                 }
               }
 
-              // Primary Board Exam Formula Capsule
-              Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xFF060B16),
-                border = BorderStroke(1.dp, selectedTopic.accentColor.copy(alpha = 0.55f)),
-                modifier = Modifier.fillMaxWidth()
+              // Primary Board Exam Formula Boxes (each formula line rendered in its own distinct box)
+              val formulaLines = remember(selectedTopic) {
+                selectedTopic.boardExamFormula.split("\n").filter { it.isNotBlank() }
+              }
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
               ) {
-                Text(
-                  text = selectedTopic.boardExamFormula,
-                  style = MaterialTheme.typography.titleMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 15.5.sp,
-                    lineHeight = 22.sp,
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = Color(0xFF67E8F9),
-                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                )
+                formulaLines.forEach { formulaLine ->
+                  Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF060B16),
+                    border = BorderStroke(1.dp, selectedTopic.accentColor.copy(alpha = 0.55f)),
+                    modifier = Modifier.fillMaxWidth()
+                  ) {
+                    Text(
+                      text = formulaLine,
+                      style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.5.sp,
+                        lineHeight = 21.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = Color(0xFF67E8F9),
+                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
+                  }
+                }
               }
             }
           }
@@ -21893,6 +22094,17 @@ private fun AmPmSegmentedToggle(
  *      - "Account Actions" (minimalist text button `"Log Out / Switch Account"` with neutral red tint)
  */
 @Composable
+private fun ProfileSettingsDialog(
+  viewModel: TaskViewModel,
+  onDismiss: () -> Unit,
+  onSwitchAccount: () -> Unit
+) = ProfileAndSettingsDialog(
+  viewModel = viewModel,
+  onDismiss = onDismiss,
+  onSwitchAccount = onSwitchAccount
+)
+
+@Composable
 private fun ProfileAndSettingsDialog(
   viewModel: TaskViewModel,
   onDismiss: () -> Unit,
@@ -21903,6 +22115,7 @@ private fun ProfileAndSettingsDialog(
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
   val isGuest = viewModel.isGuestMode
+  val isCompactDialog = metrics.screenWidthDp < 440
 
   // Hoist and cache SharedPreferences & PackageInfo reads inside remember blocks
   val cachedPrefs = remember(context) {
@@ -21913,9 +22126,6 @@ private fun ProfileAndSettingsDialog(
   }
   val localVersion = remember(context) {
     getInstalledVersionName(context).removePrefix("v").removePrefix("V")
-  }
-  val autoBackupStatusLabel = remember(cachedPrefs) {
-    cachedPrefs.getString("auto_backup_status_label", "Enabled (Drive)") ?: "Enabled (Drive)"
   }
 
   // Lightweight solid tints with low alpha instead of heavy multi-pass blur shaders
@@ -21950,20 +22160,24 @@ private fun ProfileAndSettingsDialog(
     mutableStateOf(if (isGuest) "" else viewModel.username)
   }
 
-  // Data Backup & Restore dialog state
-  var isRestoreDialogOpen by rememberSaveable { mutableStateOf(false) }
-  var restoreJsonInput by rememberSaveable { mutableStateOf("") }
-  var restoreErrorText by rememberSaveable { mutableStateOf<String?>(null) }
-
-  // Cloud Sync Workspace link state
-  var isLinkSyncKeyDialogOpen by rememberSaveable { mutableStateOf(false) }
-  var inputSyncKey by rememberSaveable { mutableStateOf("") }
-
   // Manual "Check for Updates" state
   var isCheckingUpdates by remember { mutableStateOf(false) }
   var updateStatusMessage by remember { mutableStateOf<String?>(null) }
   var isUpdateStatusError by remember { mutableStateOf(false) }
   var manualUpdateRelease by remember { mutableStateOf<GitHubReleaseUpdateInfo?>(null) }
+
+  // Animated rotation for the Cloud Sync "Sync Now" refresh icon
+  val isCloudSyncingActive = viewModel.isManualSyncing || viewModel.isFirestoreSyncing
+  val syncSpinTransition = rememberInfiniteTransition(label = "cloud_sync_spin_transition")
+  val syncSpinAngle by syncSpinTransition.animateFloat(
+    initialValue = 0f,
+    targetValue = 360f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 900, easing = LinearEasing),
+      repeatMode = RepeatMode.Restart
+    ),
+    label = "cloud_sync_spin_angle"
+  )
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -21971,7 +22185,7 @@ private fun ProfileAndSettingsDialog(
   ) {
     Surface(
       modifier = Modifier
-        .fillMaxWidth(0.92f)
+        .fillMaxWidth(0.94f)
         .widthIn(max = 680.dp)
         .heightIn(max = 680.dp)
         .testTag("profile_settings_dialog"),
@@ -22006,35 +22220,41 @@ private fun ProfileAndSettingsDialog(
             ),
             color = palette.textPrimary,
             maxLines = 1,
+            softWrap = true,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
-              .weight(1f)
+              .weight(1f, fill = false)
               .testTag("profile_settings_dialog_title")
           )
 
-          if (viewModel.isSyncingSettings || viewModel.isFirestoreSyncing) {
-            CircularProgressIndicator(
-              modifier = Modifier
-                .padding(end = 8.dp)
-                .size(16.dp)
-                .testTag("settings_firestore_sync_indicator"),
-              strokeWidth = 2.dp,
-              color = palette.accentIndigo
-            )
-          }
-
-          IconButton(
-            onClick = onDismiss,
-            modifier = Modifier
-              .size(36.dp)
-              .testTag("close_profile_settings_dialog_button")
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
           ) {
-            Icon(
-              imageVector = Icons.Filled.Close,
-              contentDescription = "Close Settings",
-              tint = palette.textSecondary,
-              modifier = Modifier.size(20.dp)
-            )
+            if (viewModel.isSyncingSettings || viewModel.isFirestoreSyncing || viewModel.isManualSyncing) {
+              CircularProgressIndicator(
+                modifier = Modifier
+                  .padding(end = 4.dp)
+                  .size(16.dp)
+                  .testTag("settings_firestore_sync_indicator"),
+                strokeWidth = 2.dp,
+                color = palette.accentIndigo
+              )
+            }
+
+            IconButton(
+              onClick = onDismiss,
+              modifier = Modifier
+                .size(36.dp)
+                .testTag("close_profile_settings_dialog_button")
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "Close Settings",
+                tint = palette.textSecondary,
+                modifier = Modifier.size(20.dp)
+              )
+            }
           }
         }
 
@@ -22057,92 +22277,120 @@ private fun ProfileAndSettingsDialog(
               .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
           ) {
-            // 1. COMPACT PROFILE HEADER (36.dp avatar + Student Name & Handle in a single row + Edit Profile icon)
+            // 1. RESPONSIVE PROFILE HEADER (36.dp avatar + Student Name & Email/Handle + Edit Profile icon)
             Row(
               modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 2.dp),
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
+              horizontalArrangement = Arrangement.SpaceBetween
             ) {
-              Surface(
-                color = palette.nestedCardFill.copy(alpha = 0.85f),
-                shape = CircleShape,
-                modifier = Modifier.size(36.dp)
+              Row(
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
               ) {
-                Box(contentAlignment = Alignment.Center) {
-                  Icon(
-                    imageVector = Icons.Default.AccountCircle,
-                    contentDescription = "Account Profile Icon",
-                    tint = palette.accentIndigo,
-                    modifier = Modifier.size(24.dp)
-                  )
+                Surface(
+                  color = palette.nestedCardFill.copy(alpha = 0.85f),
+                  shape = CircleShape,
+                  modifier = Modifier.size(36.dp)
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.Default.AccountCircle,
+                      contentDescription = "Account Profile Icon",
+                      tint = palette.accentIndigo,
+                      modifier = Modifier.size(24.dp)
+                    )
+                  }
                 }
-              }
 
-              if (isGuest) {
-                Row(
-                  modifier = Modifier.weight(1f),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                  Text(
-                    text = "Guest User",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                      fontSize = 15.sp,
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = palette.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("account_guest_text")
-                  )
-                  Text(
-                    text = "• @guest",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                      fontSize = 12.sp,
-                      fontWeight = FontWeight.Medium
-                    ),
-                    color = palette.textSecondary,
-                    maxLines = 1,
-                    softWrap = false
-                  )
-                }
-              } else {
-                Row(
-                  modifier = Modifier.weight(1f),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                  Text(
-                    text = viewModel.displayUsername,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                      fontSize = 15.sp,
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = palette.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                      .weight(1f, fill = false)
-                      .testTag("account_user_name_text")
-                  )
-                  Text(
-                    text = if (viewModel.username.contains("@")) {
-                      "• ${viewModel.username}"
-                    } else {
-                      "@${viewModel.username}"
-                    },
-                    style = MaterialTheme.typography.bodySmall.copy(
-                      fontSize = 12.sp,
-                      fontWeight = FontWeight.Medium
-                    ),
-                    color = palette.textSecondary,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("account_username_handle_text")
-                  )
+                if (isGuest) {
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = "Guest User",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontSize = 15.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                          .weight(1f, fill = false)
+                          .testTag("account_guest_text")
+                      )
+                    }
+                    Text(
+                      text = "@guest",
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = palette.textSecondary,
+                      maxLines = 1,
+                      softWrap = true,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                } else {
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = viewModel.displayUsername,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontSize = 15.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                          .weight(1f, fill = false)
+                          .testTag("account_user_name_text")
+                      )
+                    }
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = if (viewModel.username.contains("@")) {
+                          viewModel.username
+                        } else {
+                          "@${viewModel.username}"
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Medium
+                        ),
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                          .weight(1f, fill = false)
+                          .testTag("account_username_handle_text")
+                      )
+                    }
+                  }
                 }
               }
 
@@ -22177,7 +22425,7 @@ private fun ProfileAndSettingsDialog(
                   OutlinedTextField(
                     value = editDisplayNameInput,
                     onValueChange = { editDisplayNameInput = it },
-                    label = { Text("Full Name / Nickname", fontSize = 12.sp) },
+                    label = { Text("Full Name / Nickname", fontSize = 12.sp, softWrap = true) },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = sibilOutlinedTextFieldColors(),
@@ -22186,7 +22434,7 @@ private fun ProfileAndSettingsDialog(
                   OutlinedTextField(
                     value = editHandleInput,
                     onValueChange = { editHandleInput = it },
-                    label = { Text("Email Address", fontSize = 12.sp) },
+                    label = { Text("Email Address", fontSize = 12.sp, softWrap = true) },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     colors = sibilOutlinedTextFieldColors(),
@@ -22198,7 +22446,7 @@ private fun ProfileAndSettingsDialog(
                     verticalAlignment = Alignment.CenterVertically
                   ) {
                     TextButton(onClick = { isEditingProfile = false }) {
-                      Text("Cancel", fontSize = 12.sp, color = palette.textSecondary)
+                      Text("Cancel", fontSize = 12.sp, color = palette.textSecondary, softWrap = true)
                     }
                     Button(
                       onClick = {
@@ -22219,7 +22467,7 @@ private fun ProfileAndSettingsDialog(
                       shape = RoundedCornerShape(10.dp),
                       contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                      Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                      Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold, softWrap = true)
                     }
                   }
                 }
@@ -22268,7 +22516,9 @@ private fun ProfileAndSettingsDialog(
                   ),
                   color = palette.textPrimary,
                   maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
+                  softWrap = true,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.weight(1f, fill = false)
                 )
               }
 
@@ -22289,15 +22539,16 @@ private fun ProfileAndSettingsDialog(
 
             HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-            // 3. "CROSS-DEVICE CLOUD SYNC" TILE (TASKS, SCHEDULES, FLASHCARDS)
+            // 3. SEAMLESS ACCOUNT-BASED "CLOUD SYNC" CARD (RESPONSIVE LAYOUT)
+            val connectedAccountEmail = viewModel.getConnectedAccountLabel()
+            val lastSyncedText = viewModel.formatLastSyncedLabel()
             Column(
               modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(rowTileSurfaceColor)
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-                .testTag("extras_cloud_sync_card"),
-              verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 10.dp, vertical = 10.dp)
+                .testTag("extras_cloud_sync_card")
             ) {
               Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -22305,7 +22556,9 @@ private fun ProfileAndSettingsDialog(
                 verticalAlignment = Alignment.CenterVertically
               ) {
                 Row(
-                  modifier = Modifier.weight(1f),
+                  modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -22324,182 +22577,41 @@ private fun ProfileAndSettingsDialog(
                     }
                   }
 
-                  Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
                     Text(
-                      text = "Cloud Device Sync",
+                      text = "Cloud Sync",
                       style = MaterialTheme.typography.bodyLarge.copy(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
                       ),
                       color = palette.textPrimary,
                       maxLines = 1,
+                      softWrap = true,
                       overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                      text = "Real-time sync across Phone & Tablet",
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium
-                      ),
-                      color = palette.textSecondary,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
-                    )
-                  }
-                }
-
-                Surface(
-                  color = palette.accentIndigo.copy(alpha = 0.14f),
-                  shape = RoundedCornerShape(8.dp),
-                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f))
-                ) {
-                  Text(
-                    text = viewModel.getActiveSyncKey(),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.accentIndigo,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier
-                      .padding(horizontal = 8.dp, vertical = 4.dp)
-                      .testTag("cloud_sync_key_chip")
-                  )
-                }
-              }
-
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                OutlinedButton(
-                  onClick = {
-                    val key = viewModel.getActiveSyncKey()
-                    val clipboard =
-                      context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                    val clip = ClipData.newPlainText("Sibil Cloud Sync Key", key)
-                    clipboard?.setPrimaryClip(clip)
-                    Toast.makeText(
-                      context,
-                      "Sync Key $key copied! Enter on your other device.",
-                      Toast.LENGTH_SHORT
-                    ).show()
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
-                  colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
-                    contentColor = palette.accentIndigo
-                  ),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier
-                    .weight(1f)
-                    .height(34.dp)
-                    .testTag("copy_sync_key_button")
-                ) {
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.ContentCopy,
-                      contentDescription = null,
-                      modifier = Modifier.size(13.dp)
-                    )
-                    Text(
-                      text = "Copy Sync Key",
-                      fontSize = 12.sp,
-                      fontWeight = FontWeight.SemiBold,
-                      maxLines = 1,
-                      softWrap = false
-                    )
-                  }
-                }
-
-                OutlinedButton(
-                  onClick = {
-                    inputSyncKey = ""
-                    isLinkSyncKeyDialogOpen = true
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
-                  colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
-                    contentColor = palette.accentIndigo
-                  ),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier
-                    .weight(1f)
-                    .height(34.dp)
-                    .testTag("link_device_sync_button")
-                ) {
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                  ) {
-                    Icon(
-                      imageVector = Icons.Filled.CloudSync,
-                      contentDescription = null,
-                      modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                      text = "Link Device",
-                      fontSize = 12.sp,
-                      fontWeight = FontWeight.SemiBold,
-                      maxLines = 1,
-                      softWrap = false
-                    )
-                  }
-                }
-              }
-            }
-
-            HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
-
-            // 4. "AUTO BACKUP & SYNC" COMPACT LIST TILE + COMPACT ACTIONS
-            Column(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(rowTileSurfaceColor)
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-                .testTag("extras_data_management_card"),
-              verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Row(
-                  modifier = Modifier.weight(1f),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                  Surface(
-                    color = palette.nestedCardFill.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.size(32.dp)
-                  ) {
-                    Box(contentAlignment = Alignment.Center) {
-                      Icon(
-                        imageVector = Icons.Default.CloudSync,
-                        contentDescription = null,
-                        tint = palette.accentIndigo,
-                        modifier = Modifier.size(18.dp)
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = connectedAccountEmail,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Medium
+                        ),
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                          .weight(1f, fill = false)
+                          .testTag("cloud_sync_connected_account_text")
                       )
                     }
                   }
-
-                  Text(
-                    text = "Auto Backup & Sync",
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.SemiBold
-                    ),
-                    color = palette.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
                 }
 
                 Surface(
@@ -22508,104 +22620,204 @@ private fun ProfileAndSettingsDialog(
                   border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.38f))
                 ) {
                   Text(
-                    text = autoBackupStatusLabel,
+                    text = "Connected & Synced",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (palette.isDark) Color(0xFF34D399) else Color(0xFF047857),
                     maxLines = 1,
-                    softWrap = false,
+                    softWrap = true,
                     modifier = Modifier
                       .padding(horizontal = 8.dp, vertical = 4.dp)
-                      .testTag("auto_backup_status_chip")
+                      .testTag("cloud_sync_status_chip")
                   )
                 }
               }
 
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                OutlinedButton(
-                  onClick = {
-                    val backupJson = viewModel.createBackupJsonString(context)
-                    val clipboard =
-                      context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                    val clip = ClipData.newPlainText("Sibil Data Backup", backupJson)
-                    clipboard?.setPrimaryClip(clip)
-                    Toast.makeText(
-                      context,
-                      "Backup copied to clipboard!",
-                      Toast.LENGTH_SHORT
-                    ).show()
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
-                  colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
-                    contentColor = palette.accentIndigo
-                  ),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier
-                    .weight(1f)
-                    .height(34.dp)
-                    .testTag("backup_data_button")
-                ) {
-                  Text(
-                    text = "Copy Backup",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    softWrap = false
-                  )
-                }
+              Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedButton(
-                  onClick = {
-                    restoreErrorText = null
-                    isRestoreDialogOpen = true
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
-                  colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = palette.nestedCardFill.copy(alpha = 0.65f),
-                    contentColor = palette.accentIndigo
-                  ),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                  modifier = Modifier
-                    .weight(1f)
-                    .height(34.dp)
-                    .testTag("restore_data_button")
+              if (isCompactDialog) {
+                Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                   Text(
-                    text = "Restore Backup",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Last synced: $lastSyncedText",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
                     maxLines = 1,
-                    softWrap = false
+                    softWrap = true,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("cloud_sync_last_synced_text")
                   )
+
+                  OutlinedButton(
+                    onClick = {
+                      viewModel.syncNow {
+                        Toast.makeText(
+                          context,
+                          "Cloud Sync complete ($connectedAccountEmail)",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      }
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      containerColor = palette.nestedCardFill.copy(alpha = 0.80f),
+                      contentColor = palette.accentIndigo
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .height(36.dp)
+                      .testTag("sync_now_button")
+                  ) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Sync Now",
+                        tint = palette.accentIndigo,
+                        modifier = Modifier
+                          .size(14.dp)
+                          .graphicsLayer {
+                            rotationZ = if (isCloudSyncingActive) syncSpinAngle else 0f
+                          }
+                      )
+                      Text(
+                        text = if (isCloudSyncingActive) "Syncing..." else "Sync Now",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = true
+                      )
+                    }
+                  }
+                }
+              } else {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    text = "Last synced: $lastSyncedText",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
+                    maxLines = 1,
+                    softWrap = true,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                      .weight(1f, fill = false)
+                      .padding(end = 8.dp)
+                      .testTag("cloud_sync_last_synced_text")
+                  )
+
+                  OutlinedButton(
+                    onClick = {
+                      viewModel.syncNow {
+                        Toast.makeText(
+                          context,
+                          "Cloud Sync complete ($connectedAccountEmail)",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      }
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      containerColor = palette.nestedCardFill.copy(alpha = 0.80f),
+                      contentColor = palette.accentIndigo
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                      .wrapContentWidth()
+                      .height(34.dp)
+                      .testTag("sync_now_button")
+                  ) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "Sync Now",
+                        tint = palette.accentIndigo,
+                        modifier = Modifier
+                          .size(14.dp)
+                          .graphicsLayer {
+                            rotationZ = if (isCloudSyncingActive) syncSpinAngle else 0f
+                          }
+                      )
+                      Text(
+                        text = if (isCloudSyncingActive) "Syncing..." else "Sync Now",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = true
+                      )
+                    }
+                  }
                 }
               }
             }
 
             HorizontalDivider(color = palette.dividerColor.copy(alpha = 0.65f))
 
-            // 4. "ABOUT SIBIL" COMPACT TILE WITH MANUAL "CHECK FOR UPDATES"
+            // 4. "ABOUT SIBIL" RESPONSIVE TILE WITH MANUAL "CHECK FOR UPDATES"
+            val onCheckForUpdatesClick: () -> Unit = {
+              if (!isCheckingUpdates) {
+                isCheckingUpdates = true
+                updateStatusMessage = null
+                isUpdateStatusError = false
+                coroutineScope.launch {
+                  when (val checkResult = queryGitHubLatestRelease(context)) {
+                    is GitHubUpdateCheckResult.UpdateAvailable -> {
+                      isCheckingUpdates = false
+                      cachedSessionUpdateRelease = checkResult.releaseInfo
+                      manualUpdateRelease = checkResult.releaseInfo
+                    }
+                    is GitHubUpdateCheckResult.UpToDate -> {
+                      isCheckingUpdates = false
+                      isUpdateStatusError = false
+                      val msg = "You're on the latest version (v${checkResult.localVersion}) ✓"
+                      updateStatusMessage = msg
+                      Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    }
+                    GitHubUpdateCheckResult.NetworkError -> {
+                      isCheckingUpdates = false
+                      isUpdateStatusError = true
+                      val errMsg = "Unable to check updates. Please check your connection."
+                      updateStatusMessage = errMsg
+                      Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                }
+              }
+            }
+
             Column(
               modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(rowTileSurfaceColor)
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-                .testTag("extras_about_card"),
-              verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 10.dp, vertical = 10.dp)
+                .testTag("extras_about_card")
             ) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
+              if (isCompactDialog) {
+                // Narrow screen layout: header row on top, full-width "Check for Updates" button below
                 Row(
-                  modifier = Modifier.weight(1f),
+                  modifier = Modifier.fillMaxWidth(),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -22624,7 +22836,10 @@ private fun ProfileAndSettingsDialog(
                     }
                   }
 
-                  Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                  Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
                     Text(
                       text = "About Sibil",
                       style = MaterialTheme.typography.bodyLarge.copy(
@@ -22633,6 +22848,7 @@ private fun ProfileAndSettingsDialog(
                       ),
                       color = palette.textPrimary,
                       maxLines = 1,
+                      softWrap = true,
                       overflow = TextOverflow.Ellipsis,
                       modifier = Modifier.testTag("about_app_name_text")
                     )
@@ -22644,54 +22860,27 @@ private fun ProfileAndSettingsDialog(
                       ),
                       color = palette.textSecondary,
                       maxLines = 1,
-                      softWrap = false,
+                      softWrap = true,
+                      overflow = TextOverflow.Ellipsis,
                       modifier = Modifier.testTag("about_app_version_text")
                     )
                   }
                 }
 
-                // Compact, sleek frosted action button: "Check for Updates"
+                Spacer(modifier = Modifier.height(8.dp))
+
                 OutlinedButton(
-                  onClick = {
-                    if (!isCheckingUpdates) {
-                      isCheckingUpdates = true
-                      updateStatusMessage = null
-                      isUpdateStatusError = false
-                      coroutineScope.launch {
-                        when (val checkResult = queryGitHubLatestRelease(context)) {
-                          is GitHubUpdateCheckResult.UpdateAvailable -> {
-                            isCheckingUpdates = false
-                            cachedSessionUpdateRelease = checkResult.releaseInfo
-                            manualUpdateRelease = checkResult.releaseInfo
-                          }
-                          is GitHubUpdateCheckResult.UpToDate -> {
-                            isCheckingUpdates = false
-                            isUpdateStatusError = false
-                            val msg = "You're on the latest version (v${checkResult.localVersion}) ✓"
-                            updateStatusMessage = msg
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                          }
-                          GitHubUpdateCheckResult.NetworkError -> {
-                            isCheckingUpdates = false
-                            isUpdateStatusError = true
-                            val errMsg = "Unable to check updates. Please check your connection."
-                            updateStatusMessage = errMsg
-                            Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
-                          }
-                        }
-                      }
-                    }
-                  },
+                  onClick = onCheckForUpdatesClick,
                   shape = RoundedCornerShape(10.dp),
                   border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
                   colors = ButtonDefaults.outlinedButtonColors(
                     containerColor = palette.nestedCardFill.copy(alpha = 0.80f),
                     contentColor = palette.accentIndigo
                   ),
-                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                   modifier = Modifier
-                    .wrapContentWidth()
-                    .height(34.dp)
+                    .fillMaxWidth()
+                    .height(36.dp)
                     .testTag("check_for_updates_button")
                 ) {
                   Row(
@@ -22717,8 +22906,109 @@ private fun ProfileAndSettingsDialog(
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Bold,
                       maxLines = 1,
-                      softWrap = false
+                      softWrap = true
                     )
+                  }
+                }
+              } else {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(
+                    modifier = Modifier
+                      .weight(1f)
+                      .padding(end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                  ) {
+                    Surface(
+                      color = palette.nestedCardFill.copy(alpha = 0.85f),
+                      shape = RoundedCornerShape(10.dp),
+                      modifier = Modifier.size(32.dp)
+                    ) {
+                      Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                          imageVector = Icons.Filled.Info,
+                          contentDescription = null,
+                          tint = palette.accentIndigo,
+                          modifier = Modifier.size(18.dp)
+                        )
+                      }
+                    }
+
+                    Column(
+                      modifier = Modifier.weight(1f),
+                      verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                      Text(
+                        text = "About Sibil",
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                          fontSize = 14.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.textPrimary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("about_app_name_text")
+                      )
+                      Text(
+                        text = "Version $localVersion (Official Build)",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Medium
+                        ),
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        softWrap = true,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("about_app_version_text")
+                      )
+                    }
+                  }
+
+                  OutlinedButton(
+                    onClick = onCheckForUpdatesClick,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      containerColor = palette.nestedCardFill.copy(alpha = 0.80f),
+                      contentColor = palette.accentIndigo
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier
+                      .wrapContentWidth()
+                      .height(34.dp)
+                      .testTag("check_for_updates_button")
+                  ) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      if (isCheckingUpdates) {
+                        CircularProgressIndicator(
+                          modifier = Modifier.size(13.dp),
+                          strokeWidth = 2.dp,
+                          color = palette.accentIndigo
+                        )
+                      } else {
+                        Icon(
+                          imageVector = Icons.Filled.Refresh,
+                          contentDescription = null,
+                          tint = palette.accentIndigo,
+                          modifier = Modifier.size(14.dp)
+                        )
+                      }
+                      Text(
+                        text = if (isCheckingUpdates) "Checking..." else "Check for Updates",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = true
+                      )
+                    }
                   }
                 }
               }
@@ -22726,6 +23016,7 @@ private fun ProfileAndSettingsDialog(
               // Inline Status Toast / Chip for Manual Update Check Result
               val currentStatusMsg = updateStatusMessage
               if (currentStatusMsg != null) {
+                Spacer(modifier = Modifier.height(8.dp))
                 Surface(
                   color = if (isUpdateStatusError) {
                     palette.accentRed.copy(alpha = 0.14f)
@@ -22747,8 +23038,9 @@ private fun ProfileAndSettingsDialog(
                 ) {
                   Text(
                     text = currentStatusMsg,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
+                    softWrap = true,
                     color = if (isUpdateStatusError) {
                       palette.accentRed
                     } else if (palette.isDark) {
@@ -22761,35 +23053,72 @@ private fun ProfileAndSettingsDialog(
                 }
               }
 
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  text = stringResource(R.string.developed_by_text),
-                  style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium
-                  ),
-                  color = palette.textSecondary,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier
-                    .weight(1f)
-                    .testTag("about_developed_by_text")
-                )
+              Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                  text = "Academic License • Verified",
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                  ),
-                  color = palette.accentIndigo,
-                  maxLines = 1,
-                  softWrap = false
-                )
+              if (isCompactDialog) {
+                Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                  Text(
+                    text = stringResource(R.string.developed_by_text),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
+                    maxLines = 2,
+                    softWrap = true,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("about_developed_by_text")
+                  )
+
+                  Text(
+                    text = "Academic License • Verified",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = palette.accentIndigo,
+                    maxLines = 1,
+                    softWrap = true
+                  )
+                }
+              } else {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    text = stringResource(R.string.developed_by_text),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Medium
+                    ),
+                    color = palette.textSecondary,
+                    maxLines = 1,
+                    softWrap = true,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                      .weight(1f, fill = false)
+                      .padding(end = 8.dp)
+                      .testTag("about_developed_by_text")
+                  )
+
+                  Text(
+                    text = "Academic License • Verified",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.SemiBold
+                    ),
+                    color = palette.accentIndigo,
+                    maxLines = 1,
+                    softWrap = true
+                  )
+                }
               }
             }
 
@@ -22822,181 +23151,14 @@ private fun ProfileAndSettingsDialog(
                 ),
                 color = palette.accentRed,
                 maxLines = 1,
-                softWrap = false
+                softWrap = true,
+                overflow = TextOverflow.Ellipsis
               )
             }
           }
         }
       }
     }
-  }
-
-  // Restore Backup Modal Dialog
-  if (isRestoreDialogOpen) {
-    AlertDialog(
-      onDismissRequest = { isRestoreDialogOpen = false },
-      shape = RoundedCornerShape(22.dp),
-      containerColor = modalBackgroundColor,
-      title = {
-        Text(
-          text = "Restore Sibil Data",
-          style = MaterialTheme.typography.titleLarge.copy(
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-          ),
-          color = palette.textPrimary
-        )
-      },
-      text = {
-        Column(
-          modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          Text(
-            text = "Paste your previously copied Sibil backup JSON string below to restore all Schedules, Tasks, Alarms, Flashcards, and Profile data.",
-            style = MaterialTheme.typography.bodySmall.copy(
-              fontSize = 12.sp
-            ),
-            color = palette.textSecondary
-          )
-
-          OutlinedTextField(
-            value = restoreJsonInput,
-            onValueChange = {
-              restoreJsonInput = it
-              if (it.isNotBlank()) restoreErrorText = null
-            },
-            label = { Text("Backup JSON String") },
-            placeholder = { Text("{\"app\":\"Sibil\", ...}") },
-            isError = restoreErrorText != null,
-            minLines = 4,
-            maxLines = 8,
-            shape = RoundedCornerShape(12.dp),
-            colors = sibilOutlinedTextFieldColors(),
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("restore_backup_json_input")
-          )
-
-          if (restoreErrorText != null) {
-            Text(
-              text = restoreErrorText.orEmpty(),
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = palette.accentRed
-            )
-          }
-        }
-      },
-      confirmButton = {
-        Button(
-          onClick = {
-            val restored = viewModel.restoreFromBackupJsonString(context, restoreJsonInput)
-            if (restored) {
-              isRestoreDialogOpen = false
-              restoreJsonInput = ""
-              restoreErrorText = null
-              Toast.makeText(
-                context,
-                "Data restored successfully!",
-                Toast.LENGTH_LONG
-              ).show()
-            } else {
-              restoreErrorText = "Invalid backup JSON string. Please check and try again."
-            }
-          },
-          shape = CircleShape,
-          modifier = Modifier.testTag("confirm_restore_data_button")
-        ) {
-          Text(
-            text = "Confirm Restore",
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-          )
-        }
-      },
-      dismissButton = {
-        TextButton(onClick = { isRestoreDialogOpen = false }) {
-          Text("Cancel", color = palette.textSecondary)
-        }
-      }
-    )
-  }
-
-  // Link Cloud Sync Key Modal Dialog
-  if (isLinkSyncKeyDialogOpen) {
-    AlertDialog(
-      onDismissRequest = { isLinkSyncKeyDialogOpen = false },
-      shape = RoundedCornerShape(22.dp),
-      containerColor = modalBackgroundColor,
-      title = {
-        Text(
-          text = "Link Device Workspace",
-          style = MaterialTheme.typography.titleLarge.copy(
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-          ),
-          color = palette.textPrimary
-        )
-      },
-      text = {
-        Column(
-          modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          Text(
-            text = "Enter the Cloud Sync Key from your other device (e.g., CE-9842) to instantly sync your Tasks, Schedules, and Flashcards across both devices.",
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-            color = palette.textSecondary
-          )
-          OutlinedTextField(
-            value = inputSyncKey,
-            onValueChange = { inputSyncKey = it.uppercase(Locale.US) },
-            label = { Text("Cloud Sync Key", fontSize = 12.sp) },
-            placeholder = { Text("e.g. CE-9842", fontSize = 12.sp) },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = sibilOutlinedTextFieldColors(),
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("sync_key_text_field")
-          )
-        }
-      },
-      confirmButton = {
-        Button(
-          onClick = {
-            val trimmed = inputSyncKey.trim().uppercase(Locale.US)
-            if (trimmed.length >= 3) {
-              val updated = viewModel.updateCloudSyncKey(trimmed)
-              if (updated) {
-                Toast.makeText(
-                  context,
-                  "Linked to workspace $trimmed! Syncing...",
-                  Toast.LENGTH_SHORT
-                ).show()
-                isLinkSyncKeyDialogOpen = false
-              }
-            } else {
-              Toast.makeText(
-                context,
-                "Please enter a valid key (e.g., CE-9842)",
-                Toast.LENGTH_SHORT
-              ).show()
-            }
-          },
-          shape = RoundedCornerShape(10.dp),
-          modifier = Modifier.testTag("confirm_link_sync_key_button")
-        ) {
-          Text("Link & Sync", fontWeight = FontWeight.Bold)
-        }
-      },
-      dismissButton = {
-        TextButton(onClick = { isLinkSyncKeyDialogOpen = false }) {
-          Text("Cancel", color = palette.textSecondary)
-        }
-      }
-    )
   }
 
   // Trigger UpdateAvailableDialog immediately if manual "Check for Updates" detects a newer release
@@ -23034,17 +23196,18 @@ fun CourseworkTaskManagerScreen(
   viewModel: TaskViewModel,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
   val allTasksSnapshot = viewModel.tasks.toList()
   val schedulesSnapshot = viewModel.classSchedules.toList()
+  val completedTasksCount = allTasksSnapshot.count { it.isCompleted }
 
-  // Dynamically generate Subject Folders: permanent "General" + unique subjectNames from ClassSchedule list
-  val subjectFolders = remember(schedulesSnapshot) {
+  // Dynamically generate Subject Folders: permanent "General" + unique subjectNames from ClassSchedule & Tasks
+  val subjectFolders = remember(schedulesSnapshot, allTasksSnapshot) {
     buildList {
       add(DEFAULT_TASK_CATEGORY)
-      schedulesSnapshot
-        .map { it.subjectName.trim() }
+      (schedulesSnapshot.map { it.subjectName.trim() } + allTasksSnapshot.map { it.subjectCategory.trim() })
         .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
         .distinctBy { it.lowercase(Locale.US) }
         .forEach { add(it) }
@@ -23101,7 +23264,7 @@ fun CourseworkTaskManagerScreen(
         modifier = Modifier
           .fillMaxWidth()
           .padding(bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
         Text(
@@ -23126,6 +23289,45 @@ fun CourseworkTaskManagerScreen(
             strokeWidth = 2.dp,
             color = palette.accentIndigo
           )
+        }
+
+        if (completedTasksCount > 0) {
+          Surface(
+            onClick = {
+              viewModel.resetTaskProgress()
+              Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
+            },
+            color = palette.cardFill,
+            shape = CircleShape,
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f)),
+            modifier = Modifier.testTag("tasks_reset_progress_button")
+          ) {
+            Row(
+              modifier = Modifier.padding(
+                horizontal = metrics.scaledDp(11),
+                vertical = metrics.scaledDp(6)
+              ),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "Reset Progress",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(14.dp)
+              )
+              Text(
+                text = "Reset Progress",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = metrics.scaledSp(11),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo,
+                maxLines = 1,
+                softWrap = false
+              )
+            }
+          }
         }
 
         Surface(

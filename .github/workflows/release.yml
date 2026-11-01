@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Release Version (e.g. 1.0.4)'
+        description: 'Release Version (e.g. 1.0.5)'
         required: true
-        default: '1.0.4'
+        default: '1.0.5'
       release_notes:
         description: 'Release notes'
         required: false
-        default: 'Cloud sync updates, flashcard multi-key rotation, and UI improvements.'
+        default: 'Automatic account-based cloud sync, Interactive Triangle Anatomy layout fix, and settings cleanup.'
 
 permissions:
   contents: write
