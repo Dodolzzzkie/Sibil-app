@@ -81,6 +81,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -94,6 +95,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
@@ -130,6 +132,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -147,6 +150,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.Undo
@@ -170,6 +175,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
@@ -286,6 +292,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
@@ -367,11 +374,14 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.MonthDay
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 import java.util.zip.ZipInputStream
@@ -1467,7 +1477,17 @@ object GizmoBatchFlashcardEngine {
       put("cards", cardsArray)
     }
     val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
-    return Base64.encodeToString(jsonBytes, Base64.NO_WRAP)
+    val compressedBytes = try {
+      val baos = ByteArrayOutputStream()
+      GZIPOutputStream(baos).use { gzip ->
+        gzip.write(jsonBytes)
+      }
+      baos.toByteArray()
+    } catch (_: Exception) {
+      jsonBytes
+    }
+    val payloadBytes = if (compressedBytes.size < jsonBytes.size) compressedBytes else jsonBytes
+    return Base64.encodeToString(payloadBytes, Base64.NO_WRAP)
   }
 
   /**
@@ -1475,7 +1495,7 @@ object GizmoBatchFlashcardEngine {
    * with zero API calls and zero token consumption.
    */
   fun decodeDeckFromShareCode(rawCode: String): FlashcardDeck? {
-    val cleanedInput = rawCode.trim()
+    val cleanedInput = rawCode.trim().removePrefix("SIBIL_DECK:").trim()
     if (cleanedInput.isEmpty()) return null
 
     val jsonString = try {
@@ -1484,7 +1504,17 @@ object GizmoBatchFlashcardEngine {
       } else {
         val normalizedBase64 = cleanedInput.replace("\\s+".toRegex(), "")
         val decodedBytes = Base64.decode(normalizedBase64, Base64.DEFAULT)
-        String(decodedBytes, Charsets.UTF_8).trim()
+        if (
+          decodedBytes.size >= 2 &&
+          decodedBytes[0] == 0x1f.toByte() &&
+          decodedBytes[1] == 0x8b.toByte()
+        ) {
+          GZIPInputStream(ByteArrayInputStream(decodedBytes)).bufferedReader(Charsets.UTF_8).use {
+            it.readText().trim()
+          }
+        } else {
+          String(decodedBytes, Charsets.UTF_8).trim()
+        }
       }
     } catch (_: Exception) {
       return null
@@ -3720,9 +3750,11 @@ class TaskViewModel(
 
   // Default state of the Task list is completely empty (no hardcoded placeholder tasks)
   private val _tasks = mutableStateListOf<Task>()
+  val taskList = _tasks
   val tasks: List<Task> get() = _tasks
 
   private val _classSchedules = mutableStateListOf<ClassSchedule>()
+  val scheduleList = _classSchedules
   val classSchedules: List<ClassSchedule> get() = _classSchedules
 
   // Default state of the Alarm list is completely empty (no hardcoded mock alarms)
@@ -3731,6 +3763,7 @@ class TaskViewModel(
 
   // Default state of the Flashcard Decks list is completely empty (no hardcoded placeholder decks)
   private val _flashcardDecks = mutableStateListOf<FlashcardDeck>()
+  val deckList = _flashcardDecks
   val flashcardDecks: List<FlashcardDeck> get() = _flashcardDecks
 
   // Initial Firestore payload loading states
@@ -3751,6 +3784,8 @@ class TaskViewModel(
     get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings || isManualSyncing
 
   private var activeFirestoreAccountId: String? = null
+  private var lastObservedAuthUid: String? = null
+  private var authStateListener: FirebaseAuth.AuthStateListener? = null
 
   private var tasksSnapshotListener: ListenerRegistration? = null
   private var scheduleSnapshotListener: ListenerRegistration? = null
@@ -3762,46 +3797,56 @@ class TaskViewModel(
   private var hasSeededSettingsForAccount: String? = null
 
   /**
-   * Resolves the active user account identifier for Firestore (`users/{userAccountIdentifier}`).
-   * Ties cloud synchronization directly to the logged-in user account without manual pairing codes:
-   * 1. `FirebaseAuth.getInstance().currentUser?.email`
-   * 2. Active logged-in Sibil scholar email/username (e.g., `manzoalbertojr@gmail.com`)
-   * 3. `FirebaseAuth.getInstance().currentUser?.uid`
+   * Resolves the active user account identifier for Firestore (`users/{uid}`).
+   * Strictly uses `auth.currentUser?.uid ?: "offline_fallback"`.
    */
-  fun resolveUserAccountIdentifier(): String? {
-    if (isGuestMode) return null
-    val firebaseUser = try {
-      FirebaseAuth.getInstance().currentUser
+  fun resolveUserAccountIdentifier(): String {
+    val auth = try {
+      FirebaseAuth.getInstance()
     } catch (_: Throwable) {
       null
     }
-    val firebaseEmail = firebaseUser?.email?.trim()?.lowercase(Locale.US).orEmpty()
-    if (firebaseEmail.isNotBlank()) {
-      return firebaseEmail.replace("/", "_")
+    return auth?.currentUser?.uid ?: "offline_fallback"
+  }
+
+  /**
+   * Observes `auth.currentUser` and immediately clears local state (`taskList.clear()`,
+   * `scheduleList.clear()`, `deckList.clear()`) and attaches new `addSnapshotListener`s
+   * pointing to the newly authenticated UID when a user logs in on a device.
+   */
+  fun onAuthenticatedUserChanged(firebaseUser: FirebaseUser?) {
+    val newUid = firebaseUser?.uid ?: "offline_fallback"
+    if (newUid != "offline_fallback" && lastObservedAuthUid != newUid) {
+      lastObservedAuthUid = newUid
+      taskList.clear()
+      scheduleList.clear()
+      deckList.clear()
+      hasSeededTasksForAccount = null
+      hasSeededScheduleForAccount = null
+      hasSeededFlashcardsForAccount = null
+      hasSeededSettingsForAccount = null
+      stopFirestoreSync()
+      startFirestoreSync(forceReattach = true)
+    } else if (newUid == "offline_fallback" && lastObservedAuthUid != null && lastObservedAuthUid != "offline_fallback") {
+      lastObservedAuthUid = "offline_fallback"
+      stopFirestoreSync()
     }
-    val localAccount = username.trim().lowercase(Locale.US)
-    if (
-      localAccount.isNotBlank() &&
-      !localAccount.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
-      !localAccount.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
-      !localAccount.equals("offline scholar", ignoreCase = true)
-    ) {
-      return localAccount.replace("/", "_")
+  }
+
+  private fun registerAuthStateObserver() {
+    if (authStateListener != null) return
+    try {
+      val auth = FirebaseAuth.getInstance()
+      val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+        val currentUser = firebaseAuth.currentUser
+        if (currentUser != null) {
+          onAuthenticatedUserChanged(currentUser)
+        }
+      }
+      authStateListener = listener
+      auth.addAuthStateListener(listener)
+    } catch (_: Throwable) {
     }
-    val savedAccount = storageManager?.loadUserName()?.trim()?.lowercase(Locale.US).orEmpty()
-    if (
-      savedAccount.isNotBlank() &&
-      !savedAccount.equals(LocalStorageManager.GUEST_DISPLAY_NAME, ignoreCase = true) &&
-      !savedAccount.equals(LocalStorageManager.GUEST_ACCOUNT_KEY, ignoreCase = true) &&
-      !savedAccount.equals("offline scholar", ignoreCase = true)
-    ) {
-      return savedAccount.replace("/", "_")
-    }
-    val firebaseUid = firebaseUser?.uid?.trim().orEmpty()
-    if (firebaseUid.isNotBlank()) {
-      return firebaseUid.replace("/", "_")
-    }
-    return null
   }
 
   fun getConnectedAccountLabel(): String {
@@ -3857,43 +3902,38 @@ class TaskViewModel(
   }
 
   /**
-   * Starts real-time Firestore snapshot listeners targeting the logged-in user's account:
-   * - `db.collection("users").document(userAccountIdentifier).collection("tasks")`
-   * - `db.collection("users").document(userAccountIdentifier).collection("schedule")`
-   * - `db.collection("users").document(userAccountIdentifier).collection("flashcards")`
-   * - `db.collection("users").document(userAccountIdentifier).collection("settings")`
-   * If offline or Firebase is unprovisioned, falls back gracefully to local state.
+   * Starts real-time Firestore snapshot listeners strictly targeting:
+   * `FirebaseFirestore.getInstance().collection("users").document(auth.currentUser?.uid ?: "offline_fallback")`
+   * for `/tasks`, `/schedule`, `/flashcards`, and `/settings`.
    */
-  fun startFirestoreSync(explicitAccountId: String? = null) {
-    val accountId = explicitAccountId?.trim()?.lowercase(Locale.US)?.replace("/", "_")
-      ?.takeIf { it.isNotBlank() }
-      ?: resolveUserAccountIdentifier()
-    if (accountId.isNullOrBlank()) {
-      stopFirestoreSync()
-      return
-    }
-    if (
-      activeFirestoreAccountId == accountId &&
-      tasksSnapshotListener != null &&
-      scheduleSnapshotListener != null &&
-      flashcardsSnapshotListener != null &&
-      settingsSnapshotListener != null
-    ) {
-      return
-    }
-
-    stopFirestoreSync()
-    activeFirestoreAccountId = accountId
-    isSyncingTasks = true
-    isSyncingSchedule = true
-    isSyncingFlashcards = true
-    isSyncingSettings = true
-
+  fun startFirestoreSync(explicitAccountId: String? = null, forceReattach: Boolean = false) {
+    registerAuthStateObserver()
     try {
-      val db = FirebaseFirestore.getInstance()
-      val userDoc = db.collection("users").document(accountId)
+      val auth = FirebaseAuth.getInstance()
+      val targetUid = auth.currentUser?.uid ?: "offline_fallback"
+      if (
+        !forceReattach &&
+        activeFirestoreAccountId == targetUid &&
+        tasksSnapshotListener != null &&
+        scheduleSnapshotListener != null &&
+        flashcardsSnapshotListener != null &&
+        settingsSnapshotListener != null
+      ) {
+        return
+      }
 
-      // 1. Real-time Snapshot Listener for Tasks (/users/{userAccountIdentifier}/tasks)
+      stopFirestoreSync()
+      activeFirestoreAccountId = targetUid
+      isSyncingTasks = true
+      isSyncingSchedule = true
+      isSyncingFlashcards = true
+      isSyncingSettings = true
+
+      val userDoc = FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+
+      // 1. Real-time Snapshot Listener for Tasks (/users/{uid}/tasks)
       tasksSnapshotListener = userDoc.collection("tasks")
         .addSnapshotListener { snapshot, error ->
           isSyncingTasks = false
@@ -3906,9 +3946,9 @@ class TaskViewModel(
             doc.toTaskItemOrNull()
           }.sortedByDescending { it.id }
 
-          if (remoteTasks.isEmpty() && _tasks.isNotEmpty() && hasSeededTasksForAccount != accountId) {
-            hasSeededTasksForAccount = accountId
-            val localSnapshot = _tasks.toList()
+          if (remoteTasks.isEmpty() && taskList.isNotEmpty() && hasSeededTasksForAccount != targetUid) {
+            hasSeededTasksForAccount = targetUid
+            val localSnapshot = taskList.toList()
             localSnapshot.forEach { taskItem ->
               userDoc.collection("tasks")
                 .document(taskItem.id.toString())
@@ -3920,16 +3960,16 @@ class TaskViewModel(
             }
             markSyncedNow()
           } else {
-            hasSeededTasksForAccount = accountId
-            _tasks.clear()
-            _tasks.addAll(remoteTasks)
+            hasSeededTasksForAccount = targetUid
+            taskList.clear()
+            taskList.addAll(remoteTasks)
             nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
-            storageManager?.saveTasks(_tasks, currentAccountKey)
+            storageManager?.saveTasks(taskList, currentAccountKey)
             markSyncedNow()
           }
         }
 
-      // 2. Real-time Snapshot Listener for Schedule (/users/{userAccountIdentifier}/schedule)
+      // 2. Real-time Snapshot Listener for Schedule (/users/{uid}/schedule)
       scheduleSnapshotListener = userDoc.collection("schedule")
         .addSnapshotListener { snapshot, error ->
           isSyncingSchedule = false
@@ -3944,11 +3984,11 @@ class TaskViewModel(
 
           if (
             remoteSchedules.isEmpty() &&
-            _classSchedules.isNotEmpty() &&
-            hasSeededScheduleForAccount != accountId
+            scheduleList.isNotEmpty() &&
+            hasSeededScheduleForAccount != targetUid
           ) {
-            hasSeededScheduleForAccount = accountId
-            val localSnapshot = _classSchedules.toList()
+            hasSeededScheduleForAccount = targetUid
+            val localSnapshot = scheduleList.toList()
             localSnapshot.forEach { scheduleItem ->
               userDoc.collection("schedule")
                 .document(scheduleItem.id.toString())
@@ -3960,11 +4000,11 @@ class TaskViewModel(
             }
             markSyncedNow()
           } else {
-            hasSeededScheduleForAccount = accountId
-            _classSchedules.clear()
-            _classSchedules.addAll(remoteSchedules)
+            hasSeededScheduleForAccount = targetUid
+            scheduleList.clear()
+            scheduleList.addAll(remoteSchedules)
             nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
-            storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+            storageManager?.saveSchedules(scheduleList, currentAccountKey)
             val validFolders = getSubjectFolders()
             if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
               selectedTaskFolder = DEFAULT_TASK_CATEGORY
@@ -3973,7 +4013,7 @@ class TaskViewModel(
           }
         }
 
-      // 3. Real-time Snapshot Listener for Flashcards (/users/{userAccountIdentifier}/flashcards)
+      // 3. Real-time Snapshot Listener for Flashcards (/users/{uid}/flashcards)
       flashcardsSnapshotListener = userDoc.collection("flashcards")
         .addSnapshotListener { snapshot, error ->
           isSyncingFlashcards = false
@@ -3988,11 +4028,11 @@ class TaskViewModel(
 
           if (
             remoteDecks.isEmpty() &&
-            _flashcardDecks.isNotEmpty() &&
-            hasSeededFlashcardsForAccount != accountId
+            deckList.isNotEmpty() &&
+            hasSeededFlashcardsForAccount != targetUid
           ) {
-            hasSeededFlashcardsForAccount = accountId
-            val localSnapshot = _flashcardDecks.toList()
+            hasSeededFlashcardsForAccount = targetUid
+            val localSnapshot = deckList.toList()
             localSnapshot.forEach { deck ->
               userDoc.collection("flashcards")
                 .document(deck.id.toString())
@@ -4004,13 +4044,13 @@ class TaskViewModel(
             }
             markSyncedNow()
           } else {
-            hasSeededFlashcardsForAccount = accountId
-            _flashcardDecks.clear()
-            _flashcardDecks.addAll(remoteDecks)
+            hasSeededFlashcardsForAccount = targetUid
+            deckList.clear()
+            deckList.addAll(remoteDecks)
             nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
             val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
             nextCardId = maxOf(1000, maxCardId + 1)
-            storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+            storageManager?.saveFlashcardDecks(deckList, currentAccountKey)
             markSyncedNow()
           }
         }
@@ -4028,12 +4068,12 @@ class TaskViewModel(
             ?: snapshot.documents.firstOrNull()
 
           if (settingsDoc == null) {
-            if (hasSeededSettingsForAccount != accountId) {
-              hasSeededSettingsForAccount = accountId
+            if (hasSeededSettingsForAccount != targetUid) {
+              hasSeededSettingsForAccount = targetUid
               syncSettingsToFirestore()
             }
           } else {
-            hasSeededSettingsForAccount = accountId
+            hasSeededSettingsForAccount = targetUid
             val remoteDark = settingsDoc.getBoolean("isDarkMode")
               ?: settingsDoc.getBoolean("darkMode")
             if (remoteDark != null && remoteDark != isDarkMode) {
@@ -4061,26 +4101,24 @@ class TaskViewModel(
   }
 
   fun startFirestoreSyncForUser(userId: String) {
-    startFirestoreSync(resolveUserAccountIdentifier() ?: userId)
+    startFirestoreSync(userId, forceReattach = true)
   }
 
   /**
-   * Forces an immediate cloud refresh ("Sync Now") against `users/{userAccountIdentifier}`
-   * for `/tasks`, `/schedule`, `/flashcards`, and `/settings`.
+   * Forces an immediate cloud refresh ("Sync Now"):
+   * Re-attaches all snapshot listeners and fetches the latest snapshot from
+   * `FirebaseFirestore.getInstance().collection("users").document(auth.currentUser?.uid ?: "offline_fallback")`.
    */
   fun syncNow(onComplete: ((Boolean) -> Unit)? = null) {
-    val accountId = resolveUserAccountIdentifier()
-    if (accountId.isNullOrBlank()) {
-      isManualSyncing = false
-      onComplete?.invoke(false)
-      return
-    }
     isManualSyncing = true
-    startFirestoreSync(accountId)
+    stopFirestoreSync()
+    startFirestoreSync(forceReattach = true)
 
     try {
-      val db = FirebaseFirestore.getInstance()
-      val userDoc = db.collection("users").document(accountId)
+      val auth = FirebaseAuth.getInstance()
+      val userDoc = FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
       var completedCollections = 0
       val totalCollections = 3
 
@@ -4098,17 +4136,17 @@ class TaskViewModel(
         .addOnSuccessListener { snapshot ->
           val remoteTasks = snapshot.documents.mapNotNull { it.toTaskItemOrNull() }
             .sortedByDescending { it.id }
-          if (remoteTasks.isEmpty() && _tasks.isNotEmpty()) {
-            _tasks.toList().forEach { taskItem ->
+          if (remoteTasks.isEmpty() && taskList.isNotEmpty()) {
+            taskList.toList().forEach { taskItem ->
               userDoc.collection("tasks")
                 .document(taskItem.id.toString())
                 .set(taskItem.toFirestoreMap())
             }
-          } else if (remoteTasks.isNotEmpty()) {
-            _tasks.clear()
-            _tasks.addAll(remoteTasks)
+          } else {
+            taskList.clear()
+            taskList.addAll(remoteTasks)
             nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
-            storageManager?.saveTasks(_tasks, currentAccountKey)
+            storageManager?.saveTasks(taskList, currentAccountKey)
           }
           onCollectionFinished()
         }
@@ -4121,17 +4159,17 @@ class TaskViewModel(
         .addOnSuccessListener { snapshot ->
           val remoteSchedules = snapshot.documents.mapNotNull { it.toScheduleItemOrNull() }
             .sortedBy { parseTimeToFloat(it.startTime) }
-          if (remoteSchedules.isEmpty() && _classSchedules.isNotEmpty()) {
-            _classSchedules.toList().forEach { scheduleItem ->
+          if (remoteSchedules.isEmpty() && scheduleList.isNotEmpty()) {
+            scheduleList.toList().forEach { scheduleItem ->
               userDoc.collection("schedule")
                 .document(scheduleItem.id.toString())
                 .set(scheduleItem.toFirestoreMap())
             }
-          } else if (remoteSchedules.isNotEmpty()) {
-            _classSchedules.clear()
-            _classSchedules.addAll(remoteSchedules)
+          } else {
+            scheduleList.clear()
+            scheduleList.addAll(remoteSchedules)
             nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
-            storageManager?.saveSchedules(_classSchedules, currentAccountKey)
+            storageManager?.saveSchedules(scheduleList, currentAccountKey)
           }
           onCollectionFinished()
         }
@@ -4144,19 +4182,19 @@ class TaskViewModel(
         .addOnSuccessListener { snapshot ->
           val remoteDecks = snapshot.documents.mapNotNull { it.toFlashcardDeckOrNull() }
             .sortedByDescending { it.id }
-          if (remoteDecks.isEmpty() && _flashcardDecks.isNotEmpty()) {
-            _flashcardDecks.toList().forEach { deck ->
+          if (remoteDecks.isEmpty() && deckList.isNotEmpty()) {
+            deckList.toList().forEach { deck ->
               userDoc.collection("flashcards")
                 .document(deck.id.toString())
                 .set(deck.toFirestoreMap())
             }
-          } else if (remoteDecks.isNotEmpty()) {
-            _flashcardDecks.clear()
-            _flashcardDecks.addAll(remoteDecks)
+          } else {
+            deckList.clear()
+            deckList.addAll(remoteDecks)
             nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
             val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
             nextCardId = maxOf(1000, maxCardId + 1)
-            storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+            storageManager?.saveFlashcardDecks(deckList, currentAccountKey)
           }
           onCollectionFinished()
         }
@@ -4201,9 +4239,8 @@ class TaskViewModel(
   }
 
   private fun syncSettingsToFirestore() {
-    val accountId = resolveUserAccountIdentifier() ?: return
     try {
-      val db = FirebaseFirestore.getInstance()
+      val auth = FirebaseAuth.getInstance()
       val settingsPayload = hashMapOf(
         "isDarkMode" to isDarkMode,
         "darkMode" to isDarkMode,
@@ -4212,8 +4249,9 @@ class TaskViewModel(
         "username" to username,
         "updatedAt" to System.currentTimeMillis()
       )
-      db.collection("users")
-        .document(accountId)
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
         .collection("settings")
         .document("preferences")
         .set(settingsPayload, SetOptions.merge())
@@ -4228,6 +4266,11 @@ class TaskViewModel(
 
   override fun onCleared() {
     stopFirestoreSync()
+    try {
+      authStateListener?.let { FirebaseAuth.getInstance().removeAuthStateListener(it) }
+    } catch (_: Throwable) {
+    }
+    authStateListener = null
     super.onCleared()
   }
 
@@ -4247,6 +4290,7 @@ class TaskViewModel(
   }
 
   init {
+    registerAuthStateObserver()
     storageManager?.let { loadFromStorage(it) }
   }
 
@@ -4277,7 +4321,7 @@ class TaskViewModel(
     }
 
     val savedUserName = manager.loadUserName()
-    if (firebaseUser != null && firebaseUser.isEmailVerified) {
+    if (firebaseUser != null) {
       val resolvedUser = extractUsernameFromFirebaseUser(
         user = firebaseUser,
         fallbackEmail = savedUserName.orEmpty()
@@ -4291,7 +4335,7 @@ class TaskViewModel(
       hasSavedSession = true
       manager.saveUserProfile(resolvedUser, resolvedDisplay)
       loadAccountDataForKey(manager, currentAccountKey)
-      startFirestoreSync()
+      onAuthenticatedUserChanged(firebaseUser)
     } else if (!savedUserName.isNullOrBlank() && manager.isAuthLoggedIn()) {
       val resolvedDisplay = manager.loadDisplayName().ifBlank {
         savedUserName.substringBefore("@").ifBlank { savedUserName }
@@ -4332,7 +4376,7 @@ class TaskViewModel(
     }.ifBlank { resolvedUser.substringBefore("@").ifBlank { resolvedUser } }
     isGuestMode = false
     loginWithUsername(resolvedUser, resolvedDisplay)
-    startFirestoreSync()
+    onAuthenticatedUserChanged(firebaseUser)
   }
 
   private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
@@ -4443,21 +4487,20 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("schedule")
-            .document(newSchedule.id.toString())
-            .set(newSchedule.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to write schedule: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in addClassSchedule: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("schedule")
+          .document(newSchedule.id.toString())
+          .set(newSchedule.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to write schedule: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in addClassSchedule: ${e.message}", e)
       }
     }
   }
@@ -4494,21 +4537,20 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("schedule")
-            .document(updatedSchedule.id.toString())
-            .set(updatedSchedule.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to update schedule: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in updateClassSchedule: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("schedule")
+          .document(updatedSchedule.id.toString())
+          .set(updatedSchedule.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to update schedule: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in updateClassSchedule: ${e.message}", e)
       }
     }
   }
@@ -4516,21 +4558,20 @@ class TaskViewModel(
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
     storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(accountId)
-          .collection("schedule")
-          .document(scheduleId.toString())
-          .delete()
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to delete schedule: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in deleteClassSchedule: ${e.message}", e)
-      }
+    try {
+      val auth = FirebaseAuth.getInstance()
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("schedule")
+        .document(scheduleId.toString())
+        .delete()
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to delete schedule: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in deleteClassSchedule: ${e.message}", e)
     }
   }
 
@@ -4756,11 +4797,27 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
       manager.saveUserProfile(username, displayName)
     }
-    resolveUserAccountIdentifier()?.let { accountId ->
-      startFirestoreSync(accountId)
-      if (explicitDisplayName.isNotBlank()) {
-        syncSettingsToFirestore()
-      }
+    val currentUser = try {
+      FirebaseAuth.getInstance().currentUser
+    } catch (_: Throwable) {
+      null
+    }
+    if (currentUser != null) {
+      taskList.clear()
+      scheduleList.clear()
+      deckList.clear()
+      hasSeededTasksForAccount = null
+      hasSeededScheduleForAccount = null
+      hasSeededFlashcardsForAccount = null
+      hasSeededSettingsForAccount = null
+      lastObservedAuthUid = currentUser.uid
+      stopFirestoreSync()
+      startFirestoreSync(forceReattach = true)
+    } else {
+      startFirestoreSync(forceReattach = true)
+    }
+    if (explicitDisplayName.isNotBlank()) {
+      syncSettingsToFirestore()
     }
   }
 
@@ -4773,7 +4830,7 @@ class TaskViewModel(
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
       manager.saveUserProfile(LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
-    startFirestoreSync()
+    startFirestoreSync(forceReattach = true)
   }
 
   /**
@@ -4783,6 +4840,7 @@ class TaskViewModel(
    */
   fun logout() {
     stopFirestoreSync()
+    lastObservedAuthUid = null
     try {
       FirebaseAuth.getInstance().signOut()
     } catch (_: Throwable) {
@@ -4912,21 +4970,20 @@ class TaskViewModel(
     )
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(accountId)
-          .collection("flashcards")
-          .document(newDeck.id.toString())
-          .set(newDeck.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to write deck: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in addFlashcardDeck: ${e.message}", e)
-      }
+    try {
+      val auth = FirebaseAuth.getInstance()
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("flashcards")
+        .document(newDeck.id.toString())
+        .set(newDeck.toFirestoreMap())
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to write deck: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in addFlashcardDeck: ${e.message}", e)
     }
     return newDeck
   }
@@ -4958,21 +5015,20 @@ class TaskViewModel(
       )
       _flashcardDecks[index] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("flashcards")
-            .document(updatedDeck.id.toString())
-            .set(updatedDeck.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to update deck cards: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in addCardToDeck: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("flashcards")
+          .document(updatedDeck.id.toString())
+          .set(updatedDeck.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to update deck cards: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in addCardToDeck: ${e.message}", e)
       }
     }
   }
@@ -5053,21 +5109,20 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("flashcards")
-            .document(updatedDeck.id.toString())
-            .set(updatedDeck.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to update flashcard mastery: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in updateFlashcardMastery: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("flashcards")
+          .document(updatedDeck.id.toString())
+          .set(updatedDeck.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to update flashcard mastery: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in updateFlashcardMastery: ${e.message}", e)
       }
     }
   }
@@ -5087,21 +5142,20 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("flashcards")
-            .document(updatedDeck.id.toString())
-            .set(updatedDeck.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to reset deck mastery: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in resetDeckMastery: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("flashcards")
+          .document(updatedDeck.id.toString())
+          .set(updatedDeck.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to reset deck mastery: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in resetDeckMastery: ${e.message}", e)
       }
     }
   }
@@ -5109,21 +5163,20 @@ class TaskViewModel(
   fun deleteFlashcardDeck(deckId: Int) {
     _flashcardDecks.removeAll { it.id == deckId }
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(accountId)
-          .collection("flashcards")
-          .document(deckId.toString())
-          .delete()
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to delete deck: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in deleteFlashcardDeck: ${e.message}", e)
-      }
+    try {
+      val auth = FirebaseAuth.getInstance()
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("flashcards")
+        .document(deckId.toString())
+        .delete()
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to delete deck: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in deleteFlashcardDeck: ${e.message}", e)
     }
   }
 
@@ -5145,21 +5198,20 @@ class TaskViewModel(
       )
       _tasks.add(0, newTask)
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("tasks")
-            .document(newTask.id.toString())
-            .set(newTask.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to write task: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in addTask: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("tasks")
+          .document(newTask.id.toString())
+          .set(newTask.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to write task: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in addTask: ${e.message}", e)
       }
     }
   }
@@ -5171,21 +5223,20 @@ class TaskViewModel(
       val updatedTask = current.copy(isCompleted = !current.isCompleted)
       _tasks[index] = updatedTask
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      resolveUserAccountIdentifier()?.let { accountId ->
-        try {
-          val db = FirebaseFirestore.getInstance()
-          db.collection("users")
-            .document(accountId)
-            .collection("tasks")
-            .document(updatedTask.id.toString())
-            .set(updatedTask.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to toggle task: ${e.message}", e)
-            }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Error in toggleTaskCompletion: ${e.message}", e)
-        }
+      try {
+        val auth = FirebaseAuth.getInstance()
+        FirebaseFirestore.getInstance()
+          .collection("users")
+          .document(auth.currentUser?.uid ?: "offline_fallback")
+          .collection("tasks")
+          .document(updatedTask.id.toString())
+          .set(updatedTask.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to toggle task: ${e.message}", e)
+          }
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "Error in toggleTaskCompletion: ${e.message}", e)
       }
     }
   }
@@ -5194,21 +5245,20 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        db.collection("users")
-          .document(accountId)
-          .collection("tasks")
-          .document(taskId.toString())
-          .delete()
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to delete task: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in deleteTask: ${e.message}", e)
-      }
+    try {
+      val auth = FirebaseAuth.getInstance()
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("tasks")
+        .document(taskId.toString())
+        .delete()
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to delete task: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in deleteTask: ${e.message}", e)
     }
   }
 
@@ -5230,21 +5280,22 @@ class TaskViewModel(
     _tasks.clear()
     _tasks.addAll(resetTasks)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        val tasksCol = db.collection("users").document(accountId).collection("tasks")
-        resetTasks.forEach { updatedTask ->
-          tasksCol.document(updatedTask.id.toString())
-            .set(updatedTask.toFirestoreMap())
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to reset task progress: ${e.message}", e)
-            }
-        }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in resetTaskProgress: ${e.message}", e)
+    try {
+      val auth = FirebaseAuth.getInstance()
+      val tasksCol = FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("tasks")
+      resetTasks.forEach { updatedTask ->
+        tasksCol.document(updatedTask.id.toString())
+          .set(updatedTask.toFirestoreMap())
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to reset task progress: ${e.message}", e)
+          }
       }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in resetTaskProgress: ${e.message}", e)
     }
   }
 
@@ -5257,21 +5308,22 @@ class TaskViewModel(
     if (completedIds.isEmpty()) return
     _tasks.removeAll { it.isCompleted }
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    resolveUserAccountIdentifier()?.let { accountId ->
-      try {
-        val db = FirebaseFirestore.getInstance()
-        val tasksCol = db.collection("users").document(accountId).collection("tasks")
-        completedIds.forEach { id ->
-          tasksCol.document(id.toString())
-            .delete()
-            .addOnSuccessListener { markSyncedNow() }
-            .addOnFailureListener { e ->
-              Log.e("SibilSync", "Failed to clear completed task: ${e.message}", e)
-            }
-        }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in clearCompletedTasks: ${e.message}", e)
+    try {
+      val auth = FirebaseAuth.getInstance()
+      val tasksCol = FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("tasks")
+      completedIds.forEach { id ->
+        tasksCol.document(id.toString())
+          .delete()
+          .addOnSuccessListener { markSyncedNow() }
+          .addOnFailureListener { e ->
+            Log.e("SibilSync", "Failed to clear completed task: ${e.message}", e)
+          }
       }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in clearCompletedTasks: ${e.message}", e)
     }
   }
 
@@ -5660,13 +5712,13 @@ fun CivilEngineeringProductivityApp(
     ) {
       // Cross-Device Persistence & Auto-Login:
       // 1. On app launch, check val user = FirebaseAuth.getInstance().currentUser.
-      // 2. If user != null (and user.isEmailVerified == true) OR isGuestMode == true: navigate straight to the Dashboard (bypassing Auth screen).
-      // 3. If user == null (or unverified) AND !isGuestMode: show the Liquid Glass Auth Screen.
+      // 2. If user != null OR isGuestMode == true: navigate straight to the Dashboard (bypassing Auth screen).
+      // 3. If user == null AND !isGuestMode: show the Liquid Glass Auth Screen.
       val initialFirebaseUser = remember {
         try {
-          FirebaseAuth.getInstance().currentUser?.takeIf { it.isEmailVerified }
+          FirebaseAuth.getInstance().currentUser
         } catch (_: Throwable) {
-          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { it.isEmailVerified }
+          getFirebaseAuthOrNull(context)?.currentUser
         }
       }
       var isGuestMode by rememberSaveable {
@@ -5677,37 +5729,15 @@ fun CivilEngineeringProductivityApp(
       }
 
       LaunchedEffect(Unit) {
-        // Auto-authenticate anonymously if currentUser == null to support instant cross-device syncing
-        try {
-          val auth = FirebaseAuth.getInstance()
-          if (auth.currentUser == null) {
-            auth.signInAnonymously()
-              .addOnSuccessListener {
-                Log.d("SibilSync", "Auto anonymous auth success: ${it.user?.uid}")
-              }
-              .addOnFailureListener { e ->
-                Log.w("SibilSync", "Auto anonymous auth skipped: ${e.message}")
-              }
-          }
-        } catch (e: Throwable) {
-          Log.e("SibilSync", "Safe auto auth: ${e.message}", e)
-        }
-
         val user = try {
           FirebaseAuth.getInstance().currentUser
         } catch (_: Throwable) {
           getFirebaseAuthOrNull(context)?.currentUser
         }
-        if (user != null && user.isEmailVerified) {
+        if (user != null) {
           isGuestMode = false
           resolvedViewModel.restoreSessionFromFirebaseUser(user)
           isLoggedIn = true
-        } else if (user != null && !user.isEmailVerified) {
-          try {
-            FirebaseAuth.getInstance().signOut()
-          } catch (_: Throwable) {
-          }
-          isLoggedIn = false
         } else if (resolvedViewModel.isGuestMode || isGuestMode) {
           isGuestMode = true
           isLoggedIn = true
@@ -5717,10 +5747,25 @@ fun CivilEngineeringProductivityApp(
         resolvedViewModel.startFirestoreSync()
       }
 
-      // Connect real-time Firestore snapshot listeners for the workspace
-      DisposableEffect(Unit) {
+      // Observe auth.currentUser and connect real-time Firestore snapshot listeners for the workspace
+      DisposableEffect(resolvedViewModel) {
+        val auth = try {
+          FirebaseAuth.getInstance()
+        } catch (_: Throwable) {
+          getFirebaseAuthOrNull(context)
+        }
+        val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+          val currentUser = firebaseAuth.currentUser
+          if (currentUser != null) {
+            isGuestMode = false
+            isLoggedIn = true
+            resolvedViewModel.onAuthenticatedUserChanged(currentUser)
+          }
+        }
+        auth?.addAuthStateListener(authListener)
         resolvedViewModel.startFirestoreSync()
         onDispose {
+          auth?.removeAuthStateListener(authListener)
           resolvedViewModel.stopFirestoreSync()
         }
       }
@@ -5843,7 +5888,6 @@ fun StartupLoginScreen(
   var isLoading by remember { mutableStateOf(false) }
   var loginErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
   var loginSuccessMessage by rememberSaveable { mutableStateOf<String?>(null) }
-  var showResendVerification by rememberSaveable { mutableStateOf(false) }
 
   // Focus states for elevated glass input capsules
   var isFullNameFocused by remember { mutableStateOf(false) }
@@ -5862,45 +5906,6 @@ fun StartupLoginScreen(
     label = "loginPrimaryPressScale"
   )
 
-  fun handleResendVerificationEmail() {
-    val trimmedEmail = email.trim()
-    if (trimmedEmail.isBlank() || password.isEmpty()) {
-      Toast.makeText(
-        context,
-        "Please enter your email and password to resend verification.",
-        Toast.LENGTH_SHORT
-      ).show()
-      return
-    }
-    try {
-      if (FirebaseApp.getApps(context).isEmpty()) {
-        FirebaseApp.initializeApp(context)
-      }
-      ensureFirebaseInitialized(context)
-      FirebaseAuth.getInstance()
-        .signInWithEmailAndPassword(trimmedEmail, password)
-        .addOnSuccessListener { it ->
-          val user = it.user
-          user?.sendEmailVerification()
-          FirebaseAuth.getInstance().signOut()
-          Toast.makeText(context, "Verification email sent!", Toast.LENGTH_SHORT).show()
-        }
-        .addOnFailureListener { e ->
-          Toast.makeText(
-            context,
-            mapFirebaseAuthExceptionToMessage(e, isSignUp = false),
-            Toast.LENGTH_SHORT
-          ).show()
-        }
-    } catch (e: Throwable) {
-      Toast.makeText(
-        context,
-        mapFirebaseAuthExceptionToMessage(e, isSignUp = false),
-        Toast.LENGTH_SHORT
-      ).show()
-    }
-  }
-
   fun handlePrimaryAuthAction() {
     if (isLoading) return
     val trimmedEmail = email.trim()
@@ -5908,7 +5913,6 @@ fun StartupLoginScreen(
     if (!isSignUpMode) {
       if (trimmedEmail.isBlank() || password.isEmpty()) {
         loginSuccessMessage = null
-        showResendVerification = false
         loginErrorMessage = "Invalid email or password. Please check your credentials."
         return
       }
@@ -5916,7 +5920,6 @@ fun StartupLoginScreen(
       isLoading = true
       loginErrorMessage = null
       loginSuccessMessage = null
-      showResendVerification = false
       try {
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
@@ -5926,33 +5929,21 @@ fun StartupLoginScreen(
           .signInWithEmailAndPassword(trimmedEmail, password)
           .addOnSuccessListener { it ->
             isLoading = false
-            val isVerified = it.user?.isEmailVerified == true
-            if (isVerified) {
-              val firebaseUser = it.user ?: FirebaseAuth.getInstance().currentUser
-              val resolvedEmail = firebaseUser?.email?.trim().orEmpty().ifBlank { trimmedEmail }
-              val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
-                .ifBlank { fullName.trim() }
-                .ifBlank { resolvedEmail.substringBefore("@").ifBlank { resolvedEmail } }
-              loginErrorMessage = null
-              loginSuccessMessage = null
-              showResendVerification = false
-              onFirebaseLoginSuccess(resolvedEmail, resolvedDisplayName, password)
-            } else {
-              FirebaseAuth.getInstance().signOut()
-              loginSuccessMessage = null
-              showResendVerification = true
-              loginErrorMessage =
-                "Please verify your email address before logging in. Check your inbox or spam folder."
-            }
+            val firebaseUser = it.user ?: FirebaseAuth.getInstance().currentUser
+            val resolvedEmail = firebaseUser?.email?.trim().orEmpty().ifBlank { trimmedEmail }
+            val resolvedDisplayName = firebaseUser?.displayName?.trim().orEmpty()
+              .ifBlank { fullName.trim() }
+              .ifBlank { resolvedEmail.substringBefore("@").ifBlank { resolvedEmail } }
+            loginErrorMessage = null
+            loginSuccessMessage = null
+            onFirebaseLoginSuccess(resolvedEmail, resolvedDisplayName, password)
           }
           .addOnFailureListener { e ->
             isLoading = false
-            showResendVerification = false
             loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
           }
       } catch (e: Throwable) {
         isLoading = false
-        showResendVerification = false
         loginErrorMessage = mapFirebaseAuthExceptionToMessage(e, isSignUp = false)
       }
     } else {
@@ -5976,7 +5967,6 @@ fun StartupLoginScreen(
       isLoading = true
       loginErrorMessage = null
       loginSuccessMessage = null
-      showResendVerification = false
       try {
         if (FirebaseApp.getApps(context).isEmpty()) {
           FirebaseApp.initializeApp(context)
@@ -5989,14 +5979,12 @@ fun StartupLoginScreen(
               .setDisplayName(trimmedFullName)
               .build()
             it.user?.updateProfile(profileUpdate)
-            it.user?.sendEmailVerification()
-            FirebaseAuth.getInstance().signOut()
+            val resolvedEmail = it.user?.email?.trim().orEmpty().ifBlank { trimmedEmail }
             isLoading = false
             loginErrorMessage = null
-            showResendVerification = false
-            loginSuccessMessage =
-              "Account created! Please check your email to verify your account before logging in."
-            isSignUpMode = false
+            loginSuccessMessage = null
+            Toast.makeText(context, "Account created successfully!", Toast.LENGTH_SHORT).show()
+            onCompleteSignUp(resolvedEmail, password, trimmedFullName, "")
           }
           .addOnFailureListener { e ->
             isLoading = false
@@ -6323,7 +6311,6 @@ fun StartupLoginScreen(
                     isSignUpMode = true
                     loginErrorMessage = null
                     loginSuccessMessage = null
-                    showResendVerification = false
                   }
                   .testTag("sign_up_button"),
                 contentAlignment = Alignment.Center
@@ -6555,29 +6542,6 @@ fun StartupLoginScreen(
             }
           }
 
-          // Resend Verification Button (shown when login fails the isEmailVerified check)
-          if (showResendVerification && !isSignUpMode) {
-            TextButton(
-              onClick = { handleResendVerificationEmail() },
-              enabled = !isLoading,
-              shape = CircleShape,
-              modifier = Modifier
-                .fillMaxWidth()
-                .height(metrics.scaledDp(42))
-                .testTag("resend_verification_button")
-            ) {
-              Text(
-                text = "Didn't get the email? Resend.",
-                style = MaterialTheme.typography.labelLarge.copy(
-                  fontSize = 13.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.accentIndigo,
-                textAlign = TextAlign.Center
-              )
-            }
-          }
-
           // Offline Scholar / Guest Bypass:
           // Text button at bottom: "Continue as Offline Scholar →"
           // Allows offline students to access study tools immediately without signing up.
@@ -6586,7 +6550,6 @@ fun StartupLoginScreen(
               if (!isLoading) {
                 loginErrorMessage = null
                 loginSuccessMessage = null
-                showResendVerification = false
                 onContinueAsGuest()
               }
             },
@@ -8353,6 +8316,7 @@ fun DashboardScreen(
   }
 
   var showWhatsNewDialog by rememberSaveable { mutableStateOf(false) }
+  var showCalendarDialog by rememberSaveable { mutableStateOf(false) }
 
   // First-Launch "What's New" Version Handshake Logic on App Launch
   LaunchedEffect(localVersion) {
@@ -8444,8 +8408,10 @@ fun DashboardScreen(
         .align(Alignment.TopCenter)
         .testTag("academic_dashboard_list"),
       contentPadding = PaddingValues(
-        horizontal = metrics.scaledDp(16),
-        vertical = 12.dp
+        start = metrics.scaledDp(16),
+        end = metrics.scaledDp(16),
+        top = 12.dp,
+        bottom = 88.dp
       ),
       verticalArrangement = Arrangement.spacedBy(12.dp),
       horizontalAlignment = Alignment.CenterHorizontally
@@ -8729,6 +8695,62 @@ fun DashboardScreen(
       }
     }
 
+    // Floating Circular Glassmorphic Calendar Button (Lower-Right above Schedule tab)
+    Surface(
+      onClick = { showCalendarDialog = true },
+      shape = CircleShape,
+      color = if (palette.isDark) {
+        Color(0xFF0F172A).copy(alpha = 0.84f)
+      } else {
+        Color.White.copy(alpha = 0.86f)
+      },
+      border = BorderStroke(
+        width = 1.2.dp,
+        brush = Brush.linearGradient(
+          colors = listOf(
+            Color.Cyan.copy(alpha = 0.72f),
+            palette.accentIndigo.copy(alpha = 0.65f)
+          )
+        )
+      ),
+      shadowElevation = 12.dp,
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(end = metrics.scaledDp(20), bottom = metrics.scaledDp(16))
+        .size(56.dp)
+        .minimumInteractiveComponentSize()
+        .testTag("dashboard_floating_calendar_button")
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(
+            brush = Brush.radialGradient(
+              colors = listOf(
+                Color.Cyan.copy(alpha = 0.22f),
+                palette.accentIndigo.copy(alpha = 0.14f),
+                Color.Transparent
+              )
+            ),
+            shape = CircleShape
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(
+          imageVector = Icons.Default.DateRange,
+          contentDescription = "Open Offline Calendar",
+          tint = if (palette.isDark) Color.Cyan else palette.accentIndigo,
+          modifier = Modifier.size(26.dp)
+        )
+      }
+    }
+
+    if (showCalendarDialog) {
+      HolographicCalendarDialog(
+        onDismiss = { showCalendarDialog = false }
+      )
+    }
+
     if (showWhatsNewDialog) {
       WhatsNewDialog(
         currentVersion = currentVersion,
@@ -8767,6 +8789,212 @@ fun DashboardScreen(
           showUpdateDialog = false
         }
       )
+    }
+  }
+}
+
+/**
+ * Premium Offline Holographic Calendar Dialog anchored to the Dashboard Floating Calendar Button.
+ * Uses built-in `java.time.YearMonth.now()` and `java.time.LocalDate.now()` with 7-column alignment.
+ */
+@Composable
+private fun HolographicCalendarDialog(
+  onDismiss: () -> Unit
+) {
+  var currentYearMonth by remember { mutableStateOf(java.time.YearMonth.now()) }
+  val monthYearTitle = remember(currentYearMonth) {
+    val monthName = currentYearMonth.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH)
+    "$monthName ${currentYearMonth.year}"
+  }
+
+  // DayOfWeek.value is 1 (Mon) .. 6 (Sat), 7 (Sun).
+  // Modulo 7 maps Sunday -> 0, Monday -> 1, ..., Saturday -> 6 so the 1st aligns under S, M, T, W, T, F, S.
+  val leadingEmptyCells = remember(currentYearMonth) {
+    currentYearMonth.atDay(1).dayOfWeek.value % 7
+  }
+  val totalDaysInMonth = remember(currentYearMonth) {
+    currentYearMonth.lengthOfMonth()
+  }
+  val calendarCells = remember(leadingEmptyCells, totalDaysInMonth) {
+    List<Int?>(leadingEmptyCells) { null } + (1..totalDaysInMonth).map { it }
+  }
+  val weekDayHeaders = remember { listOf("S", "M", "T", "W", "T", "F", "S") }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Surface(
+      shape = RoundedCornerShape(24.dp),
+      color = Color(0xFF0B132B).copy(alpha = 0.88f),
+      border = BorderStroke(0.5.dp, Color.Cyan.copy(alpha = 0.5f)),
+      shadowElevation = 20.dp,
+      modifier = Modifier
+        .fillMaxWidth(0.85f)
+        .wrapContentHeight()
+        .testTag("holographic_calendar_dialog")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .wrapContentHeight()
+          .background(
+            brush = Brush.verticalGradient(
+              colors = listOf(
+                Color.White.copy(alpha = 0.1f),
+                Color.Cyan.copy(alpha = 0.06f),
+                Color(0xFF0B132B).copy(alpha = 0.45f)
+              )
+            ),
+            shape = RoundedCornerShape(24.dp)
+          )
+          .padding(horizontal = 20.dp, vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        // Top Header: Interactive Month & Year Navigation Row
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          IconButton(
+            onClick = { currentYearMonth = currentYearMonth.minusMonths(1) },
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("calendar_dialog_prev_month_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+              contentDescription = "Previous Month",
+              tint = Color.Cyan,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+
+          Text(
+            text = monthYearTitle,
+            style = MaterialTheme.typography.titleLarge.copy(
+              fontSize = 20.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 0.4.sp
+            ),
+            color = Color.White,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+              .weight(1f)
+              .testTag("calendar_dialog_month_year_header")
+          )
+
+          IconButton(
+            onClick = { currentYearMonth = currentYearMonth.plusMonths(1) },
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("calendar_dialog_next_month_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+              contentDescription = "Next Month",
+              tint = Color.Cyan,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+        }
+
+        // Subtle Cyan Holographic Hairline Divider
+        HorizontalDivider(
+          thickness = 0.5.dp,
+          color = Color.Cyan.copy(alpha = 0.35f)
+        )
+
+        // 7-Column Calendar Grid (S, M, T, W, T, F, S headers + aligned day cells)
+        LazyVerticalGrid(
+          columns = GridCells.Fixed(7),
+          userScrollEnabled = false,
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 340.dp)
+            .wrapContentHeight()
+            .testTag("calendar_dialog_lazy_grid")
+        ) {
+          // Weekday Header Cells: S, M, T, W, T, F, S
+          items(weekDayHeaders.size) { index ->
+            val dayLabel = weekDayHeaders[index]
+            Box(
+              modifier = Modifier
+                .size(36.dp)
+                .padding(bottom = 2.dp),
+              contentAlignment = Alignment.Center
+            ) {
+              Text(
+                text = dayLabel,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color.Cyan,
+                textAlign = TextAlign.Center
+              )
+            }
+          }
+
+          // Padding Cells + Month Day Cells
+          items(calendarCells.size) { cellIndex ->
+            val dayNumber = calendarCells[cellIndex]
+            if (dayNumber == null) {
+              Box(modifier = Modifier.size(36.dp))
+            } else {
+              val isToday =
+                dayNumber == LocalDate.now().dayOfMonth &&
+                  currentYearMonth == java.time.YearMonth.now()
+
+              Box(
+                modifier = Modifier
+                  .size(36.dp)
+                  .then(
+                    if (isToday) {
+                      Modifier
+                        .shadow(
+                          elevation = 8.dp,
+                          shape = CircleShape,
+                          ambientColor = Color.Cyan,
+                          spotColor = Color.Cyan
+                        )
+                        .clip(CircleShape)
+                        .background(Color.Cyan, shape = CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+                        .clickable(onClick = { /* Future: Add schedule action here */ })
+                        .testTag("calendar_dialog_today_cell")
+                    } else {
+                      Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = { /* Future: Add schedule action here */ })
+                        .testTag("calendar_dialog_day_cell_$dayNumber")
+                    }
+                  ),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = dayNumber.toString(),
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    fontWeight = if (isToday) FontWeight.ExtraBold else FontWeight.SemiBold
+                  ),
+                  color = if (isToday) Color(0xFF041322) else Color.White,
+                  textAlign = TextAlign.Center,
+                  maxLines = 1,
+                  softWrap = false
+                )
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -11524,7 +11752,7 @@ private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listO
     title = "Quadratic Equation & Discriminant",
     categoryTab = "Mathematics",
     mathSubTab = "Algebra",
-    equationBanner = "x = [-b ± √(b² - 4ac)] / (2a)\nΔ = b² - 4ac",
+    equationBanner = "x = [-b ± √(b² - 4ac)] / 2a\nΔ = b² - 4ac",
     summaryTag = "Roots of ax² + bx + c = 0 & Nature of Roots",
     variableNotes = listOf(
       FormulaVariableNote("a, b, c", "Real quadratic, linear, and constant coefficients (a ≠ 0)", "dimensionless"),
@@ -11540,13 +11768,13 @@ private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listO
     title = "Logarithmic Laws & Change of Base",
     categoryTab = "Mathematics",
     mathSubTab = "Algebra",
-    equationBanner = "log_b(xy) = log_b(x) + log_b(y)\nlog_b(x/y) = log_b(x) - log_b(y)\nlog_b(xⁿ) = n · log_b(x)\nlog_b(a) = ln(a) / ln(b)",
+    equationBanner = "logₐ(xy) = logₐ(x) + logₐ(y)\nlogₐ(x/y) = logₐ(x) - logₐ(y)\nlogₐ(xⁿ) = n · logₐ(x)\nlogₐ(x) = ln(x) / ln(a)",
     summaryTag = "Product, Quotient, Power & Base Conversion Identities",
     variableNotes = listOf(
-      FormulaVariableNote("b", "Logarithmic base (b > 0, b ≠ 1)", "base"),
-      FormulaVariableNote("x, y, a", "Positive real arguments (x > 0, y > 0, a > 0)", "real"),
-      FormulaVariableNote("ln(a)", "Natural logarithm with Euler base e ≈ 2.71828", "rad / nat"),
-      FormulaVariableNote("log₁₀(a)", "Common (Briggsian) logarithm base 10", "decadic")
+      FormulaVariableNote("a", "Logarithmic base (a > 0, a ≠ 1)", "base"),
+      FormulaVariableNote("x, y", "Positive real arguments (x > 0, y > 0)", "real"),
+      FormulaVariableNote("ln(x)", "Natural logarithm with Euler base e ≈ 2.71828", "rad / nat"),
+      FormulaVariableNote("log₁₀(x)", "Common (Briggsian) logarithm base 10", "decadic")
     )
   ),
   ReferenceFormulaCardData(
@@ -11554,14 +11782,14 @@ private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listO
     title = "Arithmetic Progression (AP)",
     categoryTab = "Mathematics",
     mathSubTab = "Algebra",
-    equationBanner = "a_n = a₁ + (n - 1)d\nS_n = (n / 2) · [2a₁ + (n - 1)d] = (n / 2)(a₁ + a_n)",
+    equationBanner = "aₙ = a₁ + (n - 1)d\nSₙ = (n / 2) · [2a₁ + (n - 1)d] = (n / 2)(a₁ + aₙ)",
     summaryTag = "Constant Common Difference Sequence & Series Sum",
     variableNotes = listOf(
       FormulaVariableNote("a₁", "First term of the arithmetic sequence", "units"),
-      FormulaVariableNote("a_n", "n-th term of the arithmetic sequence", "units"),
-      FormulaVariableNote("d", "Common difference between consecutive terms (a_k - a_{k-1})", "units"),
+      FormulaVariableNote("aₙ", "n-th term of the arithmetic sequence", "units"),
+      FormulaVariableNote("d", "Common difference between consecutive terms (aₖ - aₖ₋₁)", "units"),
       FormulaVariableNote("n", "Number of terms in the progression", "integer"),
-      FormulaVariableNote("S_n", "Cumulative sum of the first n terms", "units"),
+      FormulaVariableNote("Sₙ", "Cumulative sum of the first n terms", "units"),
       FormulaVariableNote("AM = (a + b)/2", "Arithmetic Mean between two quantities a and b", "units")
     )
   ),
@@ -11570,14 +11798,14 @@ private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listO
     title = "Geometric Progression (GP) & Infinite Series",
     categoryTab = "Mathematics",
     mathSubTab = "Algebra",
-    equationBanner = "a_n = a₁ · r^(n - 1)\nS_n = a₁(1 - rⁿ) / (1 - r)\nS_∞ = a₁ / (1 - r)   for |r| < 1",
+    equationBanner = "aₙ = a₁ · rⁿ⁻¹\nSₙ = a₁(1 - rⁿ) / (1 - r)\nS∞ = a₁ / (1 - r)   for |r| < 1",
     summaryTag = "Constant Common Ratio Sequence, Finite Sum & Infinite Sum",
     variableNotes = listOf(
       FormulaVariableNote("a₁", "First term of the geometric progression", "units"),
-      FormulaVariableNote("r", "Common ratio between consecutive terms (a_k / a_{k-1})", "ratio"),
+      FormulaVariableNote("r", "Common ratio between consecutive terms (aₖ / aₖ₋₁)", "ratio"),
       FormulaVariableNote("n", "Total number of terms", "integer"),
-      FormulaVariableNote("S_n", "Sum of the first n terms (r ≠ 1)", "units"),
-      FormulaVariableNote("S_∞", "Convergent sum of infinite GP when |r| < 1", "units"),
+      FormulaVariableNote("Sₙ", "Sum of the first n terms (r ≠ 1)", "units"),
+      FormulaVariableNote("S∞", "Convergent sum of infinite GP when |r| < 1", "units"),
       FormulaVariableNote("GM = √(a·b)", "Geometric Mean between two positive numbers a and b", "units")
     )
   ),
@@ -11586,12 +11814,12 @@ private fun buildPreloadedMathFormulas(): List<ReferenceFormulaCardData> = listO
     title = "Binomial Theorem & r-th Term Formula",
     categoryTab = "Mathematics",
     mathSubTab = "Algebra",
-    equationBanner = "(x + y)ⁿ = Σ C(n, k) · x^(n-k) · y^k\nr-th Term = C(n, r - 1) · x^(n - r + 1) · y^(r - 1)",
+    equationBanner = "(x + y)ⁿ = Σ C(n, k) · xⁿ⁻ᵏ · yᵏ\nTᵣ = C(n, r - 1) · xⁿ⁻ʳ⁺¹ · yʳ⁻¹",
     summaryTag = "Binomial Expansion, Combinatorial Coefficient & General r-th Term",
     variableNotes = listOf(
       FormulaVariableNote("n", "Non-negative integer exponent of the binomial power", "integer"),
       FormulaVariableNote("r", "1-indexed position of the desired term in expansion", "integer"),
-      FormulaVariableNote("C(n, r-1)", "Binomial coefficient n! / [(r - 1)!(n - r + 1)!]", "combinations"),
+      FormulaVariableNote("C(n, r - 1)", "Binomial coefficient n! / [(r - 1)!(n - r + 1)!]", "combinations"),
       FormulaVariableNote("x, y", "First and second terms of the binomial expression", "algebraic"),
       FormulaVariableNote("Σ Coeff", "Sum of all coefficients obtained by substituting x = 1, y = 1 → 2ⁿ", "scalar")
     )
@@ -11876,7 +12104,9 @@ private enum class FormulaVaultTier {
   MASTER_VOLUMES,
   MSTE_SUB_SHELF,
   ALGEBRA_A4_SHEET,
-  TRIGONOMETRY_A4_SHEET
+  TRIGONOMETRY_A4_SHEET,
+  GEOMETRY_VOLUMES,
+  PLANE_GEOMETRY
 }
 
 private data class EngineeringNotebookSpec(
@@ -11956,8 +12186,8 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
     fullTitle = "",
     subtitle = "Plane & Solid Mensuration",
     departmentCode = "MSTE / CE-03",
-    pageBadge = "COMING SOON",
-    isActive = false,
+    pageBadge = "ACTIVE • 2 VOLUMES",
+    isActive = true,
     spineAccentColor = Color(0xFF10B981),
     secondaryAccentColor = Color(0xFF14B8A6)
   ),
@@ -12022,6 +12252,10 @@ fun FormulaVaultMainView(
   fun navigateBackOneTier() {
     playCardHapticSound(context, localView)
     when (currentTier) {
+      FormulaVaultTier.PLANE_GEOMETRY -> {
+        currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
+      }
+      FormulaVaultTier.GEOMETRY_VOLUMES,
       FormulaVaultTier.ALGEBRA_A4_SHEET,
       FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> {
         currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
@@ -12063,6 +12297,8 @@ fun FormulaVaultMainView(
     FormulaVaultTier.MSTE_SUB_SHELF -> "MSTE Library"
     FormulaVaultTier.ALGEBRA_A4_SHEET -> "MSTE • Algebra"
     FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "MSTE • Trigonometry"
+    FormulaVaultTier.GEOMETRY_VOLUMES -> "MSTE • Geometry"
+    FormulaVaultTier.PLANE_GEOMETRY -> "MSTE • Plane Geometry"
   }
 
   val trimmedQuery = searchQuery.trim()
@@ -12156,6 +12392,8 @@ fun FormulaVaultMainView(
               Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                 contentDescription = when (currentTier) {
+                  FormulaVaultTier.PLANE_GEOMETRY -> "Back to Geometry Volumes"
+                  FormulaVaultTier.GEOMETRY_VOLUMES,
                   FormulaVaultTier.ALGEBRA_A4_SHEET,
                   FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "Back to MSTE Library"
                   FormulaVaultTier.MSTE_SUB_SHELF -> "Back to Master Volumes"
@@ -12289,8 +12527,11 @@ fun FormulaVaultMainView(
                     "Filter Trigonometry laws, triangle area, medians, bisectors, or identities..."
                   FormulaVaultTier.ALGEBRA_A4_SHEET ->
                     "Filter Algebra laws, equations, or symbols (e.g., quadratic, log, radical)..."
+                  FormulaVaultTier.GEOMETRY_VOLUMES,
+                  FormulaVaultTier.PLANE_GEOMETRY ->
+                    "Filter Plane Geometry shapes (Triangle, Rectangle, Square, Rhombus, Circle)..."
                   FormulaVaultTier.MSTE_SUB_SHELF ->
-                    "Search MSTE sub-volumes, Algebra, or Trigonometry laws..."
+                    "Search MSTE sub-volumes, Algebra, Trigonometry, or Geometry..."
                   FormulaVaultTier.MASTER_VOLUMES ->
                     "Search PRC board subjects (MSTE, PSAD, HPGE) or MSTE formulas..."
                 },
@@ -12340,10 +12581,42 @@ fun FormulaVaultMainView(
       // 2. 3-TIER HIERARCHY VIEW SWITCHER
       // ====================================================================
       when {
+        currentTier == FormulaVaultTier.PLANE_GEOMETRY -> {
+          PlaneGeometryScreen(
+            metrics = metrics,
+            searchQuery = trimmedQuery,
+            onBackToGeometryVolumes = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        currentTier == FormulaVaultTier.GEOMETRY_VOLUMES -> {
+          GeometryVolumesScreen(
+            metrics = metrics,
+            searchQuery = trimmedQuery,
+            onBackToShelf = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+            },
+            onOpenPlaneGeometry = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.PLANE_GEOMETRY.name
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
         isShowingTrigSheet -> {
           val customTrigFormulas = customFormulas.filter {
-            it.categoryTab.equals("Mathematics", ignoreCase = true) &&
-              it.mathSubTab.equals("Trigonometry", ignoreCase = true)
+            it.mathSubTab.contains("Trig", ignoreCase = true) ||
+              it.categoryTab.contains("Trig", ignoreCase = true)
           }
           MsteTrigonometrySheet(
             metrics = metrics,
@@ -12369,8 +12642,8 @@ fun FormulaVaultMainView(
 
         isShowingAlgebraSheet -> {
           val customAlgebraFormulas = customFormulas.filter {
-            it.categoryTab.equals("Mathematics", ignoreCase = true) &&
-              it.mathSubTab.equals("Algebra", ignoreCase = true)
+            it.mathSubTab.contains("Algebra", ignoreCase = true) ||
+              it.categoryTab.contains("Algebra", ignoreCase = true)
           }
           MsteAlgebraSheet(
             metrics = metrics,
@@ -12401,6 +12674,9 @@ fun FormulaVaultMainView(
             notebooks = msteSubNotebooks,
             searchQuery = trimmedQuery,
             customFormulasCount = customFormulas.size,
+            customFormulas = customFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
             metrics = metrics,
             breadcrumbLabel = "All PRC Board Pillars (MSTE • PSAD • HPGE)",
             onBreadcrumbClick = {
@@ -12415,6 +12691,9 @@ fun FormulaVaultMainView(
                 }
                 notebook.isActive && notebook.id == "trigonometry" -> {
                   currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+                }
+                notebook.isActive && notebook.id == "geometry" -> {
+                  currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
                 }
                 else -> {
                   Toast.makeText(
@@ -12438,6 +12717,9 @@ fun FormulaVaultMainView(
             notebooks = masterVolumes,
             searchQuery = trimmedQuery,
             customFormulasCount = customFormulas.size,
+            customFormulas = customFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
             metrics = metrics,
             breadcrumbLabel = null,
             onBreadcrumbClick = null,
@@ -12623,7 +12905,7 @@ fun FormulaVaultMainView(
             categoryTab = categoryTab,
             mathSubTab = mathSubTab,
             equationBanner = equation,
-            summaryTag = "Custom Scholar Formula • $mathSubTab",
+            summaryTag = "Custom Scholar Formula • $categoryTab • $mathSubTab",
             variableNotes = parsedNotes,
             isCustom = true
           )
@@ -12631,10 +12913,13 @@ fun FormulaVaultMainView(
           customFormulas = updatedList
           saveCustomFormulas(context, updatedList)
           isAddCustomDialogOpen = false
-          currentTierName = if (mathSubTab.equals("Trigonometry", ignoreCase = true)) {
-            FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
-          } else {
-            FormulaVaultTier.ALGEBRA_A4_SHEET.name
+          when {
+            mathSubTab.contains("Trig", ignoreCase = true) || categoryTab.contains("Trig", ignoreCase = true) -> {
+              currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+            }
+            mathSubTab.contains("Algebra", ignoreCase = true) || categoryTab.contains("Algebra", ignoreCase = true) -> {
+              currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+            }
           }
           Toast.makeText(context, "Saved \"$title\" to Formula Vault!", Toast.LENGTH_SHORT).show()
         }
@@ -12860,6 +13145,9 @@ private fun NotebookShelfLibraryView(
   notebooks: List<EngineeringNotebookSpec>,
   searchQuery: String,
   customFormulasCount: Int,
+  customFormulas: List<ReferenceFormulaCardData> = emptyList(),
+  starredIds: Set<String> = emptySet(),
+  onToggleStar: (String) -> Unit = {},
   metrics: ResponsiveMetrics,
   breadcrumbLabel: String?,
   onBreadcrumbClick: (() -> Unit)?,
@@ -12884,6 +13172,19 @@ private fun NotebookShelfLibraryView(
             "trigonometry sine cosine tangent pythagorean oblique heron median altitude bisector incenter centroid orthocenter radians grads mils spherical".contains(
               searchQuery.lowercase(Locale.ROOT)
             ))
+      }
+    }
+  }
+
+  val filteredCustomFormulas = remember(customFormulas, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      customFormulas
+    } else {
+      customFormulas.filter { f ->
+        f.title.contains(searchQuery, ignoreCase = true) ||
+          f.categoryTab.contains(searchQuery, ignoreCase = true) ||
+          f.mathSubTab.contains(searchQuery, ignoreCase = true) ||
+          f.equationBanner.contains(searchQuery, ignoreCase = true)
       }
     }
   }
@@ -12979,6 +13280,34 @@ private fun NotebookShelfLibraryView(
         metrics = metrics,
         onClick = { onOpenNotebook(notebook) }
       )
+    }
+
+    if (filteredCustomFormulas.isNotEmpty()) {
+      item(span = { GridItemSpan(maxLineSpan) }) {
+        Text(
+          text = "CUSTOM SCHOLAR FORMULAS (${filteredCustomFormulas.size})",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 1.2.sp
+          ),
+          color = palette.accentIndigo,
+          modifier = Modifier.padding(top = 6.dp)
+        )
+      }
+      items(
+        items = filteredCustomFormulas,
+        key = { it.id },
+        span = { GridItemSpan(maxLineSpan) }
+      ) { formula ->
+        InteractiveReferenceFormulaCard(
+          formula = formula,
+          isStarred = starredIds.contains(formula.id),
+          onToggleStar = { onToggleStar(formula.id) },
+          metrics = metrics
+        )
+      }
     }
   }
 }
@@ -13116,7 +13445,12 @@ private fun EngineeringNotebookBinderCard(
             )
           ) {
             Text(
-              text = if (customFormulasCount > 0 && notebook.id != "algebra") {
+              text = if (
+                customFormulasCount > 0 &&
+                notebook.id != "algebra" &&
+                notebook.id != "trigonometry" &&
+                notebook.id != "geometry"
+              ) {
                 "${notebook.pageBadge} + $customFormulasCount"
               } else {
                 notebook.pageBadge
@@ -13188,6 +13522,919 @@ private fun EngineeringNotebookBinderCard(
   }
 }
 
+private data class PlaneGeometryFormulaItem(
+  val title: String,
+  val formula: String
+)
+
+private data class PlaneGeometryShapeSpec(
+  val id: String,
+  val name: String,
+  val accentColor: Color,
+  val formulas: List<PlaneGeometryFormulaItem>
+)
+
+private fun buildPlaneGeometryShapes(): List<PlaneGeometryShapeSpec> = listOf(
+  PlaneGeometryShapeSpec(
+    id = "triangle",
+    name = "Triangle",
+    accentColor = Color(0xFF10B981),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = a + b + c ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Base & Height)",
+        formula = "[ A = ½bh ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Heron's Formula)",
+        formula = "[ A = √(s(s - a)(s - b)(s - c)) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "rectangle",
+    name = "Rectangle",
+    accentColor = Color(0xFF3B82F6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = 2(l + w) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area",
+        formula = "[ A = l · w ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Diagonal",
+        formula = "[ d = √(l² + w²) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "square",
+    name = "Square",
+    accentColor = Color(0xFF6366F1),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = 4a ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area",
+        formula = "[ A = a² ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Diagonal",
+        formula = "[ d = a√2 ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "rhombus",
+    name = "Rhombus",
+    accentColor = Color(0xFF8B5CF6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = 4a ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Diagonals)",
+        formula = "[ A = ½d₁d₂ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Base & Height)",
+        formula = "[ A = a · h ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "parallelogram",
+    name = "Parallelogram",
+    accentColor = Color(0xFF06B6D4),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = 2(a + b) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Base & Height)",
+        formula = "[ A = b · h ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Included Angle)",
+        formula = "[ A = ab · sin(θ) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "trapezoid",
+    name = "Trapezoid",
+    accentColor = Color(0xFFF59E0B),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = a + b + c + d ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area",
+        formula = "[ A = ½(a + b)h ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Median",
+        formula = "[ m = ½(a + b) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "regular_polygons",
+    name = "Regular Polygons",
+    accentColor = Color(0xFFEC4899),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Sum of Interior Angles",
+        formula = "[ Σ = 180°(n - 2) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Single Interior Angle",
+        formula = "[ θ = 180°(n - 2) / n ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Perimeter",
+        formula = "[ P = n · s ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Using Apothem 'a')",
+        formula = "[ A = ½Pa ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area (Using Side 's')",
+        formula = "[ A = ¼ns² · cot(180°/n) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "circle",
+    name = "Circle",
+    accentColor = Color(0xFF14B8A6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Circumference",
+        formula = "[ C = 2πr = πd ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Area",
+        formula = "[ A = πr² = ¼πd² ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Sector Area (θ in radians)",
+        formula = "[ A = ½r²θ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Arc Length (θ in radians)",
+        formula = "[ s = rθ ]"
+      )
+    )
+  )
+)
+
+@Composable
+private fun GeometryVolumesScreen(
+  metrics: ResponsiveMetrics,
+  searchQuery: String,
+  onBackToShelf: () -> Unit,
+  onOpenPlaneGeometry: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val palette = currentGlassPalette()
+  val volumes = remember {
+    listOf(
+      EngineeringNotebookSpec(
+        id = "plane_geometry",
+        title = "Plane Geometry",
+        fullTitle = "Plane Geometry",
+        subtitle = "2D Mensuration: Polygons, Quadrilaterals & Circles",
+        departmentCode = "MSTE / CE-03A",
+        pageBadge = "ACTIVE • 8 SHAPES",
+        isActive = true,
+        spineAccentColor = Color(0xFF10B981),
+        secondaryAccentColor = Color(0xFF14B8A6)
+      ),
+      EngineeringNotebookSpec(
+        id = "solid_geometry",
+        title = "Solid Geometry",
+        fullTitle = "Solid Geometry",
+        subtitle = "3D Polyhedra, Cylinders, Cones, Spheres & Frustums",
+        departmentCode = "MSTE / CE-03B",
+        pageBadge = "COMING SOON",
+        isActive = false,
+        spineAccentColor = Color(0xFF64748B),
+        secondaryAccentColor = Color(0xFF475569)
+      )
+    )
+  }
+
+  val filteredVolumes = remember(volumes, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      volumes
+    } else {
+      volumes.filter {
+        it.title.contains(searchQuery, ignoreCase = true) ||
+          it.subtitle.contains(searchQuery, ignoreCase = true) ||
+          (it.id == "plane_geometry" &&
+            "triangle rectangle square rhombus parallelogram trapezoid regular polygons circle perimeter area heron apothem sector arc".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            ))
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = 680.dp)
+      .verticalScroll(rememberScrollState())
+      .padding(bottom = 96.dp)
+      .testTag("geometry_volumes_screen"),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    // Breadcrumb Chip back to MSTE Library
+    Box(modifier = Modifier.fillMaxWidth()) {
+      Surface(
+        onClick = onBackToShelf,
+        shape = RoundedCornerShape(10.dp),
+        color = palette.cardFill,
+        border = palette.glassBorder,
+        modifier = Modifier.testTag("geometry_back_to_mste_shelf_chip")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to MSTE Library",
+            tint = palette.accentIndigo,
+            modifier = Modifier.size(16.dp)
+          )
+          Text(
+            text = "MSTE Library",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.5.sp
+            ),
+            color = palette.accentIndigo
+          )
+        }
+      }
+    }
+
+    // Section Header
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 2.dp, bottom = 2.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = "MSTE / CE-03 • GEOMETRY VOLUMES",
+        style = MaterialTheme.typography.labelMedium.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 11.sp,
+          fontWeight = FontWeight.ExtraBold,
+          letterSpacing = 1.3.sp
+        ),
+        color = palette.textSecondary
+      )
+
+      Text(
+        text = "2 VOLUMES",
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontFamily = JetBrainsMonoFamily,
+          fontSize = 10.5.sp,
+          fontWeight = FontWeight.Bold,
+          letterSpacing = 1.sp
+        ),
+        color = Color(0xFF10B981)
+      )
+    }
+
+    // Two Large Liquid Glass Navigation Cards: Plane Geometry (Active) & Solid Geometry (Disabled)
+    filteredVolumes.forEach { volume ->
+      val cardShape = RoundedCornerShape(
+        topStart = 14.dp,
+        bottomStart = 14.dp,
+        topEnd = 24.dp,
+        bottomEnd = 24.dp
+      )
+      Surface(
+        onClick = {
+          if (volume.isActive) {
+            onOpenPlaneGeometry()
+          }
+        },
+        enabled = volume.isActive,
+        shape = cardShape,
+        color = if (palette.isDark) {
+          Color(0xFF1A1F2C).copy(alpha = if (volume.isActive) 0.94f else 0.65f)
+        } else {
+          Color(0xFFFFFFFF).copy(alpha = if (volume.isActive) 0.94f else 0.72f)
+        },
+        border = BorderStroke(
+          width = if (volume.isActive) 1.4.dp else 1.dp,
+          brush = Brush.linearGradient(
+            if (volume.isActive) {
+              listOf(
+                volume.spineAccentColor.copy(alpha = 0.75f),
+                Color.White.copy(alpha = if (palette.isDark) 0.25f else 0.75f)
+              )
+            } else {
+              listOf(
+                Color.White.copy(alpha = if (palette.isDark) 0.14f else 0.45f),
+                palette.textSecondary.copy(alpha = 0.16f)
+              )
+            }
+          )
+        ),
+        shadowElevation = if (volume.isActive) 10.dp else 2.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("geometry_volume_card_${volume.id}")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Box(
+            modifier = Modifier
+              .width(14.dp)
+              .fillMaxHeight()
+              .background(
+                brush = Brush.verticalGradient(
+                  listOf(
+                    volume.spineAccentColor,
+                    volume.secondaryAccentColor
+                  )
+                )
+              )
+          )
+
+          Column(
+            modifier = Modifier
+              .weight(1f)
+              .padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = volume.title,
+                style = MaterialTheme.typography.titleLarge.copy(
+                  fontSize = metrics.scaledSp(19),
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = if (volume.isActive) palette.textPrimary else palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .weight(1f, fill = false)
+                  .padding(end = 8.dp)
+              )
+
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (volume.isActive) {
+                  volume.spineAccentColor.copy(alpha = 0.16f)
+                } else {
+                  palette.textSecondary.copy(alpha = 0.12f)
+                },
+                border = BorderStroke(
+                  width = 0.8.dp,
+                  color = if (volume.isActive) {
+                    volume.spineAccentColor.copy(alpha = 0.48f)
+                  } else {
+                    palette.textSecondary.copy(alpha = 0.24f)
+                  }
+                )
+              ) {
+                Text(
+                  text = volume.pageBadge,
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.ExtraBold,
+                  maxLines = 1,
+                  softWrap = false,
+                  color = if (volume.isActive) volume.spineAccentColor else palette.textSecondary,
+                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                )
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = volume.subtitle,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = metrics.scaledSp(13),
+                  fontWeight = FontWeight.Medium
+                ),
+                color = if (volume.isActive) palette.textPrimary.copy(alpha = 0.84f) else palette.textSecondary,
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 10.dp)
+              )
+
+              Surface(
+                shape = CircleShape,
+                color = if (volume.isActive) {
+                  volume.spineAccentColor.copy(alpha = 0.16f)
+                } else {
+                  palette.nestedCardFill
+                },
+                border = BorderStroke(
+                  width = 1.dp,
+                  color = if (volume.isActive) {
+                    volume.spineAccentColor.copy(alpha = 0.40f)
+                  } else {
+                    palette.textSecondary.copy(alpha = 0.18f)
+                  }
+                ),
+                modifier = Modifier.size(36.dp)
+              ) {
+                Box(contentAlignment = Alignment.Center) {
+                  Icon(
+                    imageVector = if (volume.isActive) {
+                      Icons.Default.ArrowForward
+                    } else {
+                      Icons.Outlined.Lock
+                    },
+                    contentDescription = if (volume.isActive) "Open ${volume.title}" else "Coming Soon",
+                    tint = if (volume.isActive) volume.spineAccentColor else palette.textSecondary.copy(alpha = 0.65f),
+                    modifier = Modifier.size(18.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PlaneGeometryScreen(
+  metrics: ResponsiveMetrics,
+  searchQuery: String,
+  onBackToGeometryVolumes: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val context = LocalContext.current
+  val localView = LocalView.current
+  val palette = currentGlassPalette()
+  val allShapes = remember { buildPlaneGeometryShapes() }
+  var selectedShape by remember { mutableStateOf<PlaneGeometryShapeSpec?>(null) }
+
+  val filteredShapes = remember(allShapes, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      allShapes
+    } else {
+      allShapes.filter { shape ->
+        shape.name.contains(searchQuery, ignoreCase = true) ||
+          shape.formulas.any {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+              it.formula.contains(searchQuery, ignoreCase = true)
+          }
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = 680.dp)
+      .testTag("plane_geometry_screen"),
+    verticalArrangement = Arrangement.spacedBy(12.dp)
+  ) {
+    // Top Breadcrumb & Count Row
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Surface(
+        onClick = onBackToGeometryVolumes,
+        shape = RoundedCornerShape(10.dp),
+        color = palette.cardFill,
+        border = palette.glassBorder,
+        modifier = Modifier.testTag("back_to_geometry_volumes_chip")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to Geometry Volumes",
+            tint = Color(0xFF10B981),
+            modifier = Modifier.size(16.dp)
+          )
+          Text(
+            text = "Geometry Volumes",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.5.sp
+            ),
+            color = Color(0xFF10B981)
+          )
+        }
+      }
+
+      Text(
+        text = "PLANE GEOMETRY • 8 SHAPES",
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontFamily = FontFamily.Monospace,
+          fontSize = 10.5.sp,
+          fontWeight = FontWeight.ExtraBold,
+          letterSpacing = 0.8.sp
+        ),
+        color = Color(0xFF10B981)
+      )
+    }
+
+    // 2-Column LazyVerticalGrid of 8 Liquid Glass Shape Cards
+    LazyVerticalGrid(
+      columns = GridCells.Fixed(2),
+      contentPadding = PaddingValues(bottom = 110.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier
+        .fillMaxWidth()
+        .weight(1f)
+        .testTag("plane_geometry_grid")
+    ) {
+      items(
+        items = filteredShapes,
+        key = { it.id }
+      ) { shape ->
+        LiquidGlassCard(
+          onClick = {
+            playCardHapticSound(context, localView)
+            selectedShape = shape
+          },
+          cornerRadius = 22.dp,
+          elevation = 6.dp,
+          borderStroke = BorderStroke(
+            width = 1.2.dp,
+            brush = Brush.linearGradient(
+              listOf(
+                shape.accentColor.copy(alpha = 0.55f),
+                Color.White.copy(alpha = if (palette.isDark) 0.18f else 0.65f)
+              )
+            )
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("plane_shape_card_${shape.id}")
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 14.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            Box(
+              modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(shape.accentColor.copy(alpha = 0.14f))
+                .border(
+                  width = 1.dp,
+                  color = shape.accentColor.copy(alpha = 0.40f),
+                  shape = RoundedCornerShape(16.dp)
+                ),
+              contentAlignment = Alignment.Center
+            ) {
+              PlaneGeometryShapeIcon(
+                shapeId = shape.id,
+                tint = shape.accentColor,
+                modifier = Modifier.size(30.dp)
+              )
+            }
+
+            Text(
+              text = shape.name,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontSize = 15.5.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.textPrimary,
+              textAlign = TextAlign.Center,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.fillMaxWidth()
+            )
+          }
+        }
+      }
+    }
+  }
+
+  selectedShape?.let { activeShape ->
+    val mathCalloutBg = if (palette.isDark) {
+      palette.cardSurface.copy(alpha = 0.92f)
+    } else {
+      Color(0xFFEEF2FF).copy(alpha = 0.95f)
+    }
+    val mathCalloutBorder = activeShape.accentColor.copy(alpha = 0.38f)
+    val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+    val visibleState = remember(activeShape.id) {
+      MutableTransitionState(false).apply { targetState = true }
+    }
+
+    Dialog(
+      onDismissRequest = { selectedShape = null },
+      properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.50f))
+          .clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = { selectedShape = null }
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        AnimatedVisibility(
+          visibleState = visibleState,
+          enter = fadeIn() + scaleIn(initialScale = 0.92f),
+          exit = fadeOut() + scaleOut(targetScale = 0.92f)
+        ) {
+          Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = palette.dialogSurface.copy(alpha = if (palette.isDark) 0.94f else 0.96f),
+            border = BorderStroke(
+              width = 1.2.dp,
+              brush = Brush.linearGradient(
+                listOf(
+                  activeShape.accentColor.copy(alpha = 0.55f),
+                  Color.White.copy(alpha = if (palette.isDark) 0.22f else 0.72f)
+                )
+              )
+            ),
+            shadowElevation = 24.dp,
+            modifier = Modifier
+              .fillMaxWidth(0.88f)
+              .fillMaxHeight(0.75f)
+              .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+              )
+              .testTag("plane_geometry_modal_${activeShape.id}")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+              // Dialog Header: Icon + Shape Name + Close Button
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Box(
+                    modifier = Modifier
+                      .size(44.dp)
+                      .clip(RoundedCornerShape(13.dp))
+                      .background(activeShape.accentColor.copy(alpha = 0.16f))
+                      .border(
+                        width = 1.dp,
+                        color = activeShape.accentColor.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(13.dp)
+                      ),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    PlaneGeometryShapeIcon(
+                      shapeId = activeShape.id,
+                      tint = activeShape.accentColor,
+                      modifier = Modifier.size(24.dp)
+                    )
+                  }
+
+                  Text(
+                    text = activeShape.name,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontSize = 20.sp,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = palette.textPrimary
+                  )
+                }
+
+                Surface(
+                  onClick = { selectedShape = null },
+                  shape = CircleShape,
+                  color = palette.nestedCardFill,
+                  border = palette.nestedBorder,
+                  modifier = Modifier
+                    .size(36.dp)
+                    .testTag("plane_geometry_modal_close_button")
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.Default.Close,
+                      contentDescription = "Close ${activeShape.name}",
+                      tint = palette.textPrimary,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+              }
+
+              HorizontalDivider(
+                thickness = 1.dp,
+                color = activeShape.accentColor.copy(alpha = 0.28f)
+              )
+
+              // Strict Content Rule: ONLY concise theorem/title and high-contrast monospace capsule (15.sp, Monospace). ZERO descriptions.
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f)
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                activeShape.formulas.forEach { item ->
+                  Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                  ) {
+                    Text(
+                      text = item.title,
+                      style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = palette.textPrimary,
+                      softWrap = true,
+                      modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Surface(
+                      shape = RoundedCornerShape(10.dp),
+                      color = mathCalloutBg,
+                      border = BorderStroke(1.dp, mathCalloutBorder),
+                      shadowElevation = 2.dp,
+                      modifier = Modifier.fillMaxWidth()
+                    ) {
+                      Text(
+                        text = item.formula,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 15.sp,
+                        softWrap = true,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 15.sp,
+                          lineHeight = 21.sp,
+                          fontWeight = FontWeight.Bold,
+                          letterSpacing = 0.15.sp
+                        ),
+                        color = mathTextColor,
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(horizontal = 12.dp, vertical = 9.dp)
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PlaneGeometryShapeIcon(
+  shapeId: String,
+  tint: Color,
+  modifier: Modifier = Modifier
+) {
+  if (shapeId == "triangle") {
+    Icon(
+      imageVector = Icons.Default.ChangeHistory,
+      contentDescription = "Triangle",
+      tint = tint,
+      modifier = modifier
+    )
+  } else {
+    Canvas(modifier = modifier) {
+      val w = size.width
+      val h = size.height
+      val stroke = Stroke(width = 2.3.dp.toPx(), cap = StrokeCap.Round)
+      when (shapeId) {
+        "rectangle" -> {
+          val path = Path().apply {
+            moveTo(w * 0.10f, h * 0.25f)
+            lineTo(w * 0.90f, h * 0.25f)
+            lineTo(w * 0.90f, h * 0.75f)
+            lineTo(w * 0.10f, h * 0.75f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "square" -> {
+          val path = Path().apply {
+            moveTo(w * 0.16f, h * 0.16f)
+            lineTo(w * 0.84f, h * 0.16f)
+            lineTo(w * 0.84f, h * 0.84f)
+            lineTo(w * 0.16f, h * 0.84f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "rhombus" -> {
+          val path = Path().apply {
+            moveTo(w * 0.50f, h * 0.10f)
+            lineTo(w * 0.90f, h * 0.50f)
+            lineTo(w * 0.50f, h * 0.90f)
+            lineTo(w * 0.10f, h * 0.50f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "parallelogram" -> {
+          val path = Path().apply {
+            moveTo(w * 0.26f, h * 0.22f)
+            lineTo(w * 0.90f, h * 0.22f)
+            lineTo(w * 0.74f, h * 0.78f)
+            lineTo(w * 0.10f, h * 0.78f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "trapezoid" -> {
+          val path = Path().apply {
+            moveTo(w * 0.26f, h * 0.22f)
+            lineTo(w * 0.74f, h * 0.22f)
+            lineTo(w * 0.90f, h * 0.78f)
+            lineTo(w * 0.10f, h * 0.78f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "regular_polygons" -> {
+          val path = Path().apply {
+            moveTo(w * 0.50f, h * 0.10f)
+            lineTo(w * 0.86f, h * 0.30f)
+            lineTo(w * 0.86f, h * 0.70f)
+            lineTo(w * 0.50f, h * 0.90f)
+            lineTo(w * 0.14f, h * 0.70f)
+            lineTo(w * 0.14f, h * 0.30f)
+            close()
+          }
+          drawPath(path = path, color = tint, style = stroke)
+        }
+        "circle" -> {
+          drawCircle(
+            color = tint,
+            radius = (w.coerceAtMost(h) * 0.38f),
+            center = Offset(w * 0.50f, h * 0.50f),
+            style = stroke
+          )
+        }
+      }
+    }
+  }
+}
+
 private data class AlgebraHandbookRuleItem(
   val number: Int,
   val title: String,
@@ -13208,20 +14455,17 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Commutative",
-        formulaOrStatement = "[ a + b = b + a ] | [ a · b = b · a ]",
-        note = "Order of real terms in addition or multiplication does not affect the result."
+        formulaOrStatement = "[ a + b = b + a ] | [ a · b = b · a ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Associative",
-        formulaOrStatement = "[ (a + b) + c = a + (b + c) ] | [ (a · b) · c = a · (b · c) ]",
-        note = "Grouping of real numbers in addition or multiplication leaves the sum or product invariant."
+        formulaOrStatement = "[ (a + b) + c = a + (b + c) ] | [ (a · b) · c = a · (b · c) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Distributive",
-        formulaOrStatement = "[ a(b + c) = ab + ac ]",
-        note = "Multiplication distributes over addition and subtraction across grouped expressions."
+        formulaOrStatement = "[ a(b + c) = ab + ac ]"
       )
     )
   ),
@@ -13231,26 +14475,22 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Reflexive",
-        formulaOrStatement = "[ a = a ]",
-        note = "Any real or complex quantity is identically equal to itself."
+        formulaOrStatement = "[ a = a ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Symmetric",
-        formulaOrStatement = "[ If a = b, then b = a ]",
-        note = "An equation holds equivalently when its left-hand and right-hand sides are interchanged."
+        formulaOrStatement = "[ If a = b, then b = a ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Transitive",
-        formulaOrStatement = "[ If a = b and b = c, then a = c ]",
-        note = "Two quantities equal to the same third quantity are equal to each other."
+        formulaOrStatement = "[ If a = b and b = c, then a = c ]"
       ),
       AlgebraHandbookRuleItem(
         number = 4,
         title = "Addition/Multiplication",
-        formulaOrStatement = "[ If a = b, then a + c = b + c and ac = bc ]",
-        note = "Adding or multiplying both sides of an equation by the same value preserves equality."
+        formulaOrStatement = "[ If a = b, then a + c = b + c and ac = bc ]"
       )
     )
   ),
@@ -13260,20 +14500,17 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Trichotomy",
-        formulaOrStatement = "[ Exactly one is true: a < b, a = b, or a > b ]",
-        note = "For any two real numbers a and b, exactly one order relation holds."
+        formulaOrStatement = "[ Exactly one is true: a < b, a = b, or a > b ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Transitive",
-        formulaOrStatement = "[ If a < b and b < c, then a < c ]",
-        note = "Strict inequality chains propagate consistently across ordered real values."
+        formulaOrStatement = "[ If a < b and b < c, then a < c ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Multiplication by Negative",
-        formulaOrStatement = "[ If a < b and c < 0, then ac > bc (Sign Flips!) ]",
-        note = "Multiplying or dividing both sides of an inequality by a negative number reverses the inequality direction."
+        formulaOrStatement = "[ If a < b and c < 0, then ac > bc (Sign Flips!) ]"
       )
     )
   ),
@@ -13283,26 +14520,22 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Product / Quotient",
-        formulaOrStatement = "[ x^a · x^b = x^(a+b) ] | [ x^a / x^b = x^(a-b) ]",
-        note = "For identical base x ≠ 0, add exponents when multiplying and subtract exponents when dividing."
+        formulaOrStatement = "[ xᵃ · xᵇ = xᵃ⁺ᵇ ] | [ xᵃ / xᵇ = xᵃ⁻ᵇ ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Power of a Power",
-        formulaOrStatement = "[ (x^a)^b = x^(ab) ]",
-        note = "Raising an exponential term to an outer power multiplies the inner and outer exponents."
+        formulaOrStatement = "[ (xᵃ)ᵇ = xᵃᵇ ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Power of a Product",
-        formulaOrStatement = "[ (xy)^a = x^a · y^a ]",
-        note = "An outer exponent distributes across each factor in a product or quotient."
+        formulaOrStatement = "[ (xy)ᵃ = xᵃ · yᵃ ]"
       ),
       AlgebraHandbookRuleItem(
         number = 4,
         title = "Negative / Zero",
-        formulaOrStatement = "[ x^(-a) = 1 / x^a ] | [ x^0 = 1 (where x ≠ 0) ]",
-        note = "A negative exponent denotes the reciprocal power, and any non-zero base raised to zero equals 1."
+        formulaOrStatement = "[ x⁻ᵃ = 1 / xᵃ ] | [ x⁰ = 1 (where x ≠ 0) ]"
       )
     )
   ),
@@ -13312,20 +14545,17 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Fractional Exponent",
-        formulaOrStatement = "[ x^(m/n) = ^n√(x^m) = (^n√x)^m ]",
-        note = "In a rational exponent m/n, the denominator n is the root index and the numerator m is the power."
+        formulaOrStatement = "[ xᵐ/ⁿ = ⁿ√(xᵐ) = (ⁿ√x)ᵐ ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Product / Quotient",
-        formulaOrStatement = "[ ^n√(xy) = ^n√x · ^n√y ] | [ ^n√(x/y) = ^n√x / ^n√y ]",
-        note = "Radicals of the same index n split across products and quotients (where y ≠ 0)."
+        formulaOrStatement = "[ ⁿ√(xy) = ⁿ√x · ⁿ√y ] | [ ⁿ√(x/y) = ⁿ√x / ⁿ√y ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Root of a Root",
-        formulaOrStatement = "[ ^m√(^n√x) = ^(mn)√x ]",
-        note = "Nested radicals combine into a single radical whose index is the product of the indices m and n."
+        formulaOrStatement = "[ ᵐ√(ⁿ√x) = ᵐⁿ√x ]"
       )
     )
   ),
@@ -13335,20 +14565,17 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Product / Quotient",
-        formulaOrStatement = "[ log_b(xy) = log_b(x) + log_b(y) ] | [ log_b(x/y) = log_b(x) - log_b(y) ]",
-        note = "Logarithm of a product equals the sum of logs; logarithm of a quotient equals the difference of logs (x > 0, y > 0)."
+        formulaOrStatement = "[ logₐ(xy) = logₐ(x) + logₐ(y) ] | [ logₐ(x/y) = logₐ(x) - logₐ(y) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Power Rule",
-        formulaOrStatement = "[ log_b(x^k) = k · log_b(x) ]",
-        note = "The exponent of the argument inside a logarithm factors out as a scalar multiplier."
+        formulaOrStatement = "[ logₐ(xᵏ) = k · logₐ(x) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Change of Base",
-        formulaOrStatement = "[ log_b(x) = ln(x) / ln(b) = log_10(x) / log_10(b) ]",
-        note = "Converts any base-b logarithm (b > 0, b ≠ 1) into natural (ln) or common (log_10) logarithms."
+        formulaOrStatement = "[ logₐ(x) = ln(x) / ln(a) = log₁₀(x) / log₁₀(a) ]"
       )
     )
   ),
@@ -13358,14 +14585,12 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Remainder Theorem",
-        formulaOrStatement = "[ If P(x) is divided by (x - c), the remainder is P(c) ]",
-        note = "Direct substitution of x = c into polynomial P(x) yields the division remainder R = P(c)."
+        formulaOrStatement = "[ If P(x) is divided by (x - c), the remainder is P(c) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Factor Theorem",
-        formulaOrStatement = "[ (x - c) is a factor of P(x) if and only if P(c) = 0 ]",
-        note = "A linear binomial (x - c) divides P(x) evenly without remainder precisely when c is a root of P(x) = 0."
+        formulaOrStatement = "[ (x - c) is a factor of P(x) if and only if P(c) = 0 ]"
       )
     )
   ),
@@ -13375,14 +14600,12 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Expansion",
-        formulaOrStatement = "[ (a + b)^n = ∑_{k=0..n} C(n, k) · a^(n-k) · b^k ]",
-        note = "Expands a binomial power into n + 1 terms where powers of a decrease from n to 0 and powers of b increase from 0 to n."
+        formulaOrStatement = "[ (a + b)ⁿ = ∑ₖ₌₀..ₙ C(n, k) · aⁿ⁻ᵏ · bᵏ ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "General r-th Term (1-indexed)",
-        formulaOrStatement = "[ T_r = C(n, r-1) · a^(n - r + 1) · b^(r - 1) ]",
-        note = "Directly computes the r-th term (1 ≤ r ≤ n + 1) of (a + b)^n without expanding the full series."
+        formulaOrStatement = "[ Tᵣ = C(n, r - 1) · aⁿ⁻ʳ⁺¹ · bʳ⁻¹ ]"
       )
     )
   ),
@@ -13392,14 +14615,12 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Combinatorial Relation",
-        formulaOrStatement = "[ C(n, k) = C(n-1, k-1) + C(n-1, k) ]",
-        note = "Each interior binomial entry equals the sum of the two adjacent binomial entries directly above it."
+        formulaOrStatement = "[ C(n, k) = C(n - 1, k - 1) + C(n - 1, k) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Row Sum",
-        formulaOrStatement = "[ Sum of coefficients in row n is 2^n ]",
-        note = "Adding all binomial coefficients C(n, 0) + C(n, 1) + ... + C(n, n) in row n (0-indexed) yields 2^n."
+        formulaOrStatement = "[ Sum of coefficients in row n is 2ⁿ ]"
       )
     )
   ),
@@ -13409,20 +14630,17 @@ private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listO
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Roots",
-        formulaOrStatement = "[ x = [-b ± √(b² - 4ac)] / (2a) ]",
-        note = "Solves the general quadratic equation ax² + bx + c = 0 where leading coefficient a ≠ 0."
+        formulaOrStatement = "[ x = [-b ± √(b² - 4ac)] / 2a ]"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Discriminant (Δ = b² - 4ac)",
-        formulaOrStatement = "[ Δ > 0 (Real & Unequal), Δ = 0 (Real & Equal), Δ < 0 (Imaginary) ]",
-        note = "Classifies the nature of the two roots of ax² + bx + c = 0 prior to full root extraction."
+        formulaOrStatement = "[ Δ > 0 (Real & Unequal), Δ = 0 (Real & Equal), Δ < 0 (Imaginary) ]"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Sum & Product of Roots",
-        formulaOrStatement = "[ x₁ + x₂ = -b/a ] | [ x₁ · x₂ = c/a ]",
-        note = "Vieta's root relations connecting roots x₁ and x₂ directly to quadratic coefficients a, b, and c."
+        formulaOrStatement = "[ x₁ + x₂ = -b/a ] | [ x₁ · x₂ = c/a ]"
       )
     )
   )
@@ -13467,7 +14685,6 @@ private fun MsteAlgebraSheet(
           val matchingItems = section.items.filter { item ->
             item.title.contains(searchQuery, ignoreCase = true) ||
               item.formulaOrStatement.contains(searchQuery, ignoreCase = true) ||
-              item.note.contains(searchQuery, ignoreCase = true) ||
               item.subItems.any { it.contains(searchQuery, ignoreCase = true) }
           }
           if (matchingItems.isNotEmpty()) {
@@ -13488,20 +14705,9 @@ private fun MsteAlgebraSheet(
   val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.28f)
   val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
 
-  val noteContainerBg = if (palette.isDark) {
-    Color.White.copy(alpha = 0.045f)
-  } else {
-    Color(0xFFF8FAFC).copy(alpha = 0.92f)
-  }
-  val noteContainerBorder = if (palette.isDark) {
-    Color.White.copy(alpha = 0.10f)
-  } else {
-    Color(0xFFCBD5E1).copy(alpha = 0.65f)
-  }
-
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(14.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
     modifier = modifier
       .fillMaxSize()
       .verticalScroll(scrollState)
@@ -13515,7 +14721,7 @@ private fun MsteAlgebraSheet(
       modifier = Modifier
         .fillMaxWidth()
         .widthIn(max = 680.dp),
-      verticalArrangement = Arrangement.spacedBy(14.dp)
+      verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -13590,7 +14796,7 @@ private fun MsteAlgebraSheet(
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 18.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
           Text(
@@ -13639,7 +14845,7 @@ private fun MsteAlgebraSheet(
     }
 
     // ====================================================================
-    // SECTIONS 1..10: Liquid Glass Formula Cards with Strict Vertical Stacking
+    // SECTIONS 1..10: Compact Liquid Glass Formula Cards (Titles + Monospace Capsules Only)
     // ====================================================================
     filteredSections.forEach { (originalSectionIndex, section) ->
       val isHighlighted = highlightedSectionIndex == originalSectionIndex
@@ -13673,10 +14879,10 @@ private fun MsteAlgebraSheet(
           Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+              .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            // Section Heading Container (Full-Width Vertical Stack)
+            // Section Heading Container
             Column(
               modifier = Modifier
                 .fillMaxWidth()
@@ -13709,10 +14915,10 @@ private fun MsteAlgebraSheet(
               color = palette.accentIndigo.copy(alpha = 0.25f)
             )
 
-            // Vertically Stacked Formula Rules (NEVER side-by-side Row with explanatory text)
+            // Compact Vertically Stacked Formula Rules (Titles + Monospace Capsules Only)
             Column(
               modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(14.dp)
+              verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
               section.items.forEach { rule ->
                 Column(
@@ -13729,16 +14935,16 @@ private fun MsteAlgebraSheet(
                     softWrap = true,
                     modifier = Modifier
                       .fillMaxWidth()
-                      .padding(bottom = 6.dp)
+                      .padding(bottom = 5.dp)
                   )
 
-                  // 2. Monospace / LaTeX Formula Capsule(s) (Full Width, 15.sp, Monospace, softWrap = true)
+                  // 2. Monospace Formula Capsule(s)
                   val allFormulaCapsules = remember(rule) {
                     listOf(rule.formulaOrStatement) + rule.subItems
                   }
                   Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                   ) {
                     allFormulaCapsules.forEach { formulaLine ->
                       Surface(
@@ -13756,42 +14962,16 @@ private fun MsteAlgebraSheet(
                           style = MaterialTheme.typography.titleMedium.copy(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 15.sp,
-                            lineHeight = 22.sp,
+                            lineHeight = 21.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.15.sp
                           ),
                           color = mathTextColor,
                           modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 9.dp)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                         )
                       }
-                    }
-                  }
-
-                  // 3. Explanatory Note in Secondary Full-Width Container Directly Below Formula
-                  if (rule.note.isNotEmpty()) {
-                    Surface(
-                      shape = RoundedCornerShape(8.dp),
-                      color = noteContainerBg,
-                      border = BorderStroke(1.dp, noteContainerBorder),
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                    ) {
-                      Text(
-                        text = rule.note,
-                        softWrap = true,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                          fontSize = 12.5.sp,
-                          lineHeight = 18.sp,
-                          fontWeight = FontWeight.Medium
-                        ),
-                        color = palette.textSecondary,
-                        modifier = Modifier
-                          .fillMaxWidth()
-                          .padding(horizontal = 10.dp, vertical = 7.dp)
-                      )
                     }
                   }
                 }
@@ -13874,17 +15054,6 @@ private fun AlgebraSectionDetailGlassModal(
   val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.30f)
   val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
 
-  val noteContainerBg = if (palette.isDark) {
-    Color.White.copy(alpha = 0.045f)
-  } else {
-    Color(0xFFF8FAFC).copy(alpha = 0.92f)
-  }
-  val noteContainerBorder = if (palette.isDark) {
-    Color.White.copy(alpha = 0.10f)
-  } else {
-    Color(0xFFCBD5E1).copy(alpha = 0.65f)
-  }
-
   Dialog(
     onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -13909,7 +15078,7 @@ private fun AlgebraSectionDetailGlassModal(
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+          verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -13983,13 +15152,13 @@ private fun AlgebraSectionDetailGlassModal(
                 softWrap = true,
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(bottom = 6.dp)
+                  .padding(bottom = 5.dp)
               )
 
               val allFormulaCapsules = listOf(rule.formulaOrStatement) + rule.subItems
               Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(5.dp)
               ) {
                 allFormulaCapsules.forEach { formulaLine ->
                   Surface(
@@ -14007,41 +15176,16 @@ private fun AlgebraSectionDetailGlassModal(
                       style = MaterialTheme.typography.titleMedium.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 15.sp,
-                        lineHeight = 22.sp,
+                        lineHeight = 21.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.15.sp
                       ),
                       color = mathTextColor,
                       modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 9.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                   }
-                }
-              }
-
-              if (rule.note.isNotEmpty()) {
-                Surface(
-                  shape = RoundedCornerShape(8.dp),
-                  color = noteContainerBg,
-                  border = BorderStroke(1.dp, noteContainerBorder),
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp)
-                ) {
-                  Text(
-                    text = rule.note,
-                    softWrap = true,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                      fontSize = 12.5.sp,
-                      lineHeight = 18.sp,
-                      fontWeight = FontWeight.Medium
-                    ),
-                    color = palette.textSecondary,
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .padding(horizontal = 10.dp, vertical = 7.dp)
-                  )
                 }
               }
             }
@@ -14079,8 +15223,7 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Altitude to Hypotenuse (h)",
-        formulaOrStatement = "h = (a · b) / c ,  h² = p · q",
-        note = "(where p, q are hypotenuse segments)"
+        formulaOrStatement = "h = (a · b) / c ,  h² = p · q"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
@@ -14132,9 +15275,9 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 6,
         title = "Half-Angle Formulas",
-        formulaOrStatement = "sin(θ/2) = ±√((1 - cos θ) / 2)",
+        formulaOrStatement = "sin(θ/2) = ±√[(1 - cos θ) / 2]",
         subItems = listOf(
-          "cos(θ/2) = ±√((1 + cos θ) / 2)",
+          "cos(θ/2) = ±√[(1 + cos θ) / 2]",
           "tan(θ/2) = (1 - cos θ) / sin θ = sin θ / (1 + cos θ)"
         )
       ),
@@ -14155,8 +15298,7 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Sine Law",
-        formulaOrStatement = "a / sin A = b / sin B = c / sin C = 2R",
-        note = "(where R is circumradius)"
+        formulaOrStatement = "a / sin A = b / sin B = c / sin C = 2R"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
@@ -14238,14 +15380,14 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 5,
         title = "Circumradius (R)",
-        formulaOrStatement = "Area = (a · b · c) / (4R)  ⟹  R = (a · b · c) / (4 · Area)"
+        formulaOrStatement = "Area = (a · b · c) / 4R  ⟹  R = (a · b · c) / (4 · Area)"
       ),
       AlgebraHandbookRuleItem(
         number = 6,
-        title = "Exradius (r_a, r_b, r_c)",
-        formulaOrStatement = "Area = r_a(s - a) = r_b(s - b) = r_c(s - c)",
+        title = "Exradii (r₁, r₂, r₃)",
+        formulaOrStatement = "Area = r₁(s - a) = r₂(s - b) = r₃(s - c)",
         subItems = listOf(
-          "Area = √(r · r_a · r_b · r_c)"
+          "Area = √(r · r₁ · r₂ · r₃)"
         )
       ),
       AlgebraHandbookRuleItem(
@@ -14261,10 +15403,10 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Length of Medians (Apollonius' Theorem)",
-        formulaOrStatement = "m_a = ½ √(2b² + 2c² - a²)",
+        formulaOrStatement = "m₁ = ½ √(2b² + 2c² - a²)",
         subItems = listOf(
-          "m_b = ½ √(2a² + 2c² - b²)",
-          "m_c = ½ √(2a² + 2b² - c²)"
+          "m₂ = ½ √(2a² + 2c² - b²)",
+          "m₃ = ½ √(2a² + 2b² - c²)"
         )
       ),
       AlgebraHandbookRuleItem(
@@ -14283,13 +15425,12 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Heights from Vertices",
-        formulaOrStatement = "h_a = (2 · Area) / a ,  h_b = (2 · Area) / b ,  h_c = (2 · Area) / c"
+        formulaOrStatement = "h₁ = (2 · Area) / a ,  h₂ = (2 · Area) / b ,  h₃ = (2 · Area) / c"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Harmonic Relation",
-        formulaOrStatement = "1/h_a + 1/h_b + 1/h_c = 1/r",
-        note = "(where r is inradius)"
+        formulaOrStatement = "1/h₁ + 1/h₂ + 1/h₃ = 1/r"
       )
     )
   ),
@@ -14299,10 +15440,10 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Length of Internal Angle Bisectors",
-        formulaOrStatement = "t_a = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A / 2)] / (b + c)",
+        formulaOrStatement = "t₁ = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A / 2)] / (b + c)",
         subItems = listOf(
-          "t_b = [2 √(a c s (s - b))] / (a + c) = [2 a c cos(B / 2)] / (a + c)",
-          "t_c = [2 √(a b s (s - c))] / (a + b) = [2 a b cos(C / 2)] / (a + b)"
+          "t₂ = [2 √(a c s (s - b))] / (a + c) = [2 a c cos(B / 2)] / (a + c)",
+          "t₃ = [2 √(a b s (s - c))] / (a + b) = [2 a b cos(C / 2)] / (a + b)"
         )
       ),
       AlgebraHandbookRuleItem(
@@ -14323,7 +15464,7 @@ private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = 
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Exradii & Circumradius Identity",
-        formulaOrStatement = "r_a + r_b + r_c - r = 4R ,  cos A + cos B + cos C = 1 + r / R"
+        formulaOrStatement = "r₁ + r₂ + r₃ - r = 4R ,  cos A + cos B + cos C = 1 + r / R"
       )
     )
   ),
@@ -14379,7 +15520,6 @@ private fun MsteTrigonometrySheet(
           val matchingItems = section.items.filter { item ->
             item.title.contains(searchQuery, ignoreCase = true) ||
               item.formulaOrStatement.contains(searchQuery, ignoreCase = true) ||
-              item.note.contains(searchQuery, ignoreCase = true) ||
               item.subItems.any { it.contains(searchQuery, ignoreCase = true) }
           }
           if (matchingItems.isNotEmpty()) {
@@ -14421,7 +15561,7 @@ private fun MsteTrigonometrySheet(
         modifier = Modifier
           .fillMaxWidth()
           .widthIn(max = 680.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -14503,7 +15643,7 @@ private fun MsteTrigonometrySheet(
           Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(start = 22.dp, end = 22.dp, top = 24.dp, bottom = 14.dp),
+              .padding(start = 22.dp, end = 22.dp, top = 20.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
           ) {
             Text(
@@ -14546,7 +15686,7 @@ private fun MsteTrigonometrySheet(
     }
 
     // ====================================================================
-    // ITEMS 1..12: Each Trigonometry Section + High-Contrast Bold Monospace Capsules
+    // ITEMS 1..12: Compact Trigonometry Sections (Titles + Monospace Capsules Only)
     // ====================================================================
     items(
       count = filteredSections.size,
@@ -14587,10 +15727,10 @@ private fun MsteTrigonometrySheet(
             .padding(
               start = 22.dp,
               end = 22.dp,
-              top = 14.dp,
-              bottom = if (isLastSection) 24.dp else 14.dp
+              top = 12.dp,
+              bottom = if (isLastSection) 22.dp else 12.dp
             ),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+          verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
           // Section Bullet Heading with Subtle Arrival Highlight Glow
           Row(
@@ -14628,44 +15768,29 @@ private fun MsteTrigonometrySheet(
             )
           }
 
-          // Indented Highlighted Math Callout Blocks (1., 2., 3., ...)
+          // Compact Vertically Stacked Math Callout Blocks (Titles + Monospace Capsules Only)
           Column(
             modifier = Modifier
               .fillMaxWidth()
               .padding(start = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
             section.items.forEach { rule ->
               Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(5.dp)
               ) {
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                  Text(
-                    text = "${rule.number}. ${rule.title}:",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = a4HeadingColor
-                  )
-                  if (rule.note.isNotEmpty()) {
-                    Text(
-                      text = rule.note,
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                      ),
-                      color = a4SubtleTextColor
-                    )
-                  }
-                }
+                Text(
+                  text = "${rule.number}. ${rule.title}",
+                  style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = a4HeadingColor,
+                  softWrap = true,
+                  modifier = Modifier.fillMaxWidth()
+                )
 
-                // High-contrast, bold monospace capsules (fontSize = 16.5.sp, FontWeight.Bold, FontFamily.Monospace, rounded glass container with hairline border)
                 val allFormulaCapsules = remember(rule) {
                   listOf(rule.formulaOrStatement) + rule.subItems
                 }
@@ -14673,7 +15798,7 @@ private fun MsteTrigonometrySheet(
                   modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 8.dp),
-                  verticalArrangement = Arrangement.spacedBy(6.dp)
+                  verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                   allFormulaCapsules.forEach { formulaLine ->
                     Surface(
@@ -14685,6 +15810,7 @@ private fun MsteTrigonometrySheet(
                     ) {
                       Text(
                         text = formulaLine,
+                        softWrap = true,
                         style = MaterialTheme.typography.titleMedium.copy(
                           fontFamily = FontFamily.Monospace,
                           fontSize = 16.5.sp,
@@ -14706,7 +15832,7 @@ private fun MsteTrigonometrySheet(
             HorizontalDivider(
               thickness = 0.8.dp,
               color = a4BorderColor.copy(alpha = 0.55f),
-              modifier = Modifier.padding(top = 6.dp)
+              modifier = Modifier.padding(top = 4.dp)
             )
           }
         }
@@ -15455,8 +16581,16 @@ private fun InteractiveReferenceFormulaCard(
               .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
               .padding(horizontal = 10.dp, vertical = 4.dp)
           ) {
+            val badgeLabel = if (
+              formula.categoryTab.isNotBlank() &&
+              !formula.categoryTab.equals(formula.mathSubTab, ignoreCase = true)
+            ) {
+              "${formula.categoryTab.uppercase(Locale.ROOT)} • ${formula.mathSubTab.uppercase(Locale.ROOT)}"
+            } else {
+              formula.mathSubTab.uppercase(Locale.ROOT)
+            }
             Text(
-              text = formula.mathSubTab.uppercase(Locale.ROOT),
+              text = badgeLabel,
               style = MaterialTheme.typography.labelSmall.copy(
                 fontFamily = JetBrainsMonoFamily,
                 fontSize = metrics.scaledSp(10),
@@ -16235,14 +17369,11 @@ private fun AddCustomFormulaGlassDialog(
 ) {
   val palette = currentGlassPalette()
   var title by rememberSaveable { mutableStateOf("") }
-  var selectedCategory by rememberSaveable { mutableStateOf("Mathematics") }
-  var selectedMathSubTab by rememberSaveable { mutableStateOf("Algebra") }
+  var category by rememberSaveable { mutableStateOf("") }
+  var topic by rememberSaveable { mutableStateOf("") }
   var equation by rememberSaveable { mutableStateOf("") }
   var variableNotes by rememberSaveable { mutableStateOf("") }
   var errorText by rememberSaveable { mutableStateOf<String?>(null) }
-
-  val categoryOptions = remember { listOf("Mathematics", "PSAD", "HPGE") }
-  val mathSubOptions = remember { listOf("Algebra", "Trigonometry", "Geometry", "Analytic Geometry") }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -16319,72 +17450,37 @@ private fun AddCustomFormulaGlassDialog(
             .testTag("custom_formula_title_input")
         )
 
-        Text(
-          text = "Category",
-          style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-          color = palette.textSecondary
+        OutlinedTextField(
+          value = category,
+          onValueChange = {
+            category = it
+            errorText = null
+          },
+          label = { Text("Category") },
+          placeholder = { Text("e.g., Hydraulics, MSTE, PSAD") },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_formula_category_input")
         )
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          categoryOptions.forEach { cat ->
-            val isSelected = selectedCategory == cat
-            Surface(
-              onClick = { selectedCategory = cat },
-              shape = RoundedCornerShape(14.dp),
-              color = if (isSelected) Color(0xFF6366F1) else palette.nestedCardFill,
-              border = BorderStroke(
-                1.dp,
-                if (isSelected) Color.White.copy(alpha = 0.5f) else palette.textSecondary.copy(alpha = 0.25f)
-              ),
-              modifier = Modifier.weight(1f)
-            ) {
-              Text(
-                text = cat,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                color = if (isSelected) Color.White else palette.textPrimary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(vertical = 10.dp)
-              )
-            }
-          }
-        }
-
-        if (selectedCategory == "Mathematics") {
-          Text(
-            text = "Mathematics Topic",
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-            color = palette.textSecondary
-          )
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            mathSubOptions.forEach { sub ->
-              val isSelected = selectedMathSubTab == sub
-              Surface(
-                onClick = { selectedMathSubTab = sub },
-                shape = RoundedCornerShape(12.dp),
-                color = if (isSelected) Color(0xFF6366F1).copy(alpha = 0.22f) else palette.nestedCardFill,
-                border = BorderStroke(
-                  1.dp,
-                  if (isSelected) Color(0xFF6366F1) else palette.textSecondary.copy(alpha = 0.22f)
-                )
-              ) {
-                Text(
-                  text = sub,
-                  style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                  color = if (isSelected) palette.accentIndigo else palette.textSecondary,
-                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                )
-              }
-            }
-          }
-        }
+        OutlinedTextField(
+          value = topic,
+          onValueChange = {
+            topic = it
+            errorText = null
+          },
+          label = { Text("Topic") },
+          placeholder = { Text("e.g., Fluid Properties, Algebra, Trigonometry") },
+          singleLine = true,
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("custom_formula_topic_input")
+        )
 
         OutlinedTextField(
           value = equation,
@@ -16393,7 +17489,7 @@ private fun AddCustomFormulaGlassDialog(
             errorText = null
           },
           label = { Text("Formula Equation") },
-          placeholder = { Text("e.g., σ_cr = π²E / (KL/r)²") },
+          placeholder = { Text("e.g., σcr = π²E / (KL/r)²") },
           shape = RoundedCornerShape(16.dp),
           colors = sibilOutlinedTextFieldColors(),
           modifier = Modifier
@@ -16441,10 +17537,12 @@ private fun AddCustomFormulaGlassDialog(
               } else if (equation.trim().isEmpty()) {
                 errorText = "Please enter the formula equation"
               } else {
+                val resolvedCategory = category.trim().ifEmpty { "General CE" }
+                val resolvedTopic = topic.trim().ifEmpty { resolvedCategory }
                 onSaveFormula(
                   title.trim(),
-                  selectedCategory,
-                  if (selectedCategory == "Mathematics") selectedMathSubTab else selectedCategory,
+                  resolvedCategory,
+                  resolvedTopic,
                   equation.trim(),
                   variableNotes.trim()
                 )
@@ -17988,12 +19086,16 @@ fun FlashcardMainView(
 /**
  * 1. QR Code Generator Helper using BarcodeEncoder
  */
-fun generateDeckQrBitmap(deckId: String, size: Int = 512): Bitmap? {
+fun generateDeckQrBitmap(deckCode: String, size: Int = 400): Bitmap? {
   return try {
-    val encoder = BarcodeEncoder()
-    encoder.encodeBitmap("SIBIL_DECK:$deckId", BarcodeFormat.QR_CODE, size, size)
+    BarcodeEncoder().encodeBitmap(deckCode, BarcodeFormat.QR_CODE, size, size)
   } catch (_: Exception) {
-    null
+    try {
+      val fallbackPayload = if (deckCode.length > 1800) deckCode.take(1800) else "SIBIL_DECK"
+      BarcodeEncoder().encodeBitmap(fallbackPayload, BarcodeFormat.QR_CODE, size, size)
+    } catch (_: Exception) {
+      null
+    }
   }
 }
 
@@ -18041,7 +19143,25 @@ fun ShareDeckQrDialog(
 ) {
   val context = LocalContext.current
   val palette = currentGlassPalette()
-  val qrBitmap = remember(deckId) { generateDeckQrBitmap(deckId) }
+  val deckCode = deckId.ifBlank { deckTitle.ifBlank { "SIBIL_DECK" } }
+  var qrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+
+  LaunchedEffect(deckCode) {
+    qrBitmap = null
+    val encodedBitmap = withContext(Dispatchers.IO) {
+      try {
+        BarcodeEncoder().encodeBitmap(deckCode, BarcodeFormat.QR_CODE, 400, 400)
+      } catch (_: Exception) {
+        try {
+          val fallbackCode = if (deckCode.length > 1800) deckCode.take(1800) else deckTitle.ifBlank { "SIBIL_DECK" }
+          BarcodeEncoder().encodeBitmap(fallbackCode, BarcodeFormat.QR_CODE, 400, 400)
+        } catch (_: Exception) {
+          null
+        }
+      }
+    }
+    qrBitmap = encodedBitmap?.asImageBitmap()
+  }
 
   androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
     Surface(
@@ -18083,9 +19203,10 @@ fun ShareDeckQrDialog(
           modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
         )
 
-        if (qrBitmap != null) {
+        val currentQrBitmap = qrBitmap
+        if (currentQrBitmap != null) {
           Image(
-            bitmap = qrBitmap.asImageBitmap(),
+            bitmap = currentQrBitmap,
             contentDescription = "QR Code for $deckTitle",
             modifier = Modifier
               .size(220.dp)
@@ -18219,10 +19340,15 @@ private fun ImportSharedDeckCodeDialog(
                   decodeError = null
                   val deckIdInt = clean.toIntOrNull()
                   if (deckIdInt != null) {
-                    val db = FirebaseFirestore.getInstance()
-                    db.collectionGroup("flashcards").whereEqualTo("id", deckIdInt).limit(1).get()
-                      .addOnSuccessListener { qs ->
-                        val remote = qs.documents.firstOrNull()?.toFlashcardDeckOrNull()
+                    val auth = FirebaseAuth.getInstance()
+                    FirebaseFirestore.getInstance()
+                      .collection("users")
+                      .document(auth.currentUser?.uid ?: "offline_fallback")
+                      .collection("flashcards")
+                      .document(deckIdInt.toString())
+                      .get()
+                      .addOnSuccessListener { doc ->
+                        val remote = doc.toFlashcardDeckOrNull()
                         if (remote != null) onImportDeck(remote)
                       }
                   }
@@ -24694,23 +25820,31 @@ fun ClockScreen(
   }
 
   // ==========================================================================
-  // TIMER STATE & COUNTDOWN ENGINE
+  // TIMER STATE & COUNTDOWN ENGINE (ABSOLUTE END TIME FOR DOZE MODE SYNC)
   // ==========================================================================
   // Digit buffer for custom keypad input (up to 6 digits: HHMMSS)
   var timerDigitInput by rememberSaveable { mutableStateOf("") }
   var timerTotalDurationSeconds by rememberSaveable { mutableLongStateOf(0L) }
   var timerRemainingSeconds by rememberSaveable { mutableLongStateOf(0L) }
+  var timerRemainingMillis by rememberSaveable { mutableLongStateOf(0L) }
+  var targetEndTime by rememberSaveable { mutableLongStateOf(0L) }
   var isTimerRunning by rememberSaveable { mutableStateOf(false) }
   var activePresetLabel by rememberSaveable { mutableStateOf<String?>(null) }
   var hasFiredAlarm by remember { mutableStateOf(false) }
 
-  LaunchedEffect(isTimerRunning) {
-    while (isTimerRunning && timerRemainingSeconds > 0L) {
-      delay(1000L)
-      if (isTimerRunning && timerRemainingSeconds > 0L) {
-        timerRemainingSeconds -= 1L
-        if (timerRemainingSeconds <= 0L) {
+  LaunchedEffect(isTimerRunning, targetEndTime) {
+    if (isTimerRunning) {
+      if (targetEndTime <= 0L && timerRemainingSeconds > 0L) {
+        val fallbackDurationMillis =
+          if (timerRemainingMillis > 0L) timerRemainingMillis else timerRemainingSeconds * 1000L
+        targetEndTime = System.currentTimeMillis() + fallbackDurationMillis
+      }
+      while (isTimerRunning && targetEndTime > 0L) {
+        val remaining = targetEndTime - System.currentTimeMillis()
+        if (remaining <= 0L) {
+          timerRemainingMillis = 0L
           timerRemainingSeconds = 0L
+          targetEndTime = 0L
           isTimerRunning = false
           if (!hasFiredAlarm) {
             hasFiredAlarm = true
@@ -24723,7 +25857,11 @@ fun ClockScreen(
             )
           }
           break
+        } else {
+          timerRemainingMillis = remaining
+          timerRemainingSeconds = (remaining + 999L) / 1000L
         }
+        delay(200L)
       }
     }
   }
@@ -25102,6 +26240,8 @@ fun ClockScreen(
             isTimerRunning = false
             hasFiredAlarm = false
             stopActiveRingtone()
+            targetEndTime = 0L
+            timerRemainingMillis = 0L
             timerRemainingSeconds = 0L
             timerTotalDurationSeconds = 0L
             timerDigitInput = ""
@@ -25110,12 +26250,22 @@ fun ClockScreen(
           },
           onStartOrPause = {
             if (isTimerRunning) {
+              val remaining = (targetEndTime - System.currentTimeMillis()).coerceAtLeast(0L)
+              timerRemainingMillis = remaining
+              timerRemainingSeconds = (remaining + 999L) / 1000L
+              targetEndTime = 0L
               isTimerRunning = false
               cancelTimerExactAlarm(context)
             } else {
               stopActiveRingtone()
               hasFiredAlarm = false
               if (timerRemainingSeconds > 0L) {
+                val selectedDurationMillis =
+                  if (timerRemainingMillis > 0L) timerRemainingMillis else timerRemainingSeconds * 1000L
+                val resumeEndTime = System.currentTimeMillis() + selectedDurationMillis
+                targetEndTime = resumeEndTime
+                timerRemainingMillis = selectedDurationMillis
+                timerRemainingSeconds = (selectedDurationMillis + 999L) / 1000L
                 isTimerRunning = true
                 scheduleTimerExactAlarm(
                   context = context,
@@ -25125,7 +26275,11 @@ fun ClockScreen(
               } else {
                 val parsedSeconds = parseKeypadDigitsToSeconds(timerDigitInput)
                 if (parsedSeconds > 0L) {
+                  val selectedDurationMillis = parsedSeconds * 1000L
+                  val newTargetEndTime = System.currentTimeMillis() + selectedDurationMillis
+                  targetEndTime = newTargetEndTime
                   timerTotalDurationSeconds = parsedSeconds
+                  timerRemainingMillis = selectedDurationMillis
                   timerRemainingSeconds = parsedSeconds
                   activePresetLabel = "Custom Timer"
                   isTimerRunning = true
@@ -25142,6 +26296,8 @@ fun ClockScreen(
             isTimerRunning = false
             hasFiredAlarm = false
             stopActiveRingtone()
+            targetEndTime = 0L
+            timerRemainingMillis = 0L
             timerRemainingSeconds = 0L
             timerTotalDurationSeconds = 0L
             activePresetLabel = null
@@ -25151,7 +26307,11 @@ fun ClockScreen(
             stopActiveRingtone()
             hasFiredAlarm = false
             timerDigitInput = ""
+            val selectedDurationMillis = preset.durationSeconds * 1000L
+            val newTargetEndTime = System.currentTimeMillis() + selectedDurationMillis
+            targetEndTime = newTargetEndTime
             timerTotalDurationSeconds = preset.durationSeconds
+            timerRemainingMillis = selectedDurationMillis
             timerRemainingSeconds = preset.durationSeconds
             activePresetLabel = preset.label
             isTimerRunning = true
