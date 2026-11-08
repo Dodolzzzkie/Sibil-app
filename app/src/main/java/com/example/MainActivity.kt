@@ -285,9 +285,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material.icons.filled.ChangeHistory
 import androidx.compose.material.icons.filled.QrCode2
@@ -302,6 +305,7 @@ import com.google.zxing.BarcodeFormat
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -309,8 +313,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -1282,6 +1293,7 @@ data class FlashcardItem(
   val category: String = "",
   var masteryLevel: String = "New",
   @get:PropertyName("isMastered")
+  @set:PropertyName("isMastered")
   var isMastered: Boolean = masteryLevel.equals("Good", ignoreCase = true)
 ) {
   fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
@@ -1338,6 +1350,250 @@ fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
     cards = normalizedCards,
     masteredCardIds = normalizedCards.filter { it.isMastered }.map { it.id }
   )
+}
+
+/**
+ * Serializes a `FlashcardDeck` into a JSON string containing both standard `FlashcardDeck` fields
+ * and compact keys, compresses it via `GZIPOutputStream` with explicit `finish()` and `flush()`,
+ * and encodes the result using `Base64.NO_WRAP` so clipboard copies and QR matrices are never
+ * corrupted by embedded newline characters or un-flushed GZIP trailers.
+ */
+fun exportDeckToShareableCode(deck: FlashcardDeck): String {
+  return try {
+    val safeTitle = deck.title.trim().ifEmpty { "Shared Study Deck" }
+    val safeSubject = deck.subjectTag.trim().ifEmpty { "General" }
+    val cardsArray = JSONArray()
+    deck.cards.forEachIndexed { index, card ->
+      val q = card.question.trim()
+      val a = card.answer.trim()
+      if (q.isNotEmpty() && a.isNotEmpty()) {
+        val cat = card.category.trim().ifEmpty { safeSubject }
+        cardsArray.put(
+          JSONObject().apply {
+            put("id", if (card.id > 0) card.id else index + 1)
+            put("question", q)
+            put("answer", a)
+            put("category", cat)
+            put("masteryLevel", "New")
+            put("isMastered", false)
+            put("q", q)
+            put("a", a)
+            put("c", cat)
+          }
+        )
+      }
+    }
+    val root = JSONObject().apply {
+      put("v", 1)
+      put("id", deck.id)
+      put("title", safeTitle)
+      put("subjectTag", safeSubject)
+      put("domain", safeSubject)
+      put("cards", cardsArray)
+      put("masteredCardIds", JSONArray())
+    }
+    val jsonString = root.toString()
+    val byteStream = ByteArrayOutputStream()
+    GZIPOutputStream(byteStream).use { gzip ->
+      gzip.write(jsonString.toByteArray(Charsets.UTF_8))
+      gzip.finish()
+      gzip.flush()
+    }
+    val compressedBytes = byteStream.toByteArray()
+    android.util.Base64.encodeToString(compressedBytes, android.util.Base64.NO_WRAP)
+  } catch (e: Exception) {
+    Log.e("SibilExport", "Export failed: ${e.message}")
+    ""
+  }
+}
+
+/**
+ * Lenient JSON-to-FlashcardDeck parser supporting standard `FlashcardDeck` JSON, compact v1 share JSON,
+ * and raw card arrays while ignoring unknown keys and coercing missing fields to safe defaults.
+ */
+private fun parseJsonStringToFlashcardDeck(rawJsonString: String): FlashcardDeck? {
+  val trimmed = rawJsonString.trim().removePrefix("\uFEFF").trim()
+  if (trimmed.isEmpty()) return null
+
+  return try {
+    val jsonCandidate = when {
+      trimmed.startsWith("{") && trimmed.endsWith("}") -> trimmed
+      trimmed.startsWith("[") && trimmed.endsWith("]") -> trimmed
+      trimmed.contains("{") && trimmed.contains("}") -> {
+        val start = trimmed.indexOf('{')
+        val end = trimmed.lastIndexOf('}')
+        if (start in 0 until end) trimmed.substring(start, end + 1) else return null
+      }
+      else -> return null
+    }
+
+    if (jsonCandidate.startsWith("[")) {
+      val cardsArray = JSONArray(jsonCandidate)
+      val decodedCards = mutableListOf<FlashcardItem>()
+      for (i in 0 until cardsArray.length()) {
+        val cardObj = cardsArray.optJSONObject(i) ?: continue
+        val q = cardObj.optString("question", "")
+          .ifBlank { cardObj.optString("q", "") }
+          .ifBlank { cardObj.optString("front", "") }
+          .trim()
+        val a = cardObj.optString("answer", "")
+          .ifBlank { cardObj.optString("a", "") }
+          .ifBlank { cardObj.optString("back", "") }
+          .trim()
+        val c = cardObj.optString("category", "")
+          .ifBlank { cardObj.optString("c", "General") }
+          .trim()
+          .ifEmpty { "General" }
+        if (q.isNotEmpty() && a.isNotEmpty()) {
+          decodedCards.add(
+            FlashcardItem(
+              id = i + 1,
+              question = q,
+              answer = a,
+              category = c,
+              masteryLevel = "New",
+              isMastered = false
+            )
+          )
+        }
+      }
+      if (decodedCards.isEmpty()) return null
+      return FlashcardDeck(
+        id = 0,
+        title = "Shared Study Deck",
+        subjectTag = decodedCards.first().category.ifEmpty { "General" },
+        cards = decodedCards,
+        masteredCardIds = emptyList()
+      )
+    }
+
+    val root = JSONObject(jsonCandidate)
+    val title = root.optString("title", "")
+      .ifBlank { root.optString("t", "") }
+      .ifBlank { root.optString("name", "") }
+      .ifBlank { root.optString("deckTitle", "Shared Study Deck") }
+      .trim()
+      .ifEmpty { "Shared Study Deck" }
+    val domain = root.optString("subjectTag", "")
+      .ifBlank { root.optString("domain", "") }
+      .ifBlank { root.optString("s", "") }
+      .ifBlank { root.optString("category", "General") }
+      .trim()
+      .ifEmpty { "General" }
+    val cardsArray = root.optJSONArray("cards")
+      ?: root.optJSONArray("items")
+      ?: root.optJSONArray("flashcards")
+      ?: return null
+
+    val decodedCards = mutableListOf<FlashcardItem>()
+    for (i in 0 until cardsArray.length()) {
+      val cardObj = cardsArray.optJSONObject(i) ?: continue
+      val q = cardObj.optString("question", "")
+        .ifBlank { cardObj.optString("q", "") }
+        .ifBlank { cardObj.optString("front", "") }
+        .ifBlank { cardObj.optString("term", "") }
+        .trim()
+      val a = cardObj.optString("answer", "")
+        .ifBlank { cardObj.optString("a", "") }
+        .ifBlank { cardObj.optString("back", "") }
+        .ifBlank { cardObj.optString("definition", "") }
+        .trim()
+      val c = cardObj.optString("category", "")
+        .ifBlank { cardObj.optString("c", "") }
+        .ifBlank { cardObj.optString("subjectTag", domain) }
+        .trim()
+        .ifEmpty { domain }
+      if (q.isNotEmpty() && a.isNotEmpty()) {
+        decodedCards.add(
+          FlashcardItem(
+            id = i + 1,
+            question = q,
+            answer = a,
+            category = c,
+            masteryLevel = "New",
+            isMastered = false
+          )
+        )
+      }
+    }
+    if (decodedCards.isEmpty()) return null
+    FlashcardDeck(
+      id = root.optInt("id", 0),
+      title = title,
+      subjectTag = domain,
+      cards = decodedCards,
+      masteredCardIds = emptyList()
+    )
+  } catch (_: Exception) {
+    null
+  }
+}
+
+/**
+ * Resilient Multi-Tier Deck Decoder:
+ * - Sanitizes input by stripping optional "SIBIL_DECK:" prefix, removing newlines/tabs/CRs,
+ *   and restoring '+' characters that chat apps or clipboards converted to spaces.
+ * - Tier 1 (Primary): Base64.NO_WRAP (with DEFAULT/URL_SAFE fallback) -> GZIPInputStream -> JSON.
+ * - Tier 2 (Fallback 1): Uncompressed Base64 -> UTF-8 JSON.
+ * - Tier 3 (Fallback 2): Direct Raw JSON string parsing.
+ */
+fun parseImportedDeckCode(rawInput: String): FlashcardDeck? {
+  val strippedInput = rawInput.trim().removePrefix("SIBIL_DECK:").trim()
+  if (strippedInput.isEmpty()) return null
+
+  val cleanInput = strippedInput
+    .replace("\n", "")
+    .replace("\r", "")
+    .replace("\t", "")
+    .replace(" ", "+")
+  if (cleanInput.isEmpty()) return null
+
+  // TIER 1: GZIP + Base64 (Standard Export)
+  try {
+    val decodedBytes = try {
+      android.util.Base64.decode(cleanInput, android.util.Base64.NO_WRAP)
+    } catch (_: Exception) {
+      try {
+        android.util.Base64.decode(cleanInput, android.util.Base64.DEFAULT)
+      } catch (_: Exception) {
+        android.util.Base64.decode(cleanInput, android.util.Base64.URL_SAFE)
+      }
+    }
+    val decompressedJson = GZIPInputStream(ByteArrayInputStream(decodedBytes))
+      .bufferedReader(Charsets.UTF_8)
+      .use { it.readText() }
+    val parsedDeck = parseJsonStringToFlashcardDeck(decompressedJson)
+    if (parsedDeck != null) return parsedDeck
+  } catch (_: Exception) {
+    // Fall through to Tier 2
+  }
+
+  // TIER 2: Uncompressed Base64 Fallback
+  try {
+    val decodedBytes = try {
+      android.util.Base64.decode(cleanInput, android.util.Base64.DEFAULT)
+    } catch (_: Exception) {
+      try {
+        android.util.Base64.decode(cleanInput, android.util.Base64.NO_WRAP)
+      } catch (_: Exception) {
+        android.util.Base64.decode(cleanInput, android.util.Base64.URL_SAFE)
+      }
+    }
+    val rawJson = String(decodedBytes, Charsets.UTF_8)
+    val parsedDeck = parseJsonStringToFlashcardDeck(rawJson)
+    if (parsedDeck != null) return parsedDeck
+  } catch (_: Exception) {
+    // Fall through to Tier 3
+  }
+
+  // TIER 3: Raw JSON Fallback
+  return try {
+    parseJsonStringToFlashcardDeck(strippedInput)
+      ?: parseJsonStringToFlashcardDeck(cleanInput)
+  } catch (e: Exception) {
+    Log.e("SibilImport", "All import tiers failed: ${e.message}")
+    null
+  }
 }
 
 /**
@@ -1454,118 +1710,19 @@ object GizmoBatchFlashcardEngine {
   }
 
   /**
-   * Encodes a `FlashcardDeck` (title, subjectTag/domain, and all Q&A cards) into a compact
-   * Base64/JSON share code that classmates can import with zero API calls.
+   * Encodes a `FlashcardDeck` (title, subjectTag/domain, and all Q&A cards) into a GZIP+Base64 (NO_WRAP)
+   * share code that classmates can import with zero API calls.
    */
   fun encodeDeckToShareCode(deck: FlashcardDeck): String {
-    val root = JSONObject().apply {
-      put("v", 1)
-      put("title", deck.title.trim().ifEmpty { "Shared Study Deck" })
-      put("domain", deck.subjectTag.trim().ifEmpty { "General" })
-      val cardsArray = JSONArray()
-      for (card in deck.cards) {
-        if (card.question.isNotBlank() && card.answer.isNotBlank()) {
-          cardsArray.put(
-            JSONObject().apply {
-              put("q", card.question.trim())
-              put("a", card.answer.trim())
-              put("c", card.category.trim().ifEmpty { deck.subjectTag.trim().ifEmpty { "General" } })
-            }
-          )
-        }
-      }
-      put("cards", cardsArray)
-    }
-    val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
-    val compressedBytes = try {
-      val baos = ByteArrayOutputStream()
-      GZIPOutputStream(baos).use { gzip ->
-        gzip.write(jsonBytes)
-      }
-      baos.toByteArray()
-    } catch (_: Exception) {
-      jsonBytes
-    }
-    val payloadBytes = if (compressedBytes.size < jsonBytes.size) compressedBytes else jsonBytes
-    return Base64.encodeToString(payloadBytes, Base64.NO_WRAP)
+    return exportDeckToShareableCode(deck)
   }
 
   /**
-   * Decodes a Base64/JSON share code from a classmate back into a `FlashcardDeck`
+   * Decodes a Base64/GZIP/JSON share code from a classmate back into a `FlashcardDeck`
    * with zero API calls and zero token consumption.
    */
   fun decodeDeckFromShareCode(rawCode: String): FlashcardDeck? {
-    val cleanedInput = rawCode.trim().removePrefix("SIBIL_DECK:").trim()
-    if (cleanedInput.isEmpty()) return null
-
-    val jsonString = try {
-      if (cleanedInput.startsWith("{")) {
-        cleanedInput
-      } else {
-        val normalizedBase64 = cleanedInput.replace("\\s+".toRegex(), "")
-        val decodedBytes = Base64.decode(normalizedBase64, Base64.DEFAULT)
-        if (
-          decodedBytes.size >= 2 &&
-          decodedBytes[0] == 0x1f.toByte() &&
-          decodedBytes[1] == 0x8b.toByte()
-        ) {
-          GZIPInputStream(ByteArrayInputStream(decodedBytes)).bufferedReader(Charsets.UTF_8).use {
-            it.readText().trim()
-          }
-        } else {
-          String(decodedBytes, Charsets.UTF_8).trim()
-        }
-      }
-    } catch (_: Exception) {
-      return null
-    }
-
-    return try {
-      val root = JSONObject(jsonString)
-      val title = root.optString("title", "")
-        .ifBlank { root.optString("t", "Shared Study Deck") }
-        .trim()
-      val domain = root.optString("domain", "")
-        .ifBlank { root.optString("subjectTag", "") }
-        .ifBlank { root.optString("s", "General") }
-        .trim()
-      val cardsArray = root.optJSONArray("cards") ?: root.optJSONArray("items") ?: return null
-      val decodedCards = mutableListOf<FlashcardItem>()
-      for (i in 0 until cardsArray.length()) {
-        val cardObj = cardsArray.optJSONObject(i) ?: continue
-        val q = cardObj.optString("q", "")
-          .ifBlank { cardObj.optString("question", "") }
-          .trim()
-        val a = cardObj.optString("a", "")
-          .ifBlank { cardObj.optString("answer", "") }
-          .trim()
-        val c = cardObj.optString("c", "")
-          .ifBlank { cardObj.optString("category", domain) }
-          .trim()
-          .ifEmpty { domain }
-        if (q.isNotEmpty() && a.isNotEmpty()) {
-          decodedCards.add(
-            FlashcardItem(
-              id = i + 1,
-              question = q,
-              answer = a,
-              category = c,
-              masteryLevel = "New",
-              isMastered = false
-            )
-          )
-        }
-      }
-      if (decodedCards.isEmpty()) return null
-      FlashcardDeck(
-        id = 0,
-        title = title.ifEmpty { "Shared Study Deck" },
-        subjectTag = domain.ifEmpty { "General" },
-        cards = decodedCards
-      )
-    } catch (_: Exception) {
-      null
-    }
+    return parseImportedDeckCode(rawCode)
   }
 
   val SYSTEM_PROMPT_INSTRUCTION = """
@@ -4986,6 +5143,58 @@ class TaskViewModel(
       Log.e("SibilSync", "Error in addFlashcardDeck: ${e.message}", e)
     }
     return newDeck
+  }
+
+  /**
+   * Imports a shared `FlashcardDeck` decoded via `parseImportedDeckCode`, assigning a fresh
+   * collision-free UUID-backed ID, adding it to the local reactive deck state, and immediately
+   * persisting it to Firestore under `users/{uid}/flashcards/{finalDeck.id}`.
+   */
+  fun importSharedFlashcardDeck(importedDeck: FlashcardDeck): FlashcardDeck {
+    val cleanTitle = importedDeck.title.trim().ifEmpty { "Shared Study Deck" }
+    val cleanTag = importedDeck.subjectTag.trim().ifEmpty { "General CE" }
+    val existingIds = _flashcardDecks.map { it.id }.toSet()
+    var uniqueDeckId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+    while (existingIds.contains(uniqueDeckId)) {
+      uniqueDeckId = ((uniqueDeckId + 1) and 0x7FFFFFFF).coerceAtLeast(1000)
+    }
+    if (uniqueDeckId >= nextDeckId) {
+      nextDeckId = uniqueDeckId + 1
+    }
+    val normalizedCards = importedDeck.cards.mapIndexed { index, card ->
+      val assignedCardId = nextCardId++
+      card.copy(
+        id = if (assignedCardId > 0) assignedCardId else (index + 1),
+        question = card.question.trim(),
+        answer = card.answer.trim(),
+        category = card.category.trim().ifEmpty { cleanTag },
+        masteryLevel = "New",
+        isMastered = false
+      )
+    }
+    val finalDeck = importedDeck.copy(
+      id = uniqueDeckId,
+      title = cleanTitle,
+      subjectTag = cleanTag,
+      cards = normalizedCards,
+      masteredCardIds = emptyList()
+    )
+    _flashcardDecks.add(0, finalDeck)
+    storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
+    try {
+      val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "offline_fallback"
+      FirebaseFirestore.getInstance()
+        .collection("users").document(uid)
+        .collection("flashcards").document(finalDeck.id.toString())
+        .set(finalDeck.toFirestoreMap())
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to write imported deck: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error in importSharedFlashcardDeck: ${e.message}", e)
+    }
+    return finalDeck
   }
 
   fun addCardToDeck(
@@ -12106,7 +12315,8 @@ private enum class FormulaVaultTier {
   ALGEBRA_A4_SHEET,
   TRIGONOMETRY_A4_SHEET,
   GEOMETRY_VOLUMES,
-  PLANE_GEOMETRY
+  PLANE_GEOMETRY,
+  SOLID_GEOMETRY
 }
 
 private data class EngineeringNotebookSpec(
@@ -12217,7 +12427,7 @@ fun FormulaVaultMainView(
   val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
   // 3-Tier PRC Board Exam Hierarchy State:
-  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET" / "TRIGONOMETRY_A4_SHEET"
+  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET" / "TRIGONOMETRY_A4_SHEET" / "GEOMETRY_VOLUMES" -> "PLANE_GEOMETRY" / "SOLID_GEOMETRY"
   var currentTierName by rememberSaveable { mutableStateOf(FormulaVaultTier.MASTER_VOLUMES.name) }
   val currentTier = remember(currentTierName) {
     runCatching { FormulaVaultTier.valueOf(currentTierName) }.getOrDefault(FormulaVaultTier.MASTER_VOLUMES)
@@ -12252,7 +12462,8 @@ fun FormulaVaultMainView(
   fun navigateBackOneTier() {
     playCardHapticSound(context, localView)
     when (currentTier) {
-      FormulaVaultTier.PLANE_GEOMETRY -> {
+      FormulaVaultTier.PLANE_GEOMETRY,
+      FormulaVaultTier.SOLID_GEOMETRY -> {
         currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
       }
       FormulaVaultTier.GEOMETRY_VOLUMES,
@@ -12299,6 +12510,7 @@ fun FormulaVaultMainView(
     FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "MSTE • Trigonometry"
     FormulaVaultTier.GEOMETRY_VOLUMES -> "MSTE • Geometry"
     FormulaVaultTier.PLANE_GEOMETRY -> "MSTE • Plane Geometry"
+    FormulaVaultTier.SOLID_GEOMETRY -> "MSTE • Solid Geometry"
   }
 
   val trimmedQuery = searchQuery.trim()
@@ -12337,8 +12549,12 @@ fun FormulaVaultMainView(
       it.title.contains(trimmedQuery, ignoreCase = true)
     }
 
-  val showTrigDirectlyFromSearch = noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
-  val showAlgebraDirectlyFromSearch = noShelfMatchesQuery && algebraMatchesQuery
+  val isGeometryScreen = currentTier == FormulaVaultTier.GEOMETRY_VOLUMES ||
+    currentTier == FormulaVaultTier.PLANE_GEOMETRY ||
+    currentTier == FormulaVaultTier.SOLID_GEOMETRY
+
+  val showTrigDirectlyFromSearch = !isGeometryScreen && noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
+  val showAlgebraDirectlyFromSearch = !isGeometryScreen && noShelfMatchesQuery && algebraMatchesQuery
 
   val isShowingTrigSheet = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET ||
     (showTrigDirectlyFromSearch && currentTier != FormulaVaultTier.ALGEBRA_A4_SHEET)
@@ -12392,7 +12608,8 @@ fun FormulaVaultMainView(
               Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                 contentDescription = when (currentTier) {
-                  FormulaVaultTier.PLANE_GEOMETRY -> "Back to Geometry Volumes"
+                  FormulaVaultTier.PLANE_GEOMETRY,
+                  FormulaVaultTier.SOLID_GEOMETRY -> "Back to Geometry Volumes"
                   FormulaVaultTier.GEOMETRY_VOLUMES,
                   FormulaVaultTier.ALGEBRA_A4_SHEET,
                   FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "Back to MSTE Library"
@@ -12423,31 +12640,33 @@ fun FormulaVaultMainView(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-          // Dedicated Table of Contents (TOC) Top Bar Button
-          Surface(
-            onClick = {
-              playCardHapticSound(context, localView)
-              showTocSheet = true
-            },
-            shape = CircleShape,
-            color = if (showTocSheet) Color(0xFF6366F1).copy(alpha = 0.18f) else palette.cardFill,
-            border = if (showTocSheet) {
-              BorderStroke(1.2.dp, Color(0xFF6366F1).copy(alpha = 0.65f))
-            } else {
-              palette.glassBorder
-            },
-            shadowElevation = 4.dp,
-            modifier = Modifier
-              .size(38.dp)
-              .testTag("formula_vault_toc_top_button")
-          ) {
-            Box(contentAlignment = Alignment.Center) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.ViewList,
-                contentDescription = "Table of Contents",
-                tint = if (showTocSheet) palette.accentIndigo else palette.textPrimary,
-                modifier = Modifier.size(19.dp)
-              )
+          // Dedicated Table of Contents (TOC) Top Bar Button (Hidden on GeometryVolumesScreen, PlaneGeometryScreen & SolidGeometryScreen)
+          if (!isGeometryScreen) {
+            Surface(
+              onClick = {
+                playCardHapticSound(context, localView)
+                showTocSheet = true
+              },
+              shape = CircleShape,
+              color = if (showTocSheet) Color(0xFF6366F1).copy(alpha = 0.18f) else palette.cardFill,
+              border = if (showTocSheet) {
+                BorderStroke(1.2.dp, Color(0xFF6366F1).copy(alpha = 0.65f))
+              } else {
+                palette.glassBorder
+              },
+              shadowElevation = 4.dp,
+              modifier = Modifier
+                .size(38.dp)
+                .testTag("formula_vault_toc_top_button")
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.ViewList,
+                  contentDescription = "Table of Contents",
+                  tint = if (showTocSheet) palette.accentIndigo else palette.textPrimary,
+                  modifier = Modifier.size(19.dp)
+                )
+              }
             }
           }
 
@@ -12527,9 +12746,11 @@ fun FormulaVaultMainView(
                     "Filter Trigonometry laws, triangle area, medians, bisectors, or identities..."
                   FormulaVaultTier.ALGEBRA_A4_SHEET ->
                     "Filter Algebra laws, equations, or symbols (e.g., quadratic, log, radical)..."
+                  FormulaVaultTier.SOLID_GEOMETRY ->
+                    "Filter Solid Geometry solids (Polyhedra, Prism, Cube, Pyramid, Cylinder, Cone, Sphere)..."
                   FormulaVaultTier.GEOMETRY_VOLUMES,
                   FormulaVaultTier.PLANE_GEOMETRY ->
-                    "Filter Plane Geometry shapes (Triangle, Rectangle, Square, Rhombus, Circle)..."
+                    "Filter Geometry shapes & solids (Triangle, Circle, Prism, Pyramid, Cone, Sphere)..."
                   FormulaVaultTier.MSTE_SUB_SHELF ->
                     "Search MSTE sub-volumes, Algebra, Trigonometry, or Geometry..."
                   FormulaVaultTier.MASTER_VOLUMES ->
@@ -12581,6 +12802,20 @@ fun FormulaVaultMainView(
       // 2. 3-TIER HIERARCHY VIEW SWITCHER
       // ====================================================================
       when {
+        currentTier == FormulaVaultTier.SOLID_GEOMETRY -> {
+          SolidGeometryScreen(
+            metrics = metrics,
+            searchQuery = trimmedQuery,
+            onBackToGeometryVolumes = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
         currentTier == FormulaVaultTier.PLANE_GEOMETRY -> {
           PlaneGeometryScreen(
             metrics = metrics,
@@ -12606,6 +12841,10 @@ fun FormulaVaultMainView(
             onOpenPlaneGeometry = {
               playCardHapticSound(context, localView)
               currentTierName = FormulaVaultTier.PLANE_GEOMETRY.name
+            },
+            onOpenSolidGeometry = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.SOLID_GEOMETRY.name
             },
             modifier = Modifier
               .fillMaxWidth()
@@ -12633,6 +12872,10 @@ fun FormulaVaultMainView(
             onOpenToc = {
               playCardHapticSound(context, localView)
               showTocSheet = true
+            },
+            onOpenHolographicTriangle = {
+              playCardHapticSound(context, localView)
+              showHolographicTriangleModal = true
             },
             modifier = Modifier
               .fillMaxWidth()
@@ -12693,6 +12936,7 @@ fun FormulaVaultMainView(
                   currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
                 }
                 notebook.isActive && notebook.id == "geometry" -> {
+                  showTocSheet = false
                   currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
                 }
                 else -> {
@@ -12743,85 +12987,8 @@ fun FormulaVaultMainView(
       }
     }
 
-    // ====================================================================
-    // INTERACTIVE "HOLOGRAPHIC TRIANGLE" INSPECTOR FLOATING TRIGGER ICON
-    // Positioned at lower-left corner (bottom = 24.dp, start = 20.dp)
-    // ====================================================================
-    val holoPulseTransition = rememberInfiniteTransition(label = "holographic_triangle_pulse")
-    val holoGlowAlpha by holoPulseTransition.animateFloat(
-      initialValue = 0.42f,
-      targetValue = 0.92f,
-      animationSpec = infiniteRepeatable(
-        animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-        repeatMode = RepeatMode.Reverse
-      ),
-      label = "holo_glow_alpha"
-    )
-    val holoPulseScale by holoPulseTransition.animateFloat(
-      initialValue = 1.0f,
-      targetValue = 1.06f,
-      animationSpec = infiniteRepeatable(
-        animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-        repeatMode = RepeatMode.Reverse
-      ),
-      label = "holo_pulse_scale"
-    )
-
-    if (currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet) {
-      Surface(
-        onClick = {
-          playCardHapticSound(context, localView)
-          showHolographicTriangleModal = true
-        },
-        shape = CircleShape,
-        color = if (palette.isDark) {
-          Color(0xFF0F172A).copy(alpha = 0.90f)
-        } else {
-          Color(0xFFF8FAFC).copy(alpha = 0.94f)
-        },
-        border = BorderStroke(
-          width = 1.4.dp,
-          brush = Brush.linearGradient(
-            listOf(
-              Color(0xFF06B6D4).copy(alpha = holoGlowAlpha),
-              Color.White.copy(alpha = if (palette.isDark) 0.55f else 0.85f),
-              Color(0xFF3B82F6).copy(alpha = holoGlowAlpha * 0.85f)
-            )
-          )
-        ),
-        shadowElevation = 10.dp,
-        modifier = Modifier
-          .align(Alignment.BottomStart)
-          .padding(bottom = 24.dp, start = 20.dp)
-          .size(52.dp)
-          .scale(holoPulseScale)
-          .testTag("holographic_triangle_trigger_button")
-      ) {
-        Box(
-          modifier = Modifier
-            .fillMaxSize()
-            .background(
-              brush = Brush.radialGradient(
-                colors = listOf(
-                  Color(0xFF06B6D4).copy(alpha = 0.24f * holoGlowAlpha),
-                  Color.Transparent
-                )
-              )
-            ),
-          contentAlignment = Alignment.Center
-        ) {
-          Icon(
-            imageVector = Icons.Default.ChangeHistory,
-            contentDescription = "Interactive Triangle Anatomy Inspector",
-            tint = Color(0xFF06B6D4),
-            modifier = Modifier.size(26.dp)
-          )
-        }
-      }
-    }
-
     // Frosted Glass Table of Contents (TOC) Quick-Jump Sheet
-    if (showTocSheet) {
+    if (showTocSheet && !isGeometryScreen) {
       val activeTocIsTrig = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet
       FormulaVaultTocGlassSheet(
         sections = if (activeTocIsTrig) trigonometrySections else algebraSections,
@@ -12860,7 +13027,7 @@ fun FormulaVaultMainView(
     }
 
     if (showHolographicTriangleModal) {
-      HolographicTriangleModal(
+      InteractiveMagicHexagonModal(
         onDismiss = { showHolographicTriangleModal = false }
       )
     }
@@ -13707,6 +13874,7 @@ private fun GeometryVolumesScreen(
   searchQuery: String,
   onBackToShelf: () -> Unit,
   onOpenPlaneGeometry: () -> Unit,
+  onOpenSolidGeometry: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val palette = currentGlassPalette()
@@ -13729,10 +13897,10 @@ private fun GeometryVolumesScreen(
         fullTitle = "Solid Geometry",
         subtitle = "3D Polyhedra, Cylinders, Cones, Spheres & Frustums",
         departmentCode = "MSTE / CE-03B",
-        pageBadge = "COMING SOON",
-        isActive = false,
-        spineAccentColor = Color(0xFF64748B),
-        secondaryAccentColor = Color(0xFF475569)
+        pageBadge = "ACTIVE • 11 SOLIDS",
+        isActive = true,
+        spineAccentColor = Color(0xFF06B6D4),
+        secondaryAccentColor = Color(0xFF3B82F6)
       )
     )
   }
@@ -13746,6 +13914,10 @@ private fun GeometryVolumesScreen(
           it.subtitle.contains(searchQuery, ignoreCase = true) ||
           (it.id == "plane_geometry" &&
             "triangle rectangle square rhombus parallelogram trapezoid regular polygons circle perimeter area heron apothem sector arc".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            )) ||
+          (it.id == "solid_geometry" &&
+            "polyhedra tetrahedron hexahedron octahedron dodecahedron icosahedron prism oblique parallelepiped cube truncated pyramid frustum cylinder cone sphere zone segment sector lune wedge volume surface lateral euler".contains(
               searchQuery.lowercase(Locale.ROOT)
             ))
       }
@@ -13824,7 +13996,7 @@ private fun GeometryVolumesScreen(
       )
     }
 
-    // Two Large Liquid Glass Navigation Cards: Plane Geometry (Active) & Solid Geometry (Disabled)
+    // Two Large Liquid Glass Navigation Cards: Plane Geometry (Active) & Solid Geometry (Active)
     filteredVolumes.forEach { volume ->
       val cardShape = RoundedCornerShape(
         topStart = 14.dp,
@@ -13835,7 +14007,10 @@ private fun GeometryVolumesScreen(
       Surface(
         onClick = {
           if (volume.isActive) {
-            onOpenPlaneGeometry()
+            when (volume.id) {
+              "plane_geometry" -> onOpenPlaneGeometry()
+              "solid_geometry" -> onOpenSolidGeometry()
+            }
           }
         },
         enabled = volume.isActive,
@@ -14004,6 +14179,7 @@ private fun PlaneGeometryScreen(
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
+  val clipboardManager = LocalClipboardManager.current
   val palette = currentGlassPalette()
   val allShapes = remember { buildPlaneGeometryShapes() }
   var selectedShape by remember { mutableStateOf<PlaneGeometryShapeSpec?>(null) }
@@ -14076,7 +14252,7 @@ private fun PlaneGeometryScreen(
       )
     }
 
-    // 2-Column LazyVerticalGrid of 8 Liquid Glass Shape Cards
+    // 2-Column LazyVerticalGrid of 8 Upgraded CAD Preview Shape Cards
     LazyVerticalGrid(
       columns = GridCells.Fixed(2),
       contentPadding = PaddingValues(bottom = 110.dp),
@@ -14102,53 +14278,80 @@ private fun PlaneGeometryScreen(
             width = 1.2.dp,
             brush = Brush.linearGradient(
               listOf(
-                shape.accentColor.copy(alpha = 0.55f),
+                shape.accentColor.copy(alpha = 0.60f),
                 Color.White.copy(alpha = if (palette.isDark) 0.18f else 0.65f)
               )
             )
           ),
           modifier = Modifier
             .fillMaxWidth()
+            .height(150.dp)
             .testTag("plane_shape_card_${shape.id}")
         ) {
-          Column(
+          Box(
             modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 14.dp, vertical = 18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-          ) {
-            Box(
-              modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(shape.accentColor.copy(alpha = 0.14f))
-                .border(
-                  width = 1.dp,
-                  color = shape.accentColor.copy(alpha = 0.40f),
-                  shape = RoundedCornerShape(16.dp)
-                ),
-              contentAlignment = Alignment.Center
-            ) {
-              PlaneGeometryShapeIcon(
-                shapeId = shape.id,
-                tint = shape.accentColor,
-                modifier = Modifier.size(30.dp)
+              .fillMaxSize()
+              .background(
+                brush = Brush.radialGradient(
+                  colors = listOf(
+                    shape.accentColor.copy(alpha = if (palette.isDark) 0.22f else 0.14f),
+                    Color.Transparent
+                  )
+                )
               )
-            }
+              .padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Column(
+              modifier = Modifier.fillMaxSize(),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.SpaceBetween
+            ) {
+              Box(
+                modifier = Modifier.size(64.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                PlaneGeometryShapeIcon(
+                  shapeId = shape.id,
+                  tint = shape.accentColor,
+                  modifier = Modifier.size(64.dp)
+                )
+              }
 
-            Text(
-              text = shape.name,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = 15.5.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = palette.textPrimary,
-              textAlign = TextAlign.Center,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.fillMaxWidth()
-            )
+              Text(
+                text = shape.name,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = 15.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+              )
+
+              Surface(
+                shape = CircleShape,
+                color = shape.accentColor.copy(alpha = if (palette.isDark) 0.18f else 0.12f),
+                border = BorderStroke(
+                  width = 0.8.dp,
+                  color = shape.accentColor.copy(alpha = 0.45f)
+                )
+              ) {
+                Text(
+                  text = "${shape.formulas.size} FORMULAS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.7.sp
+                  ),
+                  color = shape.accentColor,
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+              }
+            }
           }
         }
       }
@@ -14156,13 +14359,18 @@ private fun PlaneGeometryScreen(
   }
 
   selectedShape?.let { activeShape ->
-    val mathCalloutBg = if (palette.isDark) {
-      palette.cardSurface.copy(alpha = 0.92f)
+    val microLabelAccent = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    val formulaCardFill = if (palette.isDark) {
+      Color(0xFF0F172A).copy(alpha = 0.86f)
     } else {
-      Color(0xFFEEF2FF).copy(alpha = 0.95f)
+      Color(0xFFF8FAFC).copy(alpha = 0.96f)
     }
-    val mathCalloutBorder = activeShape.accentColor.copy(alpha = 0.38f)
-    val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+    val formulaCardBorder = if (palette.isDark) {
+      Color(0xFF38BDF8).copy(alpha = 0.30f)
+    } else {
+      Color(0xFF0284C7).copy(alpha = 0.25f)
+    }
+    val formulaTextColor = if (palette.isDark) Color(0xFFE0F2FE) else Color(0xFF0F172A)
     val visibleState = remember(activeShape.id) {
       MutableTransitionState(false).apply { targetState = true }
     }
@@ -14174,7 +14382,7 @@ private fun PlaneGeometryScreen(
       Box(
         modifier = Modifier
           .fillMaxSize()
-          .background(Color.Black.copy(alpha = 0.50f))
+          .background(Color.Black.copy(alpha = 0.54f))
           .clickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
@@ -14188,21 +14396,22 @@ private fun PlaneGeometryScreen(
           exit = fadeOut() + scaleOut(targetScale = 0.92f)
         ) {
           Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = palette.dialogSurface.copy(alpha = if (palette.isDark) 0.94f else 0.96f),
+            shape = RoundedCornerShape(28.dp),
+            color = palette.dialogSurface.copy(alpha = if (palette.isDark) 0.96f else 0.98f),
             border = BorderStroke(
-              width = 1.2.dp,
+              width = 1.dp,
               brush = Brush.linearGradient(
                 listOf(
-                  activeShape.accentColor.copy(alpha = 0.55f),
-                  Color.White.copy(alpha = if (palette.isDark) 0.22f else 0.72f)
+                  Color(0xFF38BDF8).copy(alpha = if (palette.isDark) 0.55f else 0.45f),
+                  Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.48f else 0.38f)
                 )
               )
             ),
-            shadowElevation = 24.dp,
+            shadowElevation = 28.dp,
             modifier = Modifier
-              .fillMaxWidth(0.88f)
-              .fillMaxHeight(0.75f)
+              .fillMaxWidth(0.90f)
+              .wrapContentHeight()
+              .heightIn(max = 600.dp)
               .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -14212,11 +14421,12 @@ private fun PlaneGeometryScreen(
           ) {
             Column(
               modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .wrapContentHeight()
                 .padding(horizontal = 20.dp, vertical = 18.dp),
-              verticalArrangement = Arrangement.spacedBy(12.dp)
+              verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-              // Dialog Header: Icon + Shape Name + Close Button
+              // Dialog Header: Shape Name + "CAD BLUEPRINT" Badge + Close Button
               Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -14242,18 +14452,37 @@ private fun PlaneGeometryScreen(
                     PlaneGeometryShapeIcon(
                       shapeId = activeShape.id,
                       tint = activeShape.accentColor,
-                      modifier = Modifier.size(24.dp)
+                      modifier = Modifier.size(28.dp)
                     )
                   }
 
-                  Text(
-                    text = activeShape.name,
-                    style = MaterialTheme.typography.titleLarge.copy(
-                      fontSize = 20.sp,
-                      fontWeight = FontWeight.ExtraBold
-                    ),
-                    color = palette.textPrimary
-                  )
+                  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                      text = activeShape.name,
+                      style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold
+                      ),
+                      color = palette.textPrimary
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = microLabelAccent.copy(alpha = 0.14f),
+                      border = BorderStroke(0.8.dp, microLabelAccent.copy(alpha = 0.40f))
+                    ) {
+                      Text(
+                        text = "CAD BLUEPRINT",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 9.5.sp,
+                          fontWeight = FontWeight.ExtraBold,
+                          letterSpacing = 1.1.sp
+                        ),
+                        color = microLabelAccent,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                      )
+                    }
+                  }
                 }
 
                 Surface(
@@ -14276,58 +14505,100 @@ private fun PlaneGeometryScreen(
                 }
               }
 
-              HorizontalDivider(
-                thickness = 1.dp,
-                color = activeShape.accentColor.copy(alpha = 0.28f)
+              // Hero CAD Blueprint Stage (175.dp height with engineering grid + 120.dp visual scale diagram)
+              PlaneGeometryCadBlueprintStage(
+                shapeId = activeShape.id,
+                accentColor = activeShape.accentColor,
+                isDark = palette.isDark,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(175.dp)
+                  .padding(vertical = 8.dp)
               )
 
-              // Strict Content Rule: ONLY concise theorem/title and high-contrast monospace capsule (15.sp, Monospace). ZERO descriptions.
+              // Upgraded Formula Capsules with Tap-to-Copy UX (Zero descriptive paragraphs)
               Column(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .weight(1f)
+                  .weight(1f, fill = false)
                   .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
               ) {
                 activeShape.formulas.forEach { item ->
-                  Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                  Surface(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      clipboardManager.setText(AnnotatedString(item.formula))
+                      Toast.makeText(
+                        context,
+                        "Formula copied to clipboard",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    color = formulaCardFill,
+                    border = BorderStroke(1.dp, formulaCardBorder),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
                   ) {
-                    Text(
-                      text = item.title,
-                      style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                      ),
-                      color = palette.textPrimary,
-                      softWrap = true,
-                      modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Surface(
-                      shape = RoundedCornerShape(10.dp),
-                      color = mathCalloutBg,
-                      border = BorderStroke(1.dp, mathCalloutBorder),
-                      shadowElevation = 2.dp,
-                      modifier = Modifier.fillMaxWidth()
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+                      verticalAlignment = Alignment.CenterVertically
                     ) {
-                      Text(
-                        text = item.formula,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 15.sp,
-                        softWrap = true,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                          fontFamily = FontFamily.Monospace,
-                          fontSize = 15.sp,
-                          lineHeight = 21.sp,
-                          fontWeight = FontWeight.Bold,
-                          letterSpacing = 0.15.sp
-                        ),
-                        color = mathTextColor,
+                      // Left Accent Stripe
+                      Box(
                         modifier = Modifier
-                          .fillMaxWidth()
-                          .padding(horizontal = 12.dp, vertical = 9.dp)
+                          .width(4.dp)
+                          .fillMaxHeight()
+                          .background(
+                            brush = Brush.verticalGradient(
+                              listOf(microLabelAccent, activeShape.accentColor)
+                            )
+                          )
+                      )
+
+                      Column(
+                        modifier = Modifier
+                          .weight(1f)
+                          .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                      ) {
+                        Text(
+                          text = item.title.uppercase(Locale.ROOT),
+                          style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.6.sp
+                          ),
+                          color = microLabelAccent,
+                          softWrap = true
+                        )
+
+                        Text(
+                          text = item.formula,
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 16.sp,
+                          softWrap = true,
+                          style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.15.sp
+                          ),
+                          color = formulaTextColor
+                        )
+                      }
+
+                      Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "Copy ${item.title}",
+                        tint = microLabelAccent.copy(alpha = 0.72f),
+                        modifier = Modifier
+                          .padding(end = 14.dp)
+                          .size(16.dp)
                       )
                     }
                   }
@@ -14342,94 +14613,2518 @@ private fun PlaneGeometryScreen(
 }
 
 @Composable
+private fun PlaneGeometryCadBlueprintStage(
+  shapeId: String,
+  accentColor: Color,
+  isDark: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val stageBg = if (isDark) Color(0xFF0F172A) else Color(0xFFF1F5F9)
+  val stageBorderColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.35f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.28f)
+  }
+  val gridLineColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.08f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.08f)
+  }
+  val majorGridLineColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.15f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.14f)
+  }
+  val primaryStrokeColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val secondaryStrokeColor = if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+  val shapeFillColor = primaryStrokeColor.copy(alpha = if (isDark) 0.12f else 0.09f)
+  val labelPrimaryArgb = (if (isDark) Color(0xFFE0F2FE) else Color(0xFF0F172A)).toArgb()
+  val labelAccentArgb = (if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)).toArgb()
+  val labelSecondaryArgb = (if (isDark) Color(0xFFC4B5FD) else Color(0xFF4338CA)).toArgb()
+
+  Surface(
+    shape = RoundedCornerShape(18.dp),
+    color = stageBg,
+    border = BorderStroke(1.dp, stageBorderColor),
+    modifier = modifier.testTag("plane_geometry_blueprint_stage_$shapeId")
+  ) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+      val w = size.width
+      val h = size.height
+      val cx = w * 0.5f
+      val cy = h * 0.5f
+
+      // 1. Engineering CAD Blueprint Grid Pattern
+      val gridStep = 18.dp.toPx()
+      var gx = gridStep
+      var colIdx = 1
+      while (gx < w) {
+        drawLine(
+          color = if (colIdx % 4 == 0) majorGridLineColor else gridLineColor,
+          start = Offset(gx, 0f),
+          end = Offset(gx, h),
+          strokeWidth = if (colIdx % 4 == 0) 1.2f else 0.8f
+        )
+        gx += gridStep
+        colIdx++
+      }
+      var gy = gridStep
+      var rowIdx = 1
+      while (gy < h) {
+        drawLine(
+          color = if (rowIdx % 4 == 0) majorGridLineColor else gridLineColor,
+          start = Offset(0f, gy),
+          end = Offset(w, gy),
+          strokeWidth = if (rowIdx % 4 == 0) 1.2f else 0.8f
+        )
+        gy += gridStep
+        rowIdx++
+      }
+
+      // Soft radial CAD glow behind the diagram
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(
+            accentColor.copy(alpha = if (isDark) 0.20f else 0.12f),
+            Color.Transparent
+          ),
+          center = Offset(cx, cy),
+          radius = 76.dp.toPx()
+        ),
+        radius = 76.dp.toPx(),
+        center = Offset(cx, cy)
+      )
+
+      val solidStroke = Stroke(
+        width = 3.dp.toPx(),
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round
+      )
+      val glowStroke = Stroke(
+        width = 6.dp.toPx(),
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round
+      )
+      val dashEffect = PathEffect.dashPathEffect(
+        floatArrayOf(6.dp.toPx(), 4.dp.toPx()),
+        0f
+      )
+      val dashedStroke = Stroke(
+        width = 2.dp.toPx(),
+        cap = StrokeCap.Round,
+        pathEffect = dashEffect
+      )
+      val vertexRadius = 3.6.dp.toPx()
+
+      val labelPaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        textSize = 12.5.sp.toPx()
+        typeface = android.graphics.Typeface.create(
+          android.graphics.Typeface.MONOSPACE,
+          android.graphics.Typeface.BOLD
+        )
+        textAlign = android.graphics.Paint.Align.CENTER
+        color = labelPrimaryArgb
+      }
+
+      fun drawCadLabel(text: String, x: Float, y: Float, argbColor: Int = labelPrimaryArgb) {
+        labelPaint.color = argbColor
+        drawContext.canvas.nativeCanvas.drawText(text, x, y, labelPaint)
+      }
+
+      fun drawVertexDot(pt: Offset, dotColor: Color = primaryStrokeColor) {
+        drawCircle(
+          color = stageBg,
+          radius = vertexRadius + 1.6.dp.toPx(),
+          center = pt
+        )
+        drawCircle(
+          color = dotColor,
+          radius = vertexRadius,
+          center = pt
+        )
+      }
+
+      val scaleBox = 116.dp.toPx().coerceAtMost(h * 0.76f)
+      val halfH = scaleBox * 0.44f
+      val halfW = scaleBox * 0.62f
+
+      when (shapeId) {
+        "triangle" -> {
+          val top = Offset(cx - scaleBox * 0.06f, cy - halfH)
+          val bottomLeft = Offset(cx - halfW, cy + halfH)
+          val bottomRight = Offset(cx + halfW, cy + halfH)
+          val foot = Offset(top.x, bottomLeft.y)
+
+          val triPath = Path().apply {
+            moveTo(top.x, top.y)
+            lineTo(bottomRight.x, bottomRight.y)
+            lineTo(bottomLeft.x, bottomLeft.y)
+            close()
+          }
+          drawPath(triPath, color = shapeFillColor)
+          drawPath(triPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(triPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Dashed internal altitude h + right-angle marker
+          drawLine(
+            color = secondaryStrokeColor,
+            start = top,
+            end = foot,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+          val raSize = 7.dp.toPx()
+          val raPath = Path().apply {
+            moveTo(foot.x, foot.y - raSize)
+            lineTo(foot.x + raSize, foot.y - raSize)
+            lineTo(foot.x + raSize, foot.y)
+          }
+          drawPath(raPath, color = secondaryStrokeColor, style = Stroke(width = 1.5.dp.toPx()))
+
+          drawVertexDot(top)
+          drawVertexDot(bottomLeft)
+          drawVertexDot(bottomRight)
+
+          drawCadLabel("a", (top.x + bottomLeft.x) * 0.5f - 14.dp.toPx(), (top.y + bottomLeft.y) * 0.5f, labelPrimaryArgb)
+          drawCadLabel("c", (top.x + bottomRight.x) * 0.5f + 14.dp.toPx(), (top.y + bottomRight.y) * 0.5f, labelPrimaryArgb)
+          drawCadLabel("b", cx, bottomLeft.y + 15.dp.toPx(), labelAccentArgb)
+          drawCadLabel("h", foot.x + 11.dp.toPx(), (top.y + foot.y) * 0.5f + 4.dp.toPx(), labelSecondaryArgb)
+        }
+
+        "rectangle" -> {
+          val rectW = scaleBox * 1.24f
+          val rectH = scaleBox * 0.74f
+          val left = cx - rectW * 0.5f
+          val top = cy - rectH * 0.5f
+          val right = cx + rectW * 0.5f
+          val bottom = cy + rectH * 0.5f
+
+          val rectPath = Path().apply {
+            moveTo(left, top)
+            lineTo(right, top)
+            lineTo(right, bottom)
+            lineTo(left, bottom)
+            close()
+          }
+          drawPath(rectPath, color = shapeFillColor)
+          drawPath(rectPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(rectPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Dashed diagonal d
+          drawLine(
+            color = secondaryStrokeColor,
+            start = Offset(left, bottom),
+            end = Offset(right, top),
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          drawVertexDot(Offset(left, top))
+          drawVertexDot(Offset(right, top))
+          drawVertexDot(Offset(right, bottom))
+          drawVertexDot(Offset(left, bottom))
+
+          drawCadLabel("l", cx, bottom + 15.dp.toPx(), labelAccentArgb)
+          drawCadLabel("w", right + 13.dp.toPx(), cy + 4.dp.toPx(), labelPrimaryArgb)
+          drawCadLabel("d", cx - 8.dp.toPx(), cy - 5.dp.toPx(), labelSecondaryArgb)
+        }
+
+        "square" -> {
+          val side = scaleBox * 0.84f
+          val left = cx - side * 0.5f
+          val top = cy - side * 0.5f
+          val right = cx + side * 0.5f
+          val bottom = cy + side * 0.5f
+
+          val sqPath = Path().apply {
+            moveTo(left, top)
+            lineTo(right, top)
+            lineTo(right, bottom)
+            lineTo(left, bottom)
+            close()
+          }
+          drawPath(sqPath, color = shapeFillColor)
+          drawPath(sqPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(sqPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Dashed diagonal d
+          drawLine(
+            color = secondaryStrokeColor,
+            start = Offset(left, bottom),
+            end = Offset(right, top),
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          drawVertexDot(Offset(left, top))
+          drawVertexDot(Offset(right, top))
+          drawVertexDot(Offset(right, bottom))
+          drawVertexDot(Offset(left, bottom))
+
+          drawCadLabel("a", cx, bottom + 15.dp.toPx(), labelAccentArgb)
+          drawCadLabel("a", right + 13.dp.toPx(), cy + 4.dp.toPx(), labelPrimaryArgb)
+          drawCadLabel("d", cx - 8.dp.toPx(), cy - 5.dp.toPx(), labelSecondaryArgb)
+        }
+
+        "rhombus" -> {
+          val top = Offset(cx, cy - halfH * 1.05f)
+          val right = Offset(cx + halfW * 1.02f, cy)
+          val bottom = Offset(cx, cy + halfH * 1.05f)
+          val left = Offset(cx - halfW * 1.02f, cy)
+
+          val rhomPath = Path().apply {
+            moveTo(top.x, top.y)
+            lineTo(right.x, right.y)
+            lineTo(bottom.x, bottom.y)
+            lineTo(left.x, left.y)
+            close()
+          }
+          drawPath(rhomPath, color = shapeFillColor)
+          drawPath(rhomPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(rhomPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Intersecting dashed diagonals d₁ and d₂
+          drawLine(
+            color = secondaryStrokeColor,
+            start = left,
+            end = right,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+          drawLine(
+            color = secondaryStrokeColor,
+            start = top,
+            end = bottom,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          drawVertexDot(top)
+          drawVertexDot(right)
+          drawVertexDot(bottom)
+          drawVertexDot(left)
+
+          drawCadLabel("a", (top.x + right.x) * 0.5f + 12.dp.toPx(), (top.y + right.y) * 0.5f - 4.dp.toPx(), labelAccentArgb)
+          drawCadLabel("d₁", cx + 24.dp.toPx(), cy - 6.dp.toPx(), labelSecondaryArgb)
+          drawCadLabel("d₂", cx - 14.dp.toPx(), cy + 20.dp.toPx(), labelSecondaryArgb)
+        }
+
+        "parallelogram" -> {
+          val slant = scaleBox * 0.26f
+          val topLeft = Offset(cx - halfW + slant * 0.5f, cy - halfH * 0.88f)
+          val topRight = Offset(cx + halfW + slant * 0.5f, cy - halfH * 0.88f)
+          val bottomRight = Offset(cx + halfW - slant * 0.5f, cy + halfH * 0.88f)
+          val bottomLeft = Offset(cx - halfW - slant * 0.5f, cy + halfH * 0.88f)
+          val foot = Offset(topLeft.x, bottomLeft.y)
+
+          val paraPath = Path().apply {
+            moveTo(topLeft.x, topLeft.y)
+            lineTo(topRight.x, topRight.y)
+            lineTo(bottomRight.x, bottomRight.y)
+            lineTo(bottomLeft.x, bottomLeft.y)
+            close()
+          }
+          drawPath(paraPath, color = shapeFillColor)
+          drawPath(paraPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(paraPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Dashed height h
+          drawLine(
+            color = secondaryStrokeColor,
+            start = topLeft,
+            end = foot,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          // Angle arc θ at bottomLeft
+          val arcRadius = 18.dp.toPx()
+          drawArc(
+            color = secondaryStrokeColor,
+            startAngle = -58f,
+            sweepAngle = 58f,
+            useCenter = false,
+            topLeft = Offset(bottomLeft.x - arcRadius, bottomLeft.y - arcRadius),
+            size = Size(arcRadius * 2f, arcRadius * 2f),
+            style = Stroke(width = 1.8.dp.toPx())
+          )
+
+          drawVertexDot(topLeft)
+          drawVertexDot(topRight)
+          drawVertexDot(bottomRight)
+          drawVertexDot(bottomLeft)
+
+          drawCadLabel("b", cx - slant * 0.2f, bottomLeft.y + 15.dp.toPx(), labelAccentArgb)
+          drawCadLabel("a", (bottomLeft.x + topLeft.x) * 0.5f - 13.dp.toPx(), cy, labelPrimaryArgb)
+          drawCadLabel("h", foot.x + 10.dp.toPx(), cy + 4.dp.toPx(), labelSecondaryArgb)
+          drawCadLabel("θ", bottomLeft.x + 22.dp.toPx(), bottomLeft.y - 5.dp.toPx(), labelSecondaryArgb)
+        }
+
+        "trapezoid" -> {
+          val topHalf = halfW * 0.56f
+          val botHalf = halfW * 1.05f
+          val topLeft = Offset(cx - topHalf, cy - halfH * 0.88f)
+          val topRight = Offset(cx + topHalf, cy - halfH * 0.88f)
+          val bottomRight = Offset(cx + botHalf, cy + halfH * 0.88f)
+          val bottomLeft = Offset(cx - botHalf, cy + halfH * 0.88f)
+          val foot = Offset(topLeft.x, bottomLeft.y)
+          val midLeft = Offset((topLeft.x + bottomLeft.x) * 0.5f, cy)
+          val midRight = Offset((topRight.x + bottomRight.x) * 0.5f, cy)
+
+          val trapPath = Path().apply {
+            moveTo(topLeft.x, topLeft.y)
+            lineTo(topRight.x, topRight.y)
+            lineTo(bottomRight.x, bottomRight.y)
+            lineTo(bottomLeft.x, bottomLeft.y)
+            close()
+          }
+          drawPath(trapPath, color = shapeFillColor)
+          drawPath(trapPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(trapPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Dashed height h and mid-segment m
+          drawLine(
+            color = secondaryStrokeColor,
+            start = topLeft,
+            end = foot,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+          drawLine(
+            color = accentColor,
+            start = midLeft,
+            end = midRight,
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          drawVertexDot(topLeft)
+          drawVertexDot(topRight)
+          drawVertexDot(bottomRight)
+          drawVertexDot(bottomLeft)
+
+          drawCadLabel("a", cx, topLeft.y - 8.dp.toPx(), labelAccentArgb)
+          drawCadLabel("b", cx, bottomLeft.y + 15.dp.toPx(), labelAccentArgb)
+          drawCadLabel("c", midLeft.x - 13.dp.toPx(), cy + 2.dp.toPx(), labelPrimaryArgb)
+          drawCadLabel("d", midRight.x + 13.dp.toPx(), cy + 2.dp.toPx(), labelPrimaryArgb)
+          drawCadLabel("h", foot.x + 9.dp.toPx(), cy + 16.dp.toPx(), labelSecondaryArgb)
+          drawCadLabel("m", cx + 10.dp.toPx(), cy - 5.dp.toPx(), labelPrimaryArgb)
+        }
+
+        "regular_polygons" -> {
+          val radius = scaleBox * 0.50f
+          val vertices = (0 until 6).map { idx ->
+            val angleRad = Math.toRadians((idx * 60.0) - 30.0)
+            Offset(
+              x = cx + (radius * kotlin.math.cos(angleRad)).toFloat(),
+              y = cy + (radius * kotlin.math.sin(angleRad)).toFloat()
+            )
+          }
+          val hexPath = Path().apply {
+            moveTo(vertices[0].x, vertices[0].y)
+            for (i in 1 until vertices.size) {
+              lineTo(vertices[i].x, vertices[i].y)
+            }
+            close()
+          }
+          drawPath(hexPath, color = shapeFillColor)
+          drawPath(hexPath, color = primaryStrokeColor.copy(alpha = 0.22f), style = glowStroke)
+          drawPath(hexPath, color = primaryStrokeColor, style = solidStroke)
+
+          // Bottom horizontal edge midpoint for apothem 'a'
+          val bottomMid = Offset(
+            x = (vertices[1].x + vertices[2].x) * 0.5f,
+            y = (vertices[1].y + vertices[2].y) * 0.5f
+          )
+          drawLine(
+            color = secondaryStrokeColor,
+            start = Offset(cx, cy),
+            end = bottomMid,
+            strokeWidth = 2.2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          drawVertexDot(Offset(cx, cy), secondaryStrokeColor)
+          vertices.forEach { drawVertexDot(it) }
+
+          drawCadLabel("a", (cx + bottomMid.x) * 0.5f + 11.dp.toPx(), (cy + bottomMid.y) * 0.5f + 4.dp.toPx(), labelSecondaryArgb)
+          drawCadLabel("s", (vertices[4].x + vertices[5].x) * 0.5f, vertices[4].y - 8.dp.toPx(), labelAccentArgb)
+          drawCadLabel("n=6", cx - 18.dp.toPx(), cy - 6.dp.toPx(), labelPrimaryArgb)
+        }
+
+        "circle" -> {
+          val radius = scaleBox * 0.46f
+          val center = Offset(cx, cy)
+
+          drawCircle(
+            color = shapeFillColor,
+            radius = radius,
+            center = center
+          )
+          drawCircle(
+            color = primaryStrokeColor.copy(alpha = 0.22f),
+            radius = radius,
+            center = center,
+            style = glowStroke
+          )
+          drawCircle(
+            color = primaryStrokeColor,
+            radius = radius,
+            center = center,
+            style = solidStroke
+          )
+
+          // Highlighted sector wedge & arc s with angle θ (-55° to 0°)
+          drawArc(
+            color = accentColor.copy(alpha = if (isDark) 0.24f else 0.18f),
+            startAngle = -55f,
+            sweepAngle = 55f,
+            useCenter = true,
+            topLeft = Offset(cx - radius, cy - radius),
+            size = Size(radius * 2f, radius * 2f)
+          )
+          drawArc(
+            color = accentColor,
+            startAngle = -55f,
+            sweepAngle = 55f,
+            useCenter = false,
+            topLeft = Offset(cx - radius, cy - radius),
+            size = Size(radius * 2f, radius * 2f),
+            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+          )
+
+          // Dashed horizontal diameter d
+          drawLine(
+            color = secondaryStrokeColor,
+            start = Offset(cx - radius, cy),
+            end = Offset(cx + radius, cy),
+            strokeWidth = 2.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          // Solid radius line r at -55°
+          val radAngle = Math.toRadians(-55.0)
+          val sectorPt = Offset(
+            x = cx + (radius * kotlin.math.cos(radAngle)).toFloat(),
+            y = cy + (radius * kotlin.math.sin(radAngle)).toFloat()
+          )
+          drawLine(
+            color = primaryStrokeColor,
+            start = center,
+            end = sectorPt,
+            strokeWidth = 2.8.dp.toPx()
+          )
+
+          drawVertexDot(center, secondaryStrokeColor)
+          drawVertexDot(sectorPt, accentColor)
+          drawVertexDot(Offset(cx + radius, cy), primaryStrokeColor)
+          drawVertexDot(Offset(cx - radius, cy), secondaryStrokeColor)
+
+          drawCadLabel("r", (cx + sectorPt.x) * 0.5f - 10.dp.toPx(), (cy + sectorPt.y) * 0.5f - 4.dp.toPx(), labelAccentArgb)
+          drawCadLabel("d", cx - radius * 0.45f, cy + 15.dp.toPx(), labelSecondaryArgb)
+          drawCadLabel("θ", cx + 18.dp.toPx(), cy - 6.dp.toPx(), labelPrimaryArgb)
+          drawCadLabel("s", cx + radius + 11.dp.toPx(), cy - radius * 0.42f, labelAccentArgb)
+        }
+      }
+    }
+  }
+}
+
+@Composable
 private fun PlaneGeometryShapeIcon(
   shapeId: String,
   tint: Color,
   modifier: Modifier = Modifier
 ) {
-  if (shapeId == "triangle") {
-    Icon(
-      imageVector = Icons.Default.ChangeHistory,
-      contentDescription = "Triangle",
-      tint = tint,
-      modifier = modifier
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    val stroke = Stroke(
+      width = 2.6.dp.toPx(),
+      cap = StrokeCap.Round,
+      join = StrokeJoin.Round
     )
-  } else {
-    Canvas(modifier = modifier) {
-      val w = size.width
-      val h = size.height
-      val stroke = Stroke(width = 2.3.dp.toPx(), cap = StrokeCap.Round)
-      when (shapeId) {
-        "rectangle" -> {
-          val path = Path().apply {
-            moveTo(w * 0.10f, h * 0.25f)
-            lineTo(w * 0.90f, h * 0.25f)
-            lineTo(w * 0.90f, h * 0.75f)
-            lineTo(w * 0.10f, h * 0.75f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+    val dashStroke = Stroke(
+      width = 1.5.dp.toPx(),
+      cap = StrokeCap.Round,
+      pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.5.dp.toPx(), 2.5.dp.toPx()), 0f)
+    )
+    val fillTint = tint.copy(alpha = 0.14f)
+    val dotR = 2.4.dp.toPx()
+
+    when (shapeId) {
+      "triangle" -> {
+        val top = Offset(w * 0.50f, h * 0.14f)
+        val br = Offset(w * 0.88f, h * 0.84f)
+        val bl = Offset(w * 0.12f, h * 0.84f)
+        val path = Path().apply {
+          moveTo(top.x, top.y)
+          lineTo(br.x, br.y)
+          lineTo(bl.x, bl.y)
+          close()
         }
-        "square" -> {
-          val path = Path().apply {
-            moveTo(w * 0.16f, h * 0.16f)
-            lineTo(w * 0.84f, h * 0.16f)
-            lineTo(w * 0.84f, h * 0.84f)
-            lineTo(w * 0.16f, h * 0.84f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = top,
+          end = Offset(top.x, bl.y),
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = top)
+        drawCircle(color = tint, radius = dotR, center = br)
+        drawCircle(color = tint, radius = dotR, center = bl)
+      }
+      "rectangle" -> {
+        val tl = Offset(w * 0.10f, h * 0.24f)
+        val tr = Offset(w * 0.90f, h * 0.24f)
+        val br = Offset(w * 0.90f, h * 0.76f)
+        val bl = Offset(w * 0.10f, h * 0.76f)
+        val path = Path().apply {
+          moveTo(tl.x, tl.y)
+          lineTo(tr.x, tr.y)
+          lineTo(br.x, br.y)
+          lineTo(bl.x, bl.y)
+          close()
         }
-        "rhombus" -> {
-          val path = Path().apply {
-            moveTo(w * 0.50f, h * 0.10f)
-            lineTo(w * 0.90f, h * 0.50f)
-            lineTo(w * 0.50f, h * 0.90f)
-            lineTo(w * 0.10f, h * 0.50f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = bl,
+          end = tr,
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = tl)
+        drawCircle(color = tint, radius = dotR, center = tr)
+        drawCircle(color = tint, radius = dotR, center = br)
+        drawCircle(color = tint, radius = dotR, center = bl)
+      }
+      "square" -> {
+        val tl = Offset(w * 0.18f, h * 0.18f)
+        val tr = Offset(w * 0.82f, h * 0.18f)
+        val br = Offset(w * 0.82f, h * 0.82f)
+        val bl = Offset(w * 0.18f, h * 0.82f)
+        val path = Path().apply {
+          moveTo(tl.x, tl.y)
+          lineTo(tr.x, tr.y)
+          lineTo(br.x, br.y)
+          lineTo(bl.x, bl.y)
+          close()
         }
-        "parallelogram" -> {
-          val path = Path().apply {
-            moveTo(w * 0.26f, h * 0.22f)
-            lineTo(w * 0.90f, h * 0.22f)
-            lineTo(w * 0.74f, h * 0.78f)
-            lineTo(w * 0.10f, h * 0.78f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = bl,
+          end = tr,
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = tl)
+        drawCircle(color = tint, radius = dotR, center = tr)
+        drawCircle(color = tint, radius = dotR, center = br)
+        drawCircle(color = tint, radius = dotR, center = bl)
+      }
+      "rhombus" -> {
+        val top = Offset(w * 0.50f, h * 0.10f)
+        val right = Offset(w * 0.90f, h * 0.50f)
+        val bottom = Offset(w * 0.50f, h * 0.90f)
+        val left = Offset(w * 0.10f, h * 0.50f)
+        val path = Path().apply {
+          moveTo(top.x, top.y)
+          lineTo(right.x, right.y)
+          lineTo(bottom.x, bottom.y)
+          lineTo(left.x, left.y)
+          close()
         }
-        "trapezoid" -> {
-          val path = Path().apply {
-            moveTo(w * 0.26f, h * 0.22f)
-            lineTo(w * 0.74f, h * 0.22f)
-            lineTo(w * 0.90f, h * 0.78f)
-            lineTo(w * 0.10f, h * 0.78f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = left,
+          end = right,
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = top,
+          end = bottom,
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = top)
+        drawCircle(color = tint, radius = dotR, center = right)
+        drawCircle(color = tint, radius = dotR, center = bottom)
+        drawCircle(color = tint, radius = dotR, center = left)
+      }
+      "parallelogram" -> {
+        val tl = Offset(w * 0.26f, h * 0.22f)
+        val tr = Offset(w * 0.90f, h * 0.22f)
+        val br = Offset(w * 0.74f, h * 0.78f)
+        val bl = Offset(w * 0.10f, h * 0.78f)
+        val path = Path().apply {
+          moveTo(tl.x, tl.y)
+          lineTo(tr.x, tr.y)
+          lineTo(br.x, br.y)
+          lineTo(bl.x, bl.y)
+          close()
         }
-        "regular_polygons" -> {
-          val path = Path().apply {
-            moveTo(w * 0.50f, h * 0.10f)
-            lineTo(w * 0.86f, h * 0.30f)
-            lineTo(w * 0.86f, h * 0.70f)
-            lineTo(w * 0.50f, h * 0.90f)
-            lineTo(w * 0.14f, h * 0.70f)
-            lineTo(w * 0.14f, h * 0.30f)
-            close()
-          }
-          drawPath(path = path, color = tint, style = stroke)
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = tl,
+          end = Offset(tl.x, bl.y),
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = tl)
+        drawCircle(color = tint, radius = dotR, center = tr)
+        drawCircle(color = tint, radius = dotR, center = br)
+        drawCircle(color = tint, radius = dotR, center = bl)
+      }
+      "trapezoid" -> {
+        val tl = Offset(w * 0.28f, h * 0.22f)
+        val tr = Offset(w * 0.72f, h * 0.22f)
+        val br = Offset(w * 0.90f, h * 0.78f)
+        val bl = Offset(w * 0.10f, h * 0.78f)
+        val path = Path().apply {
+          moveTo(tl.x, tl.y)
+          lineTo(tr.x, tr.y)
+          lineTo(br.x, br.y)
+          lineTo(bl.x, bl.y)
+          close()
         }
-        "circle" -> {
-          drawCircle(
-            color = tint,
-            radius = (w.coerceAtMost(h) * 0.38f),
-            center = Offset(w * 0.50f, h * 0.50f),
-            style = stroke
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = Offset(w * 0.19f, h * 0.50f),
+          end = Offset(w * 0.81f, h * 0.50f),
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = tl)
+        drawCircle(color = tint, radius = dotR, center = tr)
+        drawCircle(color = tint, radius = dotR, center = br)
+        drawCircle(color = tint, radius = dotR, center = bl)
+      }
+      "regular_polygons" -> {
+        val pts = listOf(
+          Offset(w * 0.50f, h * 0.10f),
+          Offset(w * 0.86f, h * 0.30f),
+          Offset(w * 0.86f, h * 0.70f),
+          Offset(w * 0.50f, h * 0.90f),
+          Offset(w * 0.14f, h * 0.70f),
+          Offset(w * 0.14f, h * 0.30f)
+        )
+        val path = Path().apply {
+          moveTo(pts[0].x, pts[0].y)
+          for (i in 1 until pts.size) {
+            lineTo(pts[i].x, pts[i].y)
+          }
+          close()
+        }
+        drawPath(path = path, color = fillTint)
+        drawPath(path = path, color = tint, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = Offset(w * 0.50f, h * 0.50f),
+          end = Offset(w * 0.86f, h * 0.50f),
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.5.dp.toPx()), 0f)
+        )
+        drawCircle(color = tint, radius = dotR, center = Offset(w * 0.50f, h * 0.50f))
+        pts.forEach { drawCircle(color = tint, radius = dotR * 0.85f, center = it) }
+      }
+      "circle" -> {
+        val r = w.coerceAtMost(h) * 0.38f
+        val center = Offset(w * 0.50f, h * 0.50f)
+        drawCircle(color = fillTint, radius = r, center = center)
+        drawCircle(color = tint, radius = r, center = center, style = stroke)
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = Offset(center.x - r, center.y),
+          end = Offset(center.x + r, center.y),
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        drawLine(
+          color = tint,
+          start = center,
+          end = Offset(center.x + r * 0.70f, center.y - r * 0.70f),
+          strokeWidth = 2.dp.toPx()
+        )
+        drawCircle(color = tint, radius = dotR, center = center)
+      }
+    }
+  }
+}
+
+private fun buildSolidGeometryShapes(): List<PlaneGeometryShapeSpec> = listOf(
+  PlaneGeometryShapeSpec(
+    id = "regular_polyhedra",
+    name = "Regular Polyhedra",
+    accentColor = Color(0xFF06B6D4),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Euler's Polyhedron Theorem",
+        formula = "[ V - E + F = 2 ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area & Volume (General)",
+        formula = "[ A = F · A₁ ]   [ V = ⅓ · r · A ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Tetrahedron (4 Faces, e = edge)",
+        formula = "[ A = √3 · e² ]   [ V = (√2 / 12)e³ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Cube / Hexahedron (6 Faces)",
+        formula = "[ A = 6e² ]   [ V = e³ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Octahedron (8 Faces)",
+        formula = "[ A = 2√3 · e² ]   [ V = (√2 / 3)e³ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Dodecahedron (12) & Icosahedron (20)",
+        formula = "[ V₁₂ = ¼(15 + 7√5)e³ ]   [ V₂₀ = (5/12)(3 + √5)e³ ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "prism",
+    name = "Prism (Right & Oblique)",
+    accentColor = Color(0xFF3B82F6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Lateral Area (Pᵣ = right section perimeter, e = lateral edge)",
+        formula = "[ Aₗ = Pᵣ · e ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Lateral Area (Right Prism, Pᵦ = base perimeter, h = altitude)",
+        formula = "[ Aₗ = Pᵦ · h ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area (B = base area)",
+        formula = "[ Aₜ = Aₗ + 2B ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume (Aᵣ = right section area)",
+        formula = "[ V = Aᵣ · e = B · h ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "parallelepiped",
+    name = "Parallelepiped",
+    accentColor = Color(0xFF6366F1),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area",
+        formula = "[ Aₜ = 2(ab + bc + ca) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = a · b · c ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Space Diagonal",
+        formula = "[ d = √(a² + b² + c²) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "cube",
+    name = "Cube",
+    accentColor = Color(0xFF8B5CF6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area",
+        formula = "[ Aₜ = 6a² ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = a³ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Space Diagonal & Face Diagonal",
+        formula = "[ dₛ = a√3 ]   [ dբ = a√2 ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "truncated_prism",
+    name = "Truncated Prism",
+    accentColor = Color(0xFF14B8A6),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Volume (General, n vertices with heights h₁, h₂, …, hₙ)",
+        formula = "[ V = Aᵣ · (h₁ + h₂ + … + hₙ) / n ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Triangular Truncated Prism",
+        formula = "[ V = ⅓ · Aᵣ(h₁ + h₂ + h₃) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "pyramids",
+    name = "Pyramids",
+    accentColor = Color(0xFFF59E0B),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Lateral Area (Regular Pyramid, P = base perimeter, L = slant height)",
+        formula = "[ Aₗ = ½ · P · L ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area (B = base area)",
+        formula = "[ Aₜ = Aₗ + B ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = ⅓ · B · h ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "frustum_pyramid",
+    name = "Frustum of Pyramid",
+    accentColor = Color(0xFFEC4899),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Lateral Area (Regular Frustum)",
+        formula = "[ Aₗ = ½(P₁ + P₂)L ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area",
+        formula = "[ Aₜ = Aₗ + A₁ + A₂ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = ⅓ · h(A₁ + A₂ + √(A₁A₂)) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "cylinder",
+    name = "Right Circular Cylinder",
+    accentColor = Color(0xFF10B981),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Lateral Surface Area",
+        formula = "[ Aₗ = 2πrh ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area",
+        formula = "[ Aₜ = 2πr(h + r) = 2πrh + 2πr² ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = πr²h = ¼πd²h ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "cone",
+    name = "Right Circular Cone",
+    accentColor = Color(0xFF0EA5E9),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Slant Height",
+        formula = "[ L = √(r² + h²) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Lateral Area & Total Surface Area",
+        formula = "[ Aₗ = πrL ]   [ Aₜ = πr(L + r) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = ⅓πr²h ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "frustum_cone",
+    name = "Frustum of a Cone",
+    accentColor = Color(0xFFA855F7),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Slant Height",
+        formula = "[ L = √(h² + (r₂ - r₁)²) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Lateral Surface Area",
+        formula = "[ Aₗ = π(r₁ + r₂)L ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Total Surface Area",
+        formula = "[ Aₜ = π(r₁ + r₂)L + π(r₁² + r₂²) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Volume",
+        formula = "[ V = ⅓πh(r₁² + r₂² + r₁r₂) ]"
+      )
+    )
+  ),
+  PlaneGeometryShapeSpec(
+    id = "sphere",
+    name = "Sphere & Spherical Solids",
+    accentColor = Color(0xFF38BDF8),
+    formulas = listOf(
+      PlaneGeometryFormulaItem(
+        title = "Sphere Surface Area & Volume",
+        formula = "[ A = 4πR² = πD² ]   [ V = (4/3)πR³ = (1/6)πD³ ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Spherical Zone (Surface Area of Cap/Zone of height h)",
+        formula = "[ A = 2πRh ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Spherical Segment (1 Base, Cap of height h)",
+        formula = "[ V = ⅓πh²(3R - h) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Spherical Segment (2 Bases, radii a, b, height h)",
+        formula = "[ V = (1/6)πh(3a² + 3b² + h²) ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Spherical Sector / Cone (Zone height h)",
+        formula = "[ V = ⅔πR²h ]"
+      ),
+      PlaneGeometryFormulaItem(
+        title = "Spherical Lune & Wedge (Angle θ in deg / rad)",
+        formula = "[ A(lune) = 2R²θᵣₐ𝒹 = (πR²θ°)/90° ]   [ V(wedge) = ⅔R³θᵣₐ𝒹 = (πR³θ°)/270° ]"
+      )
+    )
+  )
+)
+
+@Composable
+private fun SolidGeometryScreen(
+  metrics: ResponsiveMetrics,
+  searchQuery: String,
+  onBackToGeometryVolumes: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val context = LocalContext.current
+  val localView = LocalView.current
+  val clipboardManager = LocalClipboardManager.current
+  val palette = currentGlassPalette()
+  val allSolids = remember { buildSolidGeometryShapes() }
+  var selectedSolid by remember { mutableStateOf<PlaneGeometryShapeSpec?>(null) }
+
+  val filteredSolids = remember(allSolids, searchQuery) {
+    if (searchQuery.isEmpty()) {
+      allSolids
+    } else {
+      allSolids.filter { solid ->
+        solid.name.contains(searchQuery, ignoreCase = true) ||
+          solid.formulas.any {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+              it.formula.contains(searchQuery, ignoreCase = true)
+          }
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = 680.dp)
+      .testTag("solid_geometry_screen"),
+    verticalArrangement = Arrangement.spacedBy(12.dp)
+  ) {
+    // Top Breadcrumb & Count Row
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Surface(
+        onClick = onBackToGeometryVolumes,
+        shape = RoundedCornerShape(10.dp),
+        color = palette.cardFill,
+        border = palette.glassBorder,
+        modifier = Modifier.testTag("solid_back_to_geometry_volumes_chip")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+            contentDescription = "Back to Geometry Volumes",
+            tint = Color(0xFF06B6D4),
+            modifier = Modifier.size(16.dp)
+          )
+          Text(
+            text = "Geometry Volumes",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.5.sp
+            ),
+            color = Color(0xFF06B6D4)
           )
         }
+      }
+
+      Text(
+        text = "SOLID GEOMETRY • 11 SOLIDS",
+        style = MaterialTheme.typography.labelSmall.copy(
+          fontFamily = FontFamily.Monospace,
+          fontSize = 10.5.sp,
+          fontWeight = FontWeight.ExtraBold,
+          letterSpacing = 0.8.sp
+        ),
+        color = Color(0xFF06B6D4)
+      )
+    }
+
+    // 2-Column LazyVerticalGrid of 11 3D Isometric CAD Preview Solid Cards
+    LazyVerticalGrid(
+      columns = GridCells.Fixed(2),
+      contentPadding = PaddingValues(bottom = 110.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier
+        .fillMaxWidth()
+        .weight(1f)
+        .testTag("solid_geometry_grid")
+    ) {
+      items(
+        items = filteredSolids,
+        key = { it.id }
+      ) { solid ->
+        LiquidGlassCard(
+          onClick = {
+            playCardHapticSound(context, localView)
+            selectedSolid = solid
+          },
+          cornerRadius = 22.dp,
+          elevation = 6.dp,
+          borderStroke = BorderStroke(
+            width = 1.2.dp,
+            brush = Brush.linearGradient(
+              listOf(
+                solid.accentColor.copy(alpha = 0.60f),
+                Color.White.copy(alpha = if (palette.isDark) 0.18f else 0.65f)
+              )
+            )
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .testTag("solid_shape_card_${solid.id}")
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .background(
+                brush = Brush.radialGradient(
+                  colors = listOf(
+                    solid.accentColor.copy(alpha = if (palette.isDark) 0.22f else 0.14f),
+                    Color.Transparent
+                  )
+                )
+              )
+              .padding(horizontal = 12.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center
+          ) {
+            Column(
+              modifier = Modifier.fillMaxSize(),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.SpaceBetween
+            ) {
+              Box(
+                modifier = Modifier.size(64.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                SolidGeometryShapeIcon(
+                  solidId = solid.id,
+                  tint = solid.accentColor,
+                  modifier = Modifier.size(64.dp)
+                )
+              }
+
+              Text(
+                text = solid.name,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = 14.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = palette.textPrimary,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+              )
+
+              Surface(
+                shape = CircleShape,
+                color = solid.accentColor.copy(alpha = if (palette.isDark) 0.18f else 0.12f),
+                border = BorderStroke(
+                  width = 0.8.dp,
+                  color = solid.accentColor.copy(alpha = 0.45f)
+                )
+              ) {
+                Text(
+                  text = "${solid.formulas.size} FORMULAS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.7.sp
+                  ),
+                  color = solid.accentColor,
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  selectedSolid?.let { activeSolid ->
+    val microLabelAccent = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    val formulaCardFill = if (palette.isDark) {
+      Color(0xFF0F172A).copy(alpha = 0.86f)
+    } else {
+      Color(0xFFF8FAFC).copy(alpha = 0.96f)
+    }
+    val formulaCardBorder = if (palette.isDark) {
+      Color(0xFF38BDF8).copy(alpha = 0.30f)
+    } else {
+      Color(0xFF0284C7).copy(alpha = 0.25f)
+    }
+    val formulaTextColor = if (palette.isDark) Color(0xFFE0F2FE) else Color(0xFF0F172A)
+    val visibleState = remember(activeSolid.id) {
+      MutableTransitionState(false).apply { targetState = true }
+    }
+
+    Dialog(
+      onDismissRequest = { selectedSolid = null },
+      properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color.Black.copy(alpha = 0.54f))
+          .clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = { selectedSolid = null }
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        AnimatedVisibility(
+          visibleState = visibleState,
+          enter = fadeIn() + scaleIn(initialScale = 0.92f),
+          exit = fadeOut() + scaleOut(targetScale = 0.92f)
+        ) {
+          Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = palette.dialogSurface.copy(alpha = if (palette.isDark) 0.96f else 0.98f),
+            border = BorderStroke(
+              width = 1.dp,
+              brush = Brush.linearGradient(
+                listOf(
+                  Color(0xFF38BDF8).copy(alpha = if (palette.isDark) 0.55f else 0.45f),
+                  Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.48f else 0.38f)
+                )
+              )
+            ),
+            shadowElevation = 28.dp,
+            modifier = Modifier
+              .fillMaxWidth(0.90f)
+              .wrapContentHeight()
+              .heightIn(max = 620.dp)
+              .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+              )
+              .testTag("solid_geometry_modal_${activeSolid.id}")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .wrapContentHeight()
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              // Dialog Header: Solid Name + "3D CAD BLUEPRINT" Badge + Close Button
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Box(
+                    modifier = Modifier
+                      .size(44.dp)
+                      .clip(RoundedCornerShape(13.dp))
+                      .background(activeSolid.accentColor.copy(alpha = 0.16f))
+                      .border(
+                        width = 1.dp,
+                        color = activeSolid.accentColor.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(13.dp)
+                      ),
+                    contentAlignment = Alignment.Center
+                  ) {
+                    SolidGeometryShapeIcon(
+                      solidId = activeSolid.id,
+                      tint = activeSolid.accentColor,
+                      modifier = Modifier.size(28.dp)
+                    )
+                  }
+
+                  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                      text = activeSolid.name,
+                      style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.ExtraBold
+                      ),
+                      color = palette.textPrimary,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = microLabelAccent.copy(alpha = 0.14f),
+                      border = BorderStroke(0.8.dp, microLabelAccent.copy(alpha = 0.40f))
+                    ) {
+                      Text(
+                        text = "3D CAD BLUEPRINT",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontFamily = FontFamily.Monospace,
+                          fontSize = 9.5.sp,
+                          fontWeight = FontWeight.ExtraBold,
+                          letterSpacing = 1.1.sp
+                        ),
+                        color = microLabelAccent,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                      )
+                    }
+                  }
+                }
+
+                Surface(
+                  onClick = { selectedSolid = null },
+                  shape = CircleShape,
+                  color = palette.nestedCardFill,
+                  border = palette.nestedBorder,
+                  modifier = Modifier
+                    .size(36.dp)
+                    .testTag("solid_geometry_modal_close_button")
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                      imageVector = Icons.Default.Close,
+                      contentDescription = "Close ${activeSolid.name}",
+                      tint = palette.textPrimary,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+              }
+
+              // Hero 3D CAD Blueprint Stage (175.dp height with engineering grid + 120.dp 3D isometric wireframe figure)
+              SolidGeometryCadBlueprintStage(
+                solidId = activeSolid.id,
+                accentColor = activeSolid.accentColor,
+                isDark = palette.isDark,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .height(175.dp)
+                  .padding(vertical = 8.dp)
+              )
+
+              // Upgraded Formula Capsules with Tap-to-Copy UX (Zero descriptive paragraphs)
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .weight(1f, fill = false)
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                activeSolid.formulas.forEachIndexed { idx, formulaItem ->
+                  Surface(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      val cleanFormula = formulaItem.formula
+                        .removePrefix("[")
+                        .removeSuffix("]")
+                        .trim()
+                      clipboardManager.setText(
+                        AnnotatedString("${formulaItem.title}: $cleanFormula")
+                      )
+                      Toast.makeText(
+                        context,
+                        "Formula copied to clipboard",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    color = formulaCardFill,
+                    border = BorderStroke(1.dp, formulaCardBorder),
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .testTag("solid_formula_capsule_${activeSolid.id}_$idx")
+                  ) {
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      // Left vertical glowing accent bar
+                      Box(
+                        modifier = Modifier
+                          .width(4.dp)
+                          .fillMaxHeight()
+                          .background(
+                            brush = Brush.verticalGradient(
+                              listOf(
+                                activeSolid.accentColor,
+                                microLabelAccent
+                              )
+                            )
+                          )
+                      )
+
+                      Row(
+                        modifier = Modifier
+                          .weight(1f)
+                          .padding(horizontal = 14.dp, vertical = 11.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        Column(
+                          modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 10.dp),
+                          verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                          Text(
+                            text = formulaItem.title.uppercase(Locale.ROOT),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                              fontSize = 11.sp,
+                              fontWeight = FontWeight.Bold,
+                              letterSpacing = 0.8.sp
+                            ),
+                            color = microLabelAccent
+                          )
+
+                          Text(
+                            text = formulaItem.formula,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                              fontFamily = FontFamily.Monospace,
+                              fontSize = 15.5.sp,
+                              fontWeight = FontWeight.Bold,
+                              lineHeight = 21.sp
+                            ),
+                            color = formulaTextColor
+                          )
+                        }
+
+                        Surface(
+                          shape = CircleShape,
+                          color = microLabelAccent.copy(alpha = 0.12f),
+                          border = BorderStroke(0.8.dp, microLabelAccent.copy(alpha = 0.30f)),
+                          modifier = Modifier.size(30.dp)
+                        ) {
+                          Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                              imageVector = Icons.Default.ContentCopy,
+                              contentDescription = "Copy ${formulaItem.title}",
+                              tint = microLabelAccent.copy(alpha = 0.85f),
+                              modifier = Modifier.size(14.dp)
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SolidGeometryCadBlueprintStage(
+  solidId: String,
+  accentColor: Color,
+  isDark: Boolean,
+  modifier: Modifier = Modifier
+) {
+  val stageBgColor = if (isDark) Color(0xFF0F172A) else Color(0xFFF1F5F9)
+  val stageBorderColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.34f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.28f)
+  }
+  val gridLineColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.08f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.07f)
+  }
+  val gridAxisColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.16f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.14f)
+  }
+  val primaryStrokeColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val secondaryStrokeColor = if (isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+  val labelTextColor = if (isDark) Color(0xFFE0F2FE) else Color(0xFF0F172A)
+  val subLabelTextColor = if (isDark) Color(0xFF7DD3FC) else Color(0xFF0369A1)
+
+  Surface(
+    shape = RoundedCornerShape(16.dp),
+    color = stageBgColor,
+    border = BorderStroke(1.2.dp, stageBorderColor),
+    modifier = modifier.testTag("solid_cad_blueprint_stage_$solidId")
+  ) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+      val w = size.width
+      val h = size.height
+      val step = 18.dp.toPx()
+
+      // 1. Subtle Engineering CAD Grid Lines
+      var gx = step
+      while (gx < w) {
+        drawLine(
+          color = gridLineColor,
+          start = Offset(gx, 0f),
+          end = Offset(gx, h),
+          strokeWidth = 1f
+        )
+        gx += step
+      }
+      var gy = step
+      while (gy < h) {
+        drawLine(
+          color = gridLineColor,
+          start = Offset(0f, gy),
+          end = Offset(w, gy),
+          strokeWidth = 1f
+        )
+        gy += step
+      }
+
+      // Center Reference Crosshairs
+      drawLine(
+        color = gridAxisColor,
+        start = Offset(w * 0.5f, 0f),
+        end = Offset(w * 0.5f, h),
+        strokeWidth = 1.2f
+      )
+      drawLine(
+        color = gridAxisColor,
+        start = Offset(0f, h * 0.5f),
+        end = Offset(w, h * 0.5f),
+        strokeWidth = 1.2f
+      )
+
+      val solidStroke = Stroke(
+        width = 2.5.dp.toPx(),
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round
+      )
+      val thinSolidStroke = Stroke(
+        width = 1.8.dp.toPx(),
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round
+      )
+      val dashEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+      val dashedStroke = Stroke(
+        width = 1.7.dp.toPx(),
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round,
+        pathEffect = dashEffect
+      )
+      val shapeFill = accentColor.copy(alpha = if (isDark) 0.14f else 0.10f)
+      val vertexRadius = 3.6.dp.toPx()
+
+      val labelPaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        color = labelTextColor.toArgb()
+        textSize = 11.5.sp.toPx()
+        typeface = android.graphics.Typeface.create(
+          android.graphics.Typeface.MONOSPACE,
+          android.graphics.Typeface.BOLD
+        )
+        textAlign = android.graphics.Paint.Align.CENTER
+      }
+      val accentPaint = android.graphics.Paint(labelPaint).apply {
+        color = subLabelTextColor.toArgb()
+        textSize = 11.sp.toPx()
+      }
+
+      fun drawLabel(text: String, x: Float, y: Float, useAccent: Boolean = false) {
+        drawContext.canvas.nativeCanvas.drawText(
+          text,
+          x,
+          y,
+          if (useAccent) accentPaint else labelPaint
+        )
+      }
+
+      val cx = w * 0.5f
+      val cy = h * 0.52f
+      val scale = h.coerceAtMost(w) * 0.76f
+
+      when (solidId) {
+        "regular_polyhedra" -> {
+          val r = scale * 0.48f
+          val center = Offset(cx, cy)
+          // Circumsphere faint dashed ring
+          drawCircle(
+            color = secondaryStrokeColor.copy(alpha = 0.45f),
+            radius = r,
+            center = center,
+            style = dashedStroke
+          )
+          val topApex = Offset(cx, cy - r * 0.95f)
+          val botApex = Offset(cx, cy + r * 0.95f)
+          val eqLeft = Offset(cx - r * 0.88f, cy + r * 0.08f)
+          val eqRight = Offset(cx + r * 0.88f, cy + r * 0.08f)
+          val eqFront = Offset(cx - r * 0.12f, cy + r * 0.34f)
+          val eqBack = Offset(cx + r * 0.16f, cy - r * 0.24f)
+
+          // Shaded front faces of Octahedron
+          val polyFill = Path().apply {
+            moveTo(topApex.x, topApex.y)
+            lineTo(eqLeft.x, eqLeft.y)
+            lineTo(botApex.x, botApex.y)
+            lineTo(eqRight.x, eqRight.y)
+            close()
+          }
+          drawPath(polyFill, color = shapeFill)
+
+          // Hidden back edges (dashed)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), topApex, eqBack, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), botApex, eqBack, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), eqLeft, eqBack, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), eqRight, eqBack, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+
+          // Inradius r from center to face centroid
+          val faceCentroid = Offset(
+            (topApex.x + eqRight.x + eqFront.x) / 3f,
+            (topApex.y + eqRight.y + eqFront.y) / 3f
+          )
+          drawLine(
+            color = secondaryStrokeColor,
+            start = center,
+            end = faceCentroid,
+            strokeWidth = 1.8.dp.toPx(),
+            pathEffect = dashEffect
+          )
+
+          // Visible front wireframe edges
+          val frontEdges = listOf(
+            topApex to eqLeft,
+            topApex to eqRight,
+            topApex to eqFront,
+            botApex to eqLeft,
+            botApex to eqRight,
+            botApex to eqFront,
+            eqLeft to eqFront,
+            eqFront to eqRight
+          )
+          frontEdges.forEach { (p1, p2) ->
+            drawLine(primaryStrokeColor, p1, p2, strokeWidth = 2.3.dp.toPx())
+          }
+
+          listOf(topApex, botApex, eqLeft, eqRight, eqFront, center).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("e", (topApex.x + eqRight.x) * 0.5f + 12.dp.toPx(), (topApex.y + eqRight.y) * 0.5f)
+          drawLabel("r", (center.x + faceCentroid.x) * 0.5f + 10.dp.toPx(), (center.y + faceCentroid.y) * 0.5f + 6.dp.toPx(), useAccent = true)
+          drawLabel("F, V, E", cx - r * 0.75f, cy - r * 0.58f, useAccent = true)
+        }
+
+        "prism" -> {
+          // 3D Oblique Prism with tilted lateral edge e, vertical altitude h, base B, and perpendicular right section Ar
+          val slantX = scale * 0.28f
+          val bY = cy + scale * 0.42f
+          val tY = cy - scale * 0.42f
+          val bL = Offset(cx - scale * 0.62f, bY)
+          val bR = Offset(cx + scale * 0.14f, bY)
+          val bBack = Offset(cx - scale * 0.18f, bY - scale * 0.22f)
+
+          val tL = Offset(bL.x + slantX, tY)
+          val tR = Offset(bR.x + slantX, tY)
+          val tBack = Offset(bBack.x + slantX, tY - scale * 0.22f)
+
+          val bodyPath = Path().apply {
+            moveTo(bL.x, bL.y)
+            lineTo(bR.x, bR.y)
+            lineTo(tR.x, tR.y)
+            lineTo(tL.x, tL.y)
+            close()
+          }
+          drawPath(bodyPath, color = shapeFill)
+
+          // Hidden back base & lateral edge
+          drawLine(secondaryStrokeColor.copy(alpha = 0.75f), bL, bBack, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.75f), bR, bBack, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.75f), bBack, tBack, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+
+          // Dashed right section Ar perpendicular to lateral edges
+          val rsL = Offset((bL.x + tL.x) * 0.5f, (bL.y + tL.y) * 0.5f + scale * 0.04f)
+          val rsR = Offset((bR.x + tR.x) * 0.5f, (bR.y + tR.y) * 0.5f - scale * 0.06f)
+          val rsBack = Offset((bBack.x + tBack.x) * 0.5f, (bBack.y + tBack.y) * 0.5f - scale * 0.02f)
+          drawLine(secondaryStrokeColor, rsL, rsR, strokeWidth = 1.9.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, rsR, rsBack, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, rsBack, rsL, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+
+          // Vertical altitude h dropped from tR to base line extension
+          val hFoot = Offset(tR.x, bY)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bR, hFoot, strokeWidth = 1.4.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, tR, hFoot, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible edges
+          drawLine(primaryStrokeColor, bL, bR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bL, tL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bR, tR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, tL, tR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, tL, tBack, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tR, tBack, strokeWidth = 2.2.dp.toPx())
+
+          listOf(bL, bR, tL, tR, tBack, hFoot).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("e", (bL.x + tL.x) * 0.5f - 12.dp.toPx(), (bL.y + tL.y) * 0.5f)
+          drawLabel("h", hFoot.x + 12.dp.toPx(), (tR.y + hFoot.y) * 0.5f + 4.dp.toPx(), useAccent = true)
+          drawLabel("Aᵣ", (rsL.x + rsR.x) * 0.5f, (rsL.y + rsR.y) * 0.5f - 6.dp.toPx(), useAccent = true)
+          drawLabel("B", (bL.x + bR.x) * 0.5f, bY + 15.dp.toPx())
+        }
+
+        "parallelepiped" -> {
+          val wFront = scale * 0.86f
+          val hFront = scale * 0.54f
+          val dx = scale * 0.34f
+          val dy = -scale * 0.24f
+
+          val fBL = Offset(cx - wFront * 0.58f, cy + hFront * 0.60f)
+          val fBR = Offset(fBL.x + wFront, fBL.y)
+          val fTL = Offset(fBL.x, fBL.y - hFront)
+          val fTR = Offset(fBR.x, fBR.y - hFront)
+
+          val bBL = Offset(fBL.x + dx, fBL.y + dy)
+          val bBR = Offset(fBR.x + dx, fBR.y + dy)
+          val bTL = Offset(fTL.x + dx, fTL.y + dy)
+          val bTR = Offset(fTR.x + dx, fTR.y + dy)
+
+          val frontFace = Path().apply {
+            moveTo(fBL.x, fBL.y)
+            lineTo(fBR.x, fBR.y)
+            lineTo(fTR.x, fTR.y)
+            lineTo(fTL.x, fTL.y)
+            close()
+          }
+          drawPath(frontFace, color = shapeFill)
+
+          // Hidden back edges
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), fBL, bBL, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), bBL, bBR, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), bBL, bTL, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+
+          // Space diagonal d from fBL to bTR
+          drawLine(secondaryStrokeColor, fBL, bTR, strokeWidth = 2.1.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible front/top/side edges
+          drawLine(primaryStrokeColor, fBL, fBR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fBR, fTR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTR, fTL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTL, fBL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTL, bTL, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, fTR, bTR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, fBR, bBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, bTL, bTR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, bTR, bBR, strokeWidth = 2.2.dp.toPx())
+
+          listOf(fBL, fBR, fTL, fTR, bTL, bTR, bBR).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("a", (fBL.x + fBR.x) * 0.5f, fBL.y + 15.dp.toPx())
+          drawLabel("b", (fBR.x + bBR.x) * 0.5f + 12.dp.toPx(), (fBR.y + bBR.y) * 0.5f + 8.dp.toPx())
+          drawLabel("c", fBL.x - 12.dp.toPx(), (fBL.y + fTL.y) * 0.5f + 4.dp.toPx())
+          drawLabel("d", (fBL.x + bTR.x) * 0.5f - 6.dp.toPx(), (fBL.y + bTR.y) * 0.5f - 6.dp.toPx(), useAccent = true)
+        }
+
+        "cube" -> {
+          val side = scale * 0.62f
+          val dx = side * 0.44f
+          val dy = -side * 0.36f
+
+          val fBL = Offset(cx - side * 0.64f, cy + side * 0.62f)
+          val fBR = Offset(fBL.x + side, fBL.y)
+          val fTL = Offset(fBL.x, fBL.y - side)
+          val fTR = Offset(fBR.x, fBR.y - side)
+
+          val bBL = Offset(fBL.x + dx, fBL.y + dy)
+          val bBR = Offset(fBR.x + dx, fBR.y + dy)
+          val bTL = Offset(fTL.x + dx, fTL.y + dy)
+          val bTR = Offset(fTR.x + dx, fTR.y + dy)
+
+          val frontFace = Path().apply {
+            moveTo(fBL.x, fBL.y)
+            lineTo(fBR.x, fBR.y)
+            lineTo(fTR.x, fTR.y)
+            lineTo(fTL.x, fTL.y)
+            close()
+          }
+          drawPath(frontFace, color = shapeFill)
+
+          // Hidden back edges
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), fBL, bBL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bBL, bBR, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bBL, bTL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+
+          // Face diagonal df & Space diagonal ds
+          drawLine(secondaryStrokeColor.copy(alpha = 0.8f), fBL, fTR, strokeWidth = 1.7.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, fBL, bTR, strokeWidth = 2.2.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible cube edges
+          drawLine(primaryStrokeColor, fBL, fBR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fBR, fTR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTR, fTL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTL, fBL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fTL, bTL, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, fTR, bTR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, fBR, bBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, bTL, bTR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, bTR, bBR, strokeWidth = 2.2.dp.toPx())
+
+          listOf(fBL, fBR, fTL, fTR, bTL, bTR, bBR).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("a", (fBL.x + fBR.x) * 0.5f, fBL.y + 15.dp.toPx())
+          drawLabel("a", (fBR.x + bBR.x) * 0.5f + 12.dp.toPx(), (fBR.y + bBR.y) * 0.5f + 8.dp.toPx())
+          drawLabel("a", fBL.x - 12.dp.toPx(), (fBL.y + fTL.y) * 0.5f + 4.dp.toPx())
+          drawLabel("dₛ", (fBL.x + bTR.x) * 0.5f + 8.dp.toPx(), (fBL.y + bTR.y) * 0.5f - 8.dp.toPx(), useAccent = true)
+        }
+
+        "truncated_prism" -> {
+          // 3D Triangular Truncated Prism with right cross-section Ar and unequal vertical heights h1, h2, h3
+          val bL = Offset(cx - scale * 0.56f, cy + scale * 0.42f)
+          val bR = Offset(cx + scale * 0.48f, cy + scale * 0.42f)
+          val bM = Offset(cx + scale * 0.08f, cy + scale * 0.16f)
+
+          val tL = Offset(bL.x, cy - scale * 0.22f)
+          val tR = Offset(bR.x, cy - scale * 0.46f)
+          val tM = Offset(bM.x, cy - scale * 0.38f)
+
+          val topFace = Path().apply {
+            moveTo(tL.x, tL.y)
+            lineTo(tR.x, tR.y)
+            lineTo(tM.x, tM.y)
+            close()
+          }
+          drawPath(topFace, color = shapeFill)
+
+          // Base Ar dashed back edges
+          drawLine(secondaryStrokeColor.copy(alpha = 0.75f), bL, bM, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.75f), bM, bR, strokeWidth = 1.6.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, bM, tM, strokeWidth = 1.8.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible edges
+          drawLine(primaryStrokeColor, bL, bR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bL, tL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bR, tR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, tL, tR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, tL, tM, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tM, tR, strokeWidth = 2.2.dp.toPx())
+
+          listOf(bL, bR, bM, tL, tR, tM).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("h₁", bL.x - 14.dp.toPx(), (bL.y + tL.y) * 0.5f)
+          drawLabel("h₂", bM.x - 12.dp.toPx(), (bM.y + tM.y) * 0.5f - 4.dp.toPx(), useAccent = true)
+          drawLabel("h₃", bR.x + 14.dp.toPx(), (bR.y + tR.y) * 0.5f)
+          drawLabel("Aᵣ", (bL.x + bR.x) * 0.5f, bL.y + 15.dp.toPx(), useAccent = true)
+        }
+
+        "pyramids" -> {
+          val apex = Offset(cx, cy - scale * 0.48f)
+          val fBL = Offset(cx - scale * 0.64f, cy + scale * 0.42f)
+          val fBR = Offset(cx + scale * 0.34f, cy + scale * 0.42f)
+          val bBR = Offset(cx + scale * 0.66f, cy + scale * 0.16f)
+          val bBL = Offset(cx - scale * 0.32f, cy + scale * 0.16f)
+          val baseCenter = Offset((fBL.x + bBR.x) * 0.5f, (fBL.y + bBR.y) * 0.5f)
+          val rightFaceMid = Offset((fBR.x + bBR.x) * 0.5f, (fBR.y + bBR.y) * 0.5f)
+
+          val frontFace = Path().apply {
+            moveTo(apex.x, apex.y)
+            lineTo(fBL.x, fBL.y)
+            lineTo(fBR.x, fBR.y)
+            close()
+          }
+          drawPath(frontFace, color = shapeFill)
+
+          // Hidden back base edges
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), fBL, bBL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bBL, bBR, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), apex, bBL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+
+          // Vertical altitude h & slant height L
+          drawLine(secondaryStrokeColor, apex, baseCenter, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, apex, rightFaceMid, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.7f), baseCenter, rightFaceMid, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible edges
+          drawLine(primaryStrokeColor, fBL, fBR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, fBR, bBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, apex, fBL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, apex, fBR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, apex, bBR, strokeWidth = 2.2.dp.toPx())
+
+          listOf(apex, fBL, fBR, bBR, baseCenter, rightFaceMid).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("h", baseCenter.x - 10.dp.toPx(), (apex.y + baseCenter.y) * 0.5f + 4.dp.toPx(), useAccent = true)
+          drawLabel("L", (apex.x + rightFaceMid.x) * 0.5f + 14.dp.toPx(), (apex.y + rightFaceMid.y) * 0.5f, useAccent = true)
+          drawLabel("B", (fBL.x + fBR.x) * 0.5f, fBL.y + 15.dp.toPx())
+        }
+
+        "frustum_pyramid" -> {
+          // Lower base A2
+          val bFL = Offset(cx - scale * 0.66f, cy + scale * 0.44f)
+          val bFR = Offset(cx + scale * 0.36f, cy + scale * 0.44f)
+          val bBR = Offset(cx + scale * 0.68f, cy + scale * 0.18f)
+          val bBL = Offset(cx - scale * 0.34f, cy + scale * 0.18f)
+
+          // Upper base A1
+          val tFL = Offset(cx - scale * 0.36f, cy - scale * 0.24f)
+          val tFR = Offset(cx + scale * 0.18f, cy - scale * 0.24f)
+          val tBR = Offset(cx + scale * 0.38f, cy - scale * 0.40f)
+          val tBL = Offset(cx - scale * 0.16f, cy - scale * 0.40f)
+
+          val frontTrap = Path().apply {
+            moveTo(tFL.x, tFL.y)
+            lineTo(tFR.x, tFR.y)
+            lineTo(bFR.x, bFR.y)
+            lineTo(bFL.x, bFL.y)
+            close()
+          }
+          drawPath(frontTrap, color = shapeFill)
+
+          // Hidden back edges
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bFL, bBL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bBL, bBR, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor.copy(alpha = 0.65f), bBL, tBL, strokeWidth = 1.5.dp.toPx(), pathEffect = dashEffect)
+
+          // Center altitude h & slant height L
+          val topCenter = Offset((tFL.x + tBR.x) * 0.5f, (tFL.y + tBR.y) * 0.5f)
+          val botCenter = Offset(topCenter.x, (bFL.y + bBR.y) * 0.5f)
+          val topRightMid = Offset((tFR.x + tBR.x) * 0.5f, (tFR.y + tBR.y) * 0.5f)
+          val botRightMid = Offset((bFR.x + bBR.x) * 0.5f, (bFR.y + bBR.y) * 0.5f)
+          drawLine(secondaryStrokeColor, topCenter, botCenter, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, topRightMid, botRightMid, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+
+          // Visible edges
+          drawLine(primaryStrokeColor, bFL, bFR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bFR, bBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, bFL, tFL, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bFR, tFR, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, bBR, tBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tFL, tFR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tFR, tBR, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tBR, tBL, strokeWidth = 2.2.dp.toPx())
+          drawLine(primaryStrokeColor, tBL, tFL, strokeWidth = 2.2.dp.toPx())
+
+          listOf(bFL, bFR, bBR, tFL, tFR, tBR, tBL, topCenter, botCenter).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("A₁, P₁", topCenter.x, tBL.y - 8.dp.toPx())
+          drawLabel("A₂, P₂", (bFL.x + bFR.x) * 0.5f, bFL.y + 15.dp.toPx())
+          drawLabel("h", topCenter.x - 10.dp.toPx(), (topCenter.y + botCenter.y) * 0.5f + 4.dp.toPx(), useAccent = true)
+          drawLabel("L", (topRightMid.x + botRightMid.x) * 0.5f + 13.dp.toPx(), (topRightMid.y + botRightMid.y) * 0.5f, useAccent = true)
+        }
+
+        "cylinder" -> {
+          val rx = scale * 0.48f
+          val ry = scale * 0.16f
+          val topY = cy - scale * 0.34f
+          val botY = cy + scale * 0.34f
+
+          drawRect(
+            color = shapeFill,
+            topLeft = Offset(cx - rx, topY),
+            size = Size(rx * 2f, botY - topY)
+          )
+
+          // Top full ellipse
+          drawOval(
+            color = primaryStrokeColor,
+            topLeft = Offset(cx - rx, topY - ry),
+            size = Size(rx * 2f, ry * 2f),
+            style = solidStroke
+          )
+          // Bottom ellipse: back half dashed, front half solid
+          drawArc(
+            color = secondaryStrokeColor.copy(alpha = 0.7f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - rx, botY - ry),
+            size = Size(rx * 2f, ry * 2f),
+            style = dashedStroke
+          )
+          drawArc(
+            color = primaryStrokeColor,
+            startAngle = 0f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - rx, botY - ry),
+            size = Size(rx * 2f, ry * 2f),
+            style = solidStroke
+          )
+
+          // Side vertical walls
+          drawLine(primaryStrokeColor, Offset(cx - rx, topY), Offset(cx - rx, botY), strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, Offset(cx + rx, topY), Offset(cx + rx, botY), strokeWidth = 2.4.dp.toPx())
+
+          // Central axis h & top radius r
+          drawLine(secondaryStrokeColor, Offset(cx, topY), Offset(cx, botY), strokeWidth = 1.9.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, Offset(cx, topY), Offset(cx + rx, topY), strokeWidth = 2.dp.toPx())
+
+          listOf(Offset(cx, topY), Offset(cx + rx, topY), Offset(cx, botY)).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("r", cx + rx * 0.5f, topY - 6.dp.toPx(), useAccent = true)
+          drawLabel("h", cx - 12.dp.toPx(), (topY + botY) * 0.5f + 4.dp.toPx(), useAccent = true)
+        }
+
+        "cone" -> {
+          val rx = scale * 0.52f
+          val ry = scale * 0.16f
+          val apex = Offset(cx, cy - scale * 0.46f)
+          val botY = cy + scale * 0.36f
+          val baseCenter = Offset(cx, botY)
+          val baseRight = Offset(cx + rx, botY)
+          val baseLeft = Offset(cx - rx, botY)
+
+          val conePath = Path().apply {
+            moveTo(apex.x, apex.y)
+            lineTo(baseLeft.x, baseLeft.y)
+            lineTo(baseRight.x, baseRight.y)
+            close()
+          }
+          drawPath(conePath, color = shapeFill)
+
+          // Bottom ellipse: back half dashed, front half solid
+          drawArc(
+            color = secondaryStrokeColor.copy(alpha = 0.7f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - rx, botY - ry),
+            size = Size(rx * 2f, ry * 2f),
+            style = dashedStroke
+          )
+          drawArc(
+            color = primaryStrokeColor,
+            startAngle = 0f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - rx, botY - ry),
+            size = Size(rx * 2f, ry * 2f),
+            style = solidStroke
+          )
+
+          // Slant edges
+          drawLine(primaryStrokeColor, apex, baseLeft, strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, apex, baseRight, strokeWidth = 2.4.dp.toPx())
+
+          // Central altitude h & radius r
+          drawLine(secondaryStrokeColor, apex, baseCenter, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, baseCenter, baseRight, strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+
+          listOf(apex, baseCenter, baseLeft, baseRight).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("h", cx - 12.dp.toPx(), (apex.y + botY) * 0.55f, useAccent = true)
+          drawLabel("r", cx + rx * 0.48f, botY - 5.dp.toPx(), useAccent = true)
+          drawLabel("L", (apex.x + baseRight.x) * 0.5f + 13.dp.toPx(), (apex.y + baseRight.y) * 0.5f)
+        }
+
+        "frustum_cone" -> {
+          val r1x = scale * 0.30f
+          val r1y = scale * 0.10f
+          val r2x = scale * 0.56f
+          val r2y = scale * 0.17f
+          val topY = cy - scale * 0.34f
+          val botY = cy + scale * 0.34f
+
+          val bodyPath = Path().apply {
+            moveTo(cx - r1x, topY)
+            lineTo(cx + r1x, topY)
+            lineTo(cx + r2x, botY)
+            lineTo(cx - r2x, botY)
+            close()
+          }
+          drawPath(bodyPath, color = shapeFill)
+
+          // Top ellipse
+          drawOval(
+            color = primaryStrokeColor,
+            topLeft = Offset(cx - r1x, topY - r1y),
+            size = Size(r1x * 2f, r1y * 2f),
+            style = solidStroke
+          )
+          // Bottom ellipse: back half dashed, front half solid
+          drawArc(
+            color = secondaryStrokeColor.copy(alpha = 0.7f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - r2x, botY - r2y),
+            size = Size(r2x * 2f, r2y * 2f),
+            style = dashedStroke
+          )
+          drawArc(
+            color = primaryStrokeColor,
+            startAngle = 0f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - r2x, botY - r2y),
+            size = Size(r2x * 2f, r2y * 2f),
+            style = solidStroke
+          )
+
+          // Slant walls
+          drawLine(primaryStrokeColor, Offset(cx - r1x, topY), Offset(cx - r2x, botY), strokeWidth = 2.4.dp.toPx())
+          drawLine(primaryStrokeColor, Offset(cx + r1x, topY), Offset(cx + r2x, botY), strokeWidth = 2.4.dp.toPx())
+
+          // Axis h, top radius r1, bottom radius r2
+          drawLine(secondaryStrokeColor, Offset(cx, topY), Offset(cx, botY), strokeWidth = 2.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, Offset(cx, topY), Offset(cx + r1x, topY), strokeWidth = 1.9.dp.toPx())
+          drawLine(secondaryStrokeColor, Offset(cx, botY), Offset(cx + r2x, botY), strokeWidth = 1.9.dp.toPx(), pathEffect = dashEffect)
+
+          listOf(
+            Offset(cx, topY),
+            Offset(cx + r1x, topY),
+            Offset(cx, botY),
+            Offset(cx + r2x, botY)
+          ).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("r₁", cx + r1x * 0.5f, topY - 6.dp.toPx(), useAccent = true)
+          drawLabel("r₂", cx + r2x * 0.5f, botY - 5.dp.toPx(), useAccent = true)
+          drawLabel("h", cx - 12.dp.toPx(), (topY + botY) * 0.5f + 4.dp.toPx(), useAccent = true)
+          drawLabel("L", cx + (r1x + r2x) * 0.5f + 13.dp.toPx(), (topY + botY) * 0.5f)
+        }
+
+        "sphere" -> {
+          val r = scale * 0.48f
+          val center = Offset(cx, cy)
+
+          drawCircle(color = shapeFill, radius = r, center = center)
+
+          // Equatorial ellipse (back dashed, front solid)
+          val eqRy = r * 0.28f
+          drawArc(
+            color = secondaryStrokeColor.copy(alpha = 0.65f),
+            startAngle = 180f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - r, cy - eqRy),
+            size = Size(r * 2f, eqRy * 2f),
+            style = dashedStroke
+          )
+          drawArc(
+            color = primaryStrokeColor.copy(alpha = 0.85f),
+            startAngle = 0f,
+            sweepAngle = 180f,
+            useCenter = false,
+            topLeft = Offset(cx - r, cy - eqRy),
+            size = Size(r * 2f, eqRy * 2f),
+            style = thinSolidStroke
+          )
+
+          // Spherical zone / cap slice near top (height h, radius a)
+          val zoneY = cy - r * 0.48f
+          val zoneRx = kotlin.math.sqrt((r * r - (cy - zoneY) * (cy - zoneY)).coerceAtLeast(0f))
+          val zoneRy = zoneRx * 0.26f
+          drawOval(
+            color = secondaryStrokeColor,
+            topLeft = Offset(cx - zoneRx, zoneY - zoneRy),
+            size = Size(zoneRx * 2f, zoneRy * 2f),
+            style = dashedStroke
+          )
+
+          // Spherical sector cone lines from center to zone circle
+          drawLine(secondaryStrokeColor, center, Offset(cx - zoneRx, zoneY), strokeWidth = 1.8.dp.toPx(), pathEffect = dashEffect)
+          drawLine(secondaryStrokeColor, center, Offset(cx + zoneRx, zoneY), strokeWidth = 1.8.dp.toPx(), pathEffect = dashEffect)
+
+          // Outer sphere boundary
+          drawCircle(color = primaryStrokeColor, radius = r, center = center, style = solidStroke)
+
+          // Radius R to bottom-right
+          val rEnd = Offset(cx + r * 0.78f, cy + r * 0.62f)
+          drawLine(primaryStrokeColor, center, rEnd, strokeWidth = 2.2.dp.toPx())
+
+          // Cap height h along top vertical axis
+          val northPole = Offset(cx, cy - r)
+          drawLine(secondaryStrokeColor, Offset(cx, zoneY), northPole, strokeWidth = 2.dp.toPx())
+
+          listOf(center, rEnd, northPole, Offset(cx + zoneRx, zoneY), Offset(cx - zoneRx, zoneY)).forEach {
+            drawCircle(primaryStrokeColor, vertexRadius, it)
+          }
+          drawLabel("R", (center.x + rEnd.x) * 0.5f + 8.dp.toPx(), (center.y + rEnd.y) * 0.5f - 4.dp.toPx())
+          drawLabel("h", cx - 10.dp.toPx(), (zoneY + northPole.y) * 0.5f + 4.dp.toPx(), useAccent = true)
+          drawLabel("a", cx + zoneRx * 0.52f, zoneY - 5.dp.toPx(), useAccent = true)
+          drawLabel("θ", cx + 10.dp.toPx(), cy - r * 0.16f, useAccent = true)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun SolidGeometryShapeIcon(
+  solidId: String,
+  tint: Color,
+  modifier: Modifier = Modifier
+) {
+  Canvas(modifier = modifier) {
+    val w = size.width
+    val h = size.height
+    val cx = w * 0.5f
+    val cy = h * 0.5f
+    val stroke = Stroke(
+      width = 2.1.dp.toPx(),
+      cap = StrokeCap.Round,
+      join = StrokeJoin.Round
+    )
+    val dashStroke = Stroke(
+      width = 1.4.dp.toPx(),
+      cap = StrokeCap.Round,
+      join = StrokeJoin.Round,
+      pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f), 0f)
+    )
+    val fillTint = tint.copy(alpha = 0.14f)
+    val dotR = 2.3.dp.toPx()
+
+    when (solidId) {
+      "regular_polyhedra" -> {
+        val top = Offset(cx, h * 0.12f)
+        val bot = Offset(cx, h * 0.88f)
+        val left = Offset(w * 0.14f, cy + h * 0.04f)
+        val right = Offset(w * 0.86f, cy + h * 0.04f)
+        val mid = Offset(cx - w * 0.06f, cy + h * 0.16f)
+        val path = Path().apply {
+          moveTo(top.x, top.y)
+          lineTo(left.x, left.y)
+          lineTo(bot.x, bot.y)
+          lineTo(right.x, right.y)
+          close()
+        }
+        drawPath(path, color = fillTint)
+        drawPath(path, color = tint, style = stroke)
+        drawLine(tint, top, mid, strokeWidth = 1.8.dp.toPx())
+        drawLine(tint, bot, mid, strokeWidth = 1.8.dp.toPx())
+        drawLine(tint, left, mid, strokeWidth = 1.8.dp.toPx())
+        drawLine(tint, right, mid, strokeWidth = 1.8.dp.toPx())
+        listOf(top, bot, left, right, mid).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "prism" -> {
+        val bL = Offset(w * 0.16f, h * 0.82f)
+        val bR = Offset(w * 0.64f, h * 0.82f)
+        val tL = Offset(w * 0.34f, h * 0.24f)
+        val tR = Offset(w * 0.82f, h * 0.24f)
+        val tBack = Offset(w * 0.56f, h * 0.12f)
+        val path = Path().apply {
+          moveTo(bL.x, bL.y)
+          lineTo(bR.x, bR.y)
+          lineTo(tR.x, tR.y)
+          lineTo(tL.x, tL.y)
+          close()
+        }
+        drawPath(path, color = fillTint)
+        drawPath(path, color = tint, style = stroke)
+        drawLine(tint, tL, tBack, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, tR, tBack, strokeWidth = 1.9.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = Offset((bL.x + tL.x) * 0.5f, (bL.y + tL.y) * 0.5f),
+          end = Offset((bR.x + tR.x) * 0.5f, (bR.y + tR.y) * 0.5f),
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        listOf(bL, bR, tL, tR, tBack).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "parallelepiped" -> {
+        val fBL = Offset(w * 0.14f, h * 0.80f)
+        val fBR = Offset(w * 0.68f, h * 0.80f)
+        val fTL = Offset(w * 0.14f, h * 0.38f)
+        val fTR = Offset(w * 0.68f, h * 0.38f)
+        val dx = w * 0.18f
+        val dy = -h * 0.18f
+        val bTL = Offset(fTL.x + dx, fTL.y + dy)
+        val bTR = Offset(fTR.x + dx, fTR.y + dy)
+        val bBR = Offset(fBR.x + dx, fBR.y + dy)
+
+        drawRect(
+          color = fillTint,
+          topLeft = fTL,
+          size = Size(fBR.x - fBL.x, fBL.y - fTL.y)
+        )
+        drawRect(
+          color = tint,
+          topLeft = fTL,
+          size = Size(fBR.x - fBL.x, fBL.y - fTL.y),
+          style = stroke
+        )
+        drawLine(tint, fTL, bTL, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, fTR, bTR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, fBR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, bTL, bTR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, bTR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = fBL,
+          end = bTR,
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        listOf(fBL, fBR, fTL, fTR, bTR).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "cube" -> {
+        val s = w.coerceAtMost(h) * 0.48f
+        val fBL = Offset(w * 0.18f, h * 0.80f)
+        val fBR = Offset(fBL.x + s, fBL.y)
+        val fTL = Offset(fBL.x, fBL.y - s)
+        val fTR = Offset(fBR.x, fBR.y - s)
+        val dx = s * 0.38f
+        val dy = -s * 0.34f
+        val bTL = Offset(fTL.x + dx, fTL.y + dy)
+        val bTR = Offset(fTR.x + dx, fTR.y + dy)
+        val bBR = Offset(fBR.x + dx, fBR.y + dy)
+
+        drawRect(color = fillTint, topLeft = fTL, size = Size(s, s))
+        drawRect(color = tint, topLeft = fTL, size = Size(s, s), style = stroke)
+        drawLine(tint, fTL, bTL, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, fTR, bTR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, fBR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, bTL, bTR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, bTR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = fBL,
+          end = bTR,
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        listOf(fBL, fBR, fTL, fTR, bTR).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "truncated_prism" -> {
+        val bL = Offset(w * 0.18f, h * 0.84f)
+        val bR = Offset(w * 0.82f, h * 0.84f)
+        val bM = Offset(w * 0.56f, h * 0.68f)
+        val tL = Offset(w * 0.18f, h * 0.42f)
+        val tR = Offset(w * 0.82f, h * 0.18f)
+        val tM = Offset(w * 0.56f, h * 0.24f)
+
+        val topFace = Path().apply {
+          moveTo(tL.x, tL.y)
+          lineTo(tR.x, tR.y)
+          lineTo(tM.x, tM.y)
+          close()
+        }
+        drawPath(topFace, color = fillTint)
+        drawPath(topFace, color = tint, style = stroke)
+        drawLine(tint, bL, bR, strokeWidth = 2.dp.toPx())
+        drawLine(tint, bL, tL, strokeWidth = 2.dp.toPx())
+        drawLine(tint, bR, tR, strokeWidth = 2.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = bM,
+          end = tM,
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        listOf(bL, bR, tL, tR, tM).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "pyramids" -> {
+        val apex = Offset(cx, h * 0.14f)
+        val bFL = Offset(w * 0.14f, h * 0.82f)
+        val bFR = Offset(w * 0.68f, h * 0.82f)
+        val bBR = Offset(w * 0.88f, h * 0.64f)
+        val front = Path().apply {
+          moveTo(apex.x, apex.y)
+          lineTo(bFL.x, bFL.y)
+          lineTo(bFR.x, bFR.y)
+          close()
+        }
+        drawPath(front, color = fillTint)
+        drawPath(front, color = tint, style = stroke)
+        drawLine(tint, bFR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, apex, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = apex,
+          end = Offset(cx, h * 0.74f),
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        listOf(apex, bFL, bFR, bBR).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "frustum_pyramid" -> {
+        val bFL = Offset(w * 0.14f, h * 0.82f)
+        val bFR = Offset(w * 0.68f, h * 0.82f)
+        val bBR = Offset(w * 0.88f, h * 0.66f)
+        val tFL = Offset(w * 0.28f, h * 0.34f)
+        val tFR = Offset(w * 0.60f, h * 0.34f)
+        val tBR = Offset(w * 0.74f, h * 0.22f)
+        val tBL = Offset(w * 0.42f, h * 0.22f)
+
+        val front = Path().apply {
+          moveTo(tFL.x, tFL.y)
+          lineTo(tFR.x, tFR.y)
+          lineTo(bFR.x, bFR.y)
+          lineTo(bFL.x, bFL.y)
+          close()
+        }
+        drawPath(front, color = fillTint)
+        drawPath(front, color = tint, style = stroke)
+        drawLine(tint, bFR, bBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, bBR, tBR, strokeWidth = 1.9.dp.toPx())
+        drawLine(tint, tFR, tBR, strokeWidth = 1.8.dp.toPx())
+        drawLine(tint, tBR, tBL, strokeWidth = 1.8.dp.toPx())
+        drawLine(tint, tBL, tFL, strokeWidth = 1.8.dp.toPx())
+        listOf(bFL, bFR, bBR, tFL, tFR, tBR).forEach { drawCircle(tint, dotR, it) }
+      }
+
+      "cylinder" -> {
+        val rx = w * 0.32f
+        val ry = h * 0.10f
+        val topY = h * 0.24f
+        val botY = h * 0.76f
+        drawRect(color = fillTint, topLeft = Offset(cx - rx, topY), size = Size(rx * 2f, botY - topY))
+        drawOval(color = tint, topLeft = Offset(cx - rx, topY - ry), size = Size(rx * 2f, ry * 2f), style = stroke)
+        drawArc(
+          color = tint,
+          startAngle = 0f,
+          sweepAngle = 180f,
+          useCenter = false,
+          topLeft = Offset(cx - rx, botY - ry),
+          size = Size(rx * 2f, ry * 2f),
+          style = stroke
+        )
+        drawLine(tint, Offset(cx - rx, topY), Offset(cx - rx, botY), strokeWidth = 2.dp.toPx())
+        drawLine(tint, Offset(cx + rx, topY), Offset(cx + rx, botY), strokeWidth = 2.dp.toPx())
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = Offset(cx, topY),
+          end = Offset(cx, botY),
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+      }
+
+      "cone" -> {
+        val rx = w * 0.34f
+        val ry = h * 0.10f
+        val apex = Offset(cx, h * 0.16f)
+        val botY = h * 0.78f
+        val path = Path().apply {
+          moveTo(apex.x, apex.y)
+          lineTo(cx - rx, botY)
+          lineTo(cx + rx, botY)
+          close()
+        }
+        drawPath(path, color = fillTint)
+        drawLine(tint, apex, Offset(cx - rx, botY), strokeWidth = 2.dp.toPx())
+        drawLine(tint, apex, Offset(cx + rx, botY), strokeWidth = 2.dp.toPx())
+        drawArc(
+          color = tint,
+          startAngle = 0f,
+          sweepAngle = 180f,
+          useCenter = false,
+          topLeft = Offset(cx - rx, botY - ry),
+          size = Size(rx * 2f, ry * 2f),
+          style = stroke
+        )
+        drawLine(
+          color = tint.copy(alpha = 0.65f),
+          start = apex,
+          end = Offset(cx, botY),
+          strokeWidth = 1.4.dp.toPx(),
+          pathEffect = dashStroke.pathEffect
+        )
+        drawCircle(tint, dotR, apex)
+      }
+
+      "frustum_cone" -> {
+        val r1x = w * 0.20f
+        val r1y = h * 0.07f
+        val r2x = w * 0.36f
+        val r2y = h * 0.11f
+        val topY = h * 0.26f
+        val botY = h * 0.76f
+        val path = Path().apply {
+          moveTo(cx - r1x, topY)
+          lineTo(cx + r1x, topY)
+          lineTo(cx + r2x, botY)
+          lineTo(cx - r2x, botY)
+          close()
+        }
+        drawPath(path, color = fillTint)
+        drawOval(color = tint, topLeft = Offset(cx - r1x, topY - r1y), size = Size(r1x * 2f, r1y * 2f), style = stroke)
+        drawArc(
+          color = tint,
+          startAngle = 0f,
+          sweepAngle = 180f,
+          useCenter = false,
+          topLeft = Offset(cx - r2x, botY - r2y),
+          size = Size(r2x * 2f, r2y * 2f),
+          style = stroke
+        )
+        drawLine(tint, Offset(cx - r1x, topY), Offset(cx - r2x, botY), strokeWidth = 2.dp.toPx())
+        drawLine(tint, Offset(cx + r1x, topY), Offset(cx + r2x, botY), strokeWidth = 2.dp.toPx())
+      }
+
+      "sphere" -> {
+        val r = w.coerceAtMost(h) * 0.38f
+        val center = Offset(cx, cy)
+        drawCircle(color = fillTint, radius = r, center = center)
+        drawCircle(color = tint, radius = r, center = center, style = stroke)
+        drawOval(
+          color = tint.copy(alpha = 0.65f),
+          topLeft = Offset(cx - r, cy - r * 0.30f),
+          size = Size(r * 2f, r * 0.60f),
+          style = dashStroke
+        )
+        drawCircle(tint, dotR, center)
       }
     }
   }
@@ -14445,202 +17140,895 @@ private data class AlgebraHandbookRuleItem(
 
 private data class AlgebraHandbookSection(
   val sectionTitle: String,
-  val items: List<AlgebraHandbookRuleItem>
+  val items: List<AlgebraHandbookRuleItem>,
+  val ribbonLabel: String = sectionTitle
 )
+
+private val MATH_UPRIGHT_KEYWORDS = setOf(
+  "sin", "cos", "tan", "cot", "sec", "csc",
+  "arcsin", "arccos", "arctan", "arccot", "arcsec", "arccsc",
+  "log", "ln", "lim", "exp", "max", "min", "gcd", "lcm",
+  "rad", "deg", "grad", "grads", "gons", "mils", "rev",
+  "opp", "adj", "hyp", "Area", "Remainder",
+  "Real", "Equal", "Complex", "Imaginary", "Unequal",
+  "or", "and", "is", "of", "factor", "to", "mid", "sub", "where"
+)
+
+private val MATH_OPERATOR_CHARS = setOf(
+  '=', '+', '-', '·', '/', '÷', '×', '⇔', '⇒', '⟹', '≈', '<', '>', '±', '∓', '≠', '≤', '≥', ':'
+)
+
+private fun buildMathAnnotatedString(
+  rawEquation: String,
+  isDark: Boolean,
+  operatorColor: Color
+): AnnotatedString {
+  val cleaned = rawEquation
+    .trim()
+    .removePrefix("[")
+    .removeSuffix("]")
+    .trim()
+
+  val primaryMathColor = if (isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+  val variableMathColor = if (isDark) Color(0xFFE0F2FE) else Color(0xFF1E293B)
+  val parenColor = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+
+  return buildAnnotatedString {
+    var i = 0
+    val len = cleaned.length
+    while (i < len) {
+      val ch = cleaned[i]
+      when {
+        // Handle LaTeX-style subscript notation: `_(...)` or `_token`
+        ch == '_' && i + 1 < len -> {
+          if (cleaned[i + 1] == '(') {
+            val closeIdx = cleaned.indexOf(')', startIndex = i + 2)
+            if (closeIdx != -1) {
+              val subContent = cleaned.substring(i + 2, closeIdx)
+              withStyle(
+                SpanStyle(
+                  fontFamily = FontFamily.Serif,
+                  fontStyle = FontStyle.Italic,
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold,
+                  baselineShift = BaselineShift.Subscript,
+                  color = variableMathColor
+                )
+              ) {
+                append(subContent)
+              }
+              i = closeIdx + 1
+            } else {
+              i++
+            }
+          } else {
+            var j = i + 1
+            while (j < len && (cleaned[j].isLetterOrDigit() || cleaned[j] == '/' || cleaned[j] == '+' || cleaned[j] == '-')) {
+              j++
+            }
+            val subToken = cleaned.substring(i + 1, j)
+            val isWordSub = subToken.lowercase(Locale.ROOT) in MATH_UPRIGHT_KEYWORDS || subToken.all { it.isDigit() }
+            withStyle(
+              SpanStyle(
+                fontFamily = if (isWordSub) FontFamily.SansSerif else FontFamily.Serif,
+                fontStyle = if (isWordSub) FontStyle.Normal else FontStyle.Italic,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                baselineShift = BaselineShift.Subscript,
+                color = if (isWordSub) primaryMathColor else variableMathColor
+              )
+            ) {
+              append(subToken)
+            }
+            i = j
+          }
+        }
+
+        // Alphabetic or Greek word/variable run
+        ch.isLetter() && ch !in setOf('ⁿ', 'ᵃ', 'ᵇ', 'ᶜ', 'ᵈ', 'ᵉ', 'ᶠ', 'ᵍ', 'ʰ', 'ⁱ', 'ʲ', 'ᵏ', 'ˡ', 'ᵐ', 'ᵒ', 'ᵖ', 'ʳ', 'ˢ', 'ᵗ', 'ᵘ', 'ᵛ', 'ʷ', 'ˣ', 'ʸ', 'ᶻ', 'ₐ', 'ₑ', 'ₕ', 'ᵢ', 'ⱼ', 'ₖ', 'ₗ', 'ₘ', 'ₙ', 'ₒ', 'ₚ', 'ᵣ', 'ₛ', 'ₜ', 'ᵤ', 'ᵥ', 'ₓ', 'ᵦ', 'ᵧ', 'ᵨ', 'ᵩ', 'ᵪ') -> {
+          var j = i + 1
+          while (
+            j < len &&
+            cleaned[j].isLetter() &&
+            cleaned[j] !in setOf('ⁿ', 'ᵃ', 'ᵇ', 'ᶜ', 'ᵈ', 'ᵉ', 'ᶠ', 'ᵍ', 'ʰ', 'ⁱ', 'ʲ', 'ᵏ', 'ˡ', 'ᵐ', 'ᵒ', 'ᵖ', 'ʳ', 'ˢ', 'ᵗ', 'ᵘ', 'ᵛ', 'ʷ', 'ˣ', 'ʸ', 'ᶻ', 'ₐ', 'ₑ', 'ₕ', 'ᵢ', 'ⱼ', 'ₖ', 'ₗ', 'ₘ', 'ₙ', 'ₒ', 'ₚ', 'ᵣ', 'ₛ', 'ₜ', 'ᵤ', 'ᵥ', 'ₓ', 'ᵦ', 'ᵧ', 'ᵨ', 'ᵩ', 'ᵪ')
+          ) {
+            j++
+          }
+          val token = cleaned.substring(i, j)
+          if (token == "π" || token == "Δ") {
+            withStyle(
+              SpanStyle(
+                fontFamily = FontFamily.SansSerif,
+                fontStyle = FontStyle.Normal,
+                fontSize = 17.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = primaryMathColor
+              )
+            ) {
+              append(token)
+            }
+          } else if (token in MATH_UPRIGHT_KEYWORDS || token.lowercase(Locale.ROOT) in MATH_UPRIGHT_KEYWORDS) {
+            withStyle(
+              SpanStyle(
+                fontFamily = FontFamily.SansSerif,
+                fontStyle = FontStyle.Normal,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                color = primaryMathColor
+              )
+            ) {
+              append(token)
+            }
+          } else {
+            // Mathematical variables (a, b, c, x, y, n, r, k, θ, α, β, etc.)
+            withStyle(
+              SpanStyle(
+                fontFamily = FontFamily.Serif,
+                fontStyle = FontStyle.Italic,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = variableMathColor
+              )
+            ) {
+              append(token)
+            }
+          }
+          i = j
+        }
+
+        // Highlighted operators (=, +, -, ·, /, ⇔, ⇒, etc.)
+        ch in MATH_OPERATOR_CHARS -> {
+          withStyle(
+            SpanStyle(
+              fontFamily = FontFamily.SansSerif,
+              fontStyle = FontStyle.Normal,
+              fontSize = 17.5.sp,
+              fontWeight = FontWeight.ExtraBold,
+              color = operatorColor
+            )
+          ) {
+            append(ch)
+          }
+          i++
+        }
+
+        // Grouping parentheses & brackets
+        ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' -> {
+          withStyle(
+            SpanStyle(
+              fontFamily = FontFamily.SansSerif,
+              fontStyle = FontStyle.Normal,
+              fontSize = 17.5.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = parenColor
+            )
+          ) {
+            append(ch)
+          }
+          i++
+        }
+
+        // Numbers, Unicode superscripts/subscripts, radicals, summations (∑, ∏, √, ±, ², ₙ, etc.)
+        else -> {
+          withStyle(
+            SpanStyle(
+              fontFamily = FontFamily.SansSerif,
+              fontStyle = FontStyle.Normal,
+              fontSize = 17.5.sp,
+              fontWeight = FontWeight.Bold,
+              color = primaryMathColor
+            )
+          ) {
+            append(ch)
+          }
+          i++
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun MathFormulaCapsule(
+  label: String,
+  equation: String,
+  secondaryEquation: String? = null,
+  accentColor: Color,
+  modifier: Modifier = Modifier,
+  testTag: String? = null
+) {
+  val context = LocalContext.current
+  val localView = LocalView.current
+  val clipboardManager = LocalClipboardManager.current
+  val palette = currentGlassPalette()
+
+  val capsuleBg = if (palette.isDark) {
+    Color(0xFF0F172A).copy(alpha = 0.88f)
+  } else {
+    Color(0xFFF8FAFC).copy(alpha = 0.96f)
+  }
+  val subPillBg = if (palette.isDark) {
+    Color(0xFF1E293B).copy(alpha = 0.78f)
+  } else {
+    Color(0xFFEEF2FF).copy(alpha = 0.82f)
+  }
+  val operatorHighlight = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+
+  val formulaSegments = remember(equation, secondaryEquation) {
+    val baseSegments = equation
+      .split(Regex("\\s+\\|\\s+"))
+      .map { it.trim() }
+      .filter { it.isNotEmpty() }
+    val extraSegments = secondaryEquation
+      ?.split(Regex("\\s+\\|\\s+"))
+      ?.map { it.trim() }
+      ?.filter { it.isNotEmpty() }
+      .orEmpty()
+    baseSegments + extraSegments
+  }
+
+  val cleanClipboardFormula = remember(formulaSegments) {
+    formulaSegments.joinToString("  •  ") { seg ->
+      seg.removePrefix("[").removeSuffix("]").trim()
+    }
+  }
+
+  Surface(
+    onClick = {
+      playCardHapticSound(context, localView)
+      clipboardManager.setText(AnnotatedString("$label: $cleanClipboardFormula"))
+      Toast.makeText(context, "Formula copied to clipboard", Toast.LENGTH_SHORT).show()
+    },
+    shape = RoundedCornerShape(16.dp),
+    color = capsuleBg,
+    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.28f)),
+    shadowElevation = 3.dp,
+    modifier = modifier
+      .fillMaxWidth()
+      .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      // 4.dp vertical glowing accent bar on the left edge
+      Box(
+        modifier = Modifier
+          .width(4.dp)
+          .fillMaxHeight()
+          .background(
+            brush = Brush.verticalGradient(
+              listOf(
+                accentColor,
+                operatorHighlight
+              )
+            )
+          )
+      )
+
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        // Top Row: Micro-Header Label + Subtle Copy Icon
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = label.uppercase(Locale.ROOT),
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontSize = 11.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 1.sp
+            ),
+            color = accentColor,
+            modifier = Modifier
+              .weight(1f)
+              .padding(end = 8.dp)
+          )
+
+          Surface(
+            shape = CircleShape,
+            color = accentColor.copy(alpha = 0.12f),
+            border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.30f)),
+            modifier = Modifier.size(26.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = Icons.Default.ContentCopy,
+                contentDescription = "Copy $label",
+                tint = accentColor.copy(alpha = 0.90f),
+                modifier = Modifier.size(13.dp)
+              )
+            }
+          }
+        }
+
+        // Equation Body: Single expression or multi-pill layout when separated by `|`
+        if (formulaSegments.size <= 1) {
+          val singleText = formulaSegments.firstOrNull() ?: equation
+          val styledMath = remember(singleText, palette.isDark, operatorHighlight) {
+            buildMathAnnotatedString(
+              rawEquation = singleText,
+              isDark = palette.isDark,
+              operatorColor = operatorHighlight
+            )
+          }
+          Text(
+            text = styledMath,
+            lineHeight = 24.sp,
+            softWrap = true,
+            modifier = Modifier.fillMaxWidth()
+          )
+        } else {
+          val canFitSideBySide = formulaSegments.size == 2 &&
+            formulaSegments.all { it.length <= 22 }
+          if (canFitSideBySide) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              formulaSegments.forEach { seg ->
+                val styledSeg = remember(seg, palette.isDark, operatorHighlight) {
+                  buildMathAnnotatedString(
+                    rawEquation = seg,
+                    isDark = palette.isDark,
+                    operatorColor = operatorHighlight
+                  )
+                }
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = subPillBg,
+                  border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.22f)),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Text(
+                    text = styledSeg,
+                    lineHeight = 23.sp,
+                    softWrap = true,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                  )
+                }
+              }
+            }
+          } else {
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              formulaSegments.forEach { seg ->
+                val styledSeg = remember(seg, palette.isDark, operatorHighlight) {
+                  buildMathAnnotatedString(
+                    rawEquation = seg,
+                    isDark = palette.isDark,
+                    operatorColor = operatorHighlight
+                  )
+                }
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = subPillBg,
+                  border = BorderStroke(0.8.dp, accentColor.copy(alpha = 0.22f)),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Text(
+                    text = styledSeg,
+                    lineHeight = 23.sp,
+                    softWrap = true,
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun StickyFormulaSectionRibbon(
+  sections: List<Pair<Int, AlgebraHandbookSection>>,
+  activeSectionIndex: Int,
+  accentColor: Color,
+  onSelectSection: (Int) -> Unit,
+  modifier: Modifier = Modifier,
+  testTagPrefix: String = "section_ribbon"
+) {
+  val palette = currentGlassPalette()
+  val glowCyan = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+
+  LazyRow(
+    modifier = modifier
+      .fillMaxWidth()
+      .testTag("${testTagPrefix}_row"),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
+  ) {
+    items(
+      count = sections.size,
+      key = { idx -> "${testTagPrefix}_pill_${sections[idx].first}" }
+    ) { listIdx ->
+      val (originalIdx, section) = sections[listIdx]
+      val isSelected = originalIdx == activeSectionIndex
+      val numBadge = String.format(Locale.US, "%02d", originalIdx + 1)
+
+      Surface(
+        onClick = { onSelectSection(listIdx) },
+        shape = CircleShape,
+        color = if (isSelected) {
+          accentColor.copy(alpha = if (palette.isDark) 0.28f else 0.18f)
+        } else {
+          palette.cardFill
+        },
+        border = BorderStroke(
+          width = if (isSelected) 1.4.dp else 1.dp,
+          brush = if (isSelected) {
+            Brush.linearGradient(listOf(glowCyan, accentColor))
+          } else {
+            Brush.linearGradient(
+              listOf(
+                palette.textSecondary.copy(alpha = 0.22f),
+                palette.textSecondary.copy(alpha = 0.12f)
+              )
+            )
+          }
+        ),
+        shadowElevation = if (isSelected) 6.dp else 2.dp,
+        modifier = Modifier.testTag("${testTagPrefix}_pill_${originalIdx + 1}")
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          Text(
+            text = numBadge,
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = FontFamily.Monospace,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = if (isSelected) glowCyan else accentColor
+          )
+          Text(
+            text = section.ribbonLabel,
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = 12.sp,
+              fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+            ),
+            color = if (isSelected) palette.textPrimary else palette.textSecondary,
+            maxLines = 1
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun TrigMnemonicBlueprintBanner(
+  isDark: Boolean,
+  onOpenHolographicTriangle: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val stageBgColor = if (isDark) Color(0xFF0F172A) else Color(0xFFF1F5F9)
+  val stageBorderColor = if (isDark) {
+    Color(0xFF06B6D4).copy(alpha = 0.42f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.32f)
+  }
+  val gridLineColor = if (isDark) {
+    Color(0xFF38BDF8).copy(alpha = 0.08f)
+  } else {
+    Color(0xFF0284C7).copy(alpha = 0.07f)
+  }
+  val cyanStroke = if (isDark) Color(0xFF06B6D4) else Color(0xFF0284C7)
+  val emeraldStroke = if (isDark) Color(0xFF10B981) else Color(0xFF059669)
+  val indigoStroke = if (isDark) Color(0xFF818CF8) else Color(0xFF4F46E5)
+  val textPrimary = if (isDark) Color(0xFFE0F2FE) else Color(0xFF0F172A)
+
+  Surface(
+    onClick = onOpenHolographicTriangle,
+    shape = RoundedCornerShape(20.dp),
+    color = stageBgColor,
+    border = BorderStroke(1.2.dp, stageBorderColor),
+    shadowElevation = 6.dp,
+    modifier = modifier
+      .fillMaxWidth()
+      .height(150.dp)
+      .testTag("trig_mnemonic_blueprint_banner")
+  ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+      Canvas(modifier = Modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+        val step = 18.dp.toPx()
+
+        var gx = step
+        while (gx < w) {
+          drawLine(gridLineColor, Offset(gx, 0f), Offset(gx, h), strokeWidth = 1f)
+          gx += step
+        }
+        var gy = step
+        while (gy < h) {
+          drawLine(gridLineColor, Offset(0f, gy), Offset(w, gy), strokeWidth = 1f)
+          gy += step
+        }
+
+        // Right-side Magic Hexagon (Top-Left: sin, Top-Right: cos, Middle-Right: cot, Bottom-Right: csc, Bottom-Left: sec, Middle-Left: tan; Center: 1)
+        val hexCx = w * 0.74f
+        val hexCy = h * 0.50f
+        val hexR = h * 0.34f
+        val anglesDeg = listOf(-120f, -60f, 0f, 60f, 120f, 180f)
+        val hexLabels = listOf("sin", "cos", "cot", "csc", "sec", "tan")
+        val pts = anglesDeg.map { deg ->
+          val rad = Math.toRadians(deg.toDouble())
+          Offset(
+            x = hexCx + hexR * kotlin.math.cos(rad).toFloat(),
+            y = hexCy + hexR * kotlin.math.sin(rad).toFloat()
+          )
+        }
+
+        // Shade the 3 Pythagorean triangles inside the hexagon:
+        // 1. Top-Center (sin - cos - 1): pts[0], pts[1], Center
+        // 2. Left-Bottom (tan - 1 - sec): pts[5], Offset(hexCx, hexCy), pts[4]
+        // 3. Right-Bottom (1 - cot - csc): Offset(hexCx, hexCy), pts[2], pts[3]
+        val pythTriTop = Path().apply {
+          moveTo(pts[0].x, pts[0].y)
+          lineTo(pts[1].x, pts[1].y)
+          lineTo(hexCx, hexCy)
+          close()
+        }
+        val pythTriLeft = Path().apply {
+          moveTo(pts[5].x, pts[5].y)
+          lineTo(hexCx, hexCy)
+          lineTo(pts[4].x, pts[4].y)
+          close()
+        }
+        val pythTriRight = Path().apply {
+          moveTo(hexCx, hexCy)
+          lineTo(pts[2].x, pts[2].y)
+          lineTo(pts[3].x, pts[3].y)
+          close()
+        }
+        drawPath(pythTriTop, color = cyanStroke.copy(alpha = if (isDark) 0.22f else 0.14f))
+        drawPath(pythTriLeft, color = emeraldStroke.copy(alpha = if (isDark) 0.16f else 0.11f))
+        drawPath(pythTriRight, color = indigoStroke.copy(alpha = if (isDark) 0.16f else 0.11f))
+
+        // Diagonals through center "1"
+        val dashEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+        for (k in 0..2) {
+          drawLine(
+            color = indigoStroke.copy(alpha = 0.70f),
+            start = pts[k],
+            end = pts[k + 3],
+            strokeWidth = 1.4.dp.toPx(),
+            pathEffect = dashEffect
+          )
+        }
+
+        // Outer Hexagon Perimeter
+        val hexPath = Path().apply {
+          pts.forEachIndexed { idx, pt ->
+            if (idx == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+          }
+          close()
+        }
+        drawPath(
+          path = hexPath,
+          color = cyanStroke,
+          style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+
+        val dotR = 3.2.dp.toPx()
+        pts.forEach { drawCircle(color = cyanStroke, radius = dotR, center = it) }
+        drawCircle(color = Color(0xFFF59E0B), radius = dotR * 1.25f, center = Offset(hexCx, hexCy))
+
+        val labelPaint = android.graphics.Paint().apply {
+          isAntiAlias = true
+          color = textPrimary.toArgb()
+          textSize = 9.5.sp.toPx()
+          typeface = android.graphics.Typeface.create(
+            android.graphics.Typeface.MONOSPACE,
+            android.graphics.Typeface.BOLD
+          )
+          textAlign = android.graphics.Paint.Align.CENTER
+        }
+        pts.forEachIndexed { idx, pt ->
+          val rad = Math.toRadians(anglesDeg[idx].toDouble())
+          val lx = hexCx + (hexR + 14.dp.toPx()) * kotlin.math.cos(rad).toFloat()
+          val ly = hexCy + (hexR + 12.dp.toPx()) * kotlin.math.sin(rad).toFloat() + 3.dp.toPx()
+          drawContext.canvas.nativeCanvas.drawText(hexLabels[idx], lx, ly, labelPaint)
+        }
+        drawContext.canvas.nativeCanvas.drawText("1", hexCx, hexCy - 6.dp.toPx(), labelPaint)
+      }
+
+      // Left-side Interactive Trigger Content for Interactive Magic Hexagon Modal
+      Column(
+        modifier = Modifier
+          .align(Alignment.CenterStart)
+          .padding(horizontal = 16.dp, vertical = 12.dp)
+          .fillMaxWidth(0.56f),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        Surface(
+          shape = RoundedCornerShape(6.dp),
+          color = cyanStroke.copy(alpha = 0.15f),
+          border = BorderStroke(0.8.dp, cyanStroke.copy(alpha = 0.42f))
+        ) {
+          Text(
+            text = "TAP VERTICES OR TRIANGLES TO DERIVE IDENTITIES",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = FontFamily.Monospace,
+              fontSize = 8.2.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 0.5.sp
+            ),
+            color = cyanStroke,
+            maxLines = 2,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+          )
+        }
+
+        Text(
+          text = "Interactive Magic Hexagon",
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontSize = 16.sp,
+            fontWeight = FontWeight.ExtraBold,
+            lineHeight = 19.sp
+          ),
+          color = textPrimary
+        )
+
+        Surface(
+          shape = CircleShape,
+          color = cyanStroke.copy(alpha = if (isDark) 0.22f else 0.14f),
+          border = BorderStroke(1.dp, cyanStroke.copy(alpha = 0.55f))
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.ChangeHistory,
+              contentDescription = null,
+              tint = cyanStroke,
+              modifier = Modifier.size(14.dp)
+            )
+            Text(
+              text = "LAUNCH MAGIC HEXAGON",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.6.sp
+              ),
+              color = cyanStroke
+            )
+          }
+        }
+      }
+    }
+  }
+}
 
 private fun buildAlgebraHandbookSections(): List<AlgebraHandbookSection> = listOf(
   AlgebraHandbookSection(
-    sectionTitle = "1. Law of Natural Numbers (Real Number Properties)",
+    sectionTitle = "Law of Natural Numbers",
+    ribbonLabel = "Natural Numbers",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Commutative",
-        formulaOrStatement = "[ a + b = b + a ] | [ a · b = b · a ]"
+        title = "Commutative Law",
+        formulaOrStatement = "a + b = b + a  |  a · b = b · a"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Associative",
-        formulaOrStatement = "[ (a + b) + c = a + (b + c) ] | [ (a · b) · c = a · (b · c) ]"
+        title = "Associative Law",
+        formulaOrStatement = "(a + b) + c = a + (b + c)  |  (a · b) · c = a · (b · c)"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Distributive",
-        formulaOrStatement = "[ a(b + c) = ab + ac ]"
+        title = "Distributive Law",
+        formulaOrStatement = "a(b + c) = ab + ac"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "2. Law of Equality",
+    sectionTitle = "Law of Equality",
+    ribbonLabel = "Equality",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Reflexive",
-        formulaOrStatement = "[ a = a ]"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Symmetric",
-        formulaOrStatement = "[ If a = b, then b = a ]"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 3,
-        title = "Transitive",
-        formulaOrStatement = "[ If a = b and b = c, then a = c ]"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 4,
-        title = "Addition/Multiplication",
-        formulaOrStatement = "[ If a = b, then a + c = b + c and ac = bc ]"
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "3. Inequality",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Trichotomy",
-        formulaOrStatement = "[ Exactly one is true: a < b, a = b, or a > b ]"
+        title = "Reflexive & Symmetric",
+        formulaOrStatement = "a = a  |  a = b  ⇒  b = a"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Transitive",
-        formulaOrStatement = "[ If a < b and b < c, then a < c ]"
+        formulaOrStatement = "a = b  and  b = c  ⇒  a = c"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Multiplication by Negative",
-        formulaOrStatement = "[ If a < b and c < 0, then ac > bc (Sign Flips!) ]"
+        title = "Operational Invariance",
+        formulaOrStatement = "a = b  ⇒  a + c = b + c  |  ac = bc"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "4. Laws of Exponents",
+    sectionTitle = "Inequality Theorems",
+    ribbonLabel = "Inequality",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Product / Quotient",
-        formulaOrStatement = "[ xᵃ · xᵇ = xᵃ⁺ᵇ ] | [ xᵃ / xᵇ = xᵃ⁻ᵇ ]"
+        title = "Trichotomy & Transitive",
+        formulaOrStatement = "a < b,  a = b,  or  a > b  |  a < b < c  ⇒  a < c"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Power of a Power",
-        formulaOrStatement = "[ (xᵃ)ᵇ = xᵃᵇ ]"
+        title = "Addition & Positive Scalar",
+        formulaOrStatement = "a < b  ⇒  a + c < b + c  |  ac < bc  (c > 0)"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Power of a Product",
-        formulaOrStatement = "[ (xy)ᵃ = xᵃ · yᵃ ]"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 4,
-        title = "Negative / Zero",
-        formulaOrStatement = "[ x⁻ᵃ = 1 / xᵃ ] | [ x⁰ = 1 (where x ≠ 0) ]"
+        title = "Negative Multiplier (Sign Reversal)",
+        formulaOrStatement = "a < b  and  c < 0  ⇒  ac > bc"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "5. Properties of Radicals",
+    sectionTitle = "Laws of Exponents",
+    ribbonLabel = "Exponents",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Product & Quotient",
+        formulaOrStatement = "xᵃ · xᵇ = xᵃ⁺ᵇ  |  xᵃ / xᵇ = xᵃ⁻ᵇ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Power of Power & Product",
+        formulaOrStatement = "(xᵃ)ᵇ = xᵃᵇ  |  (xy)ᵃ = xᵃyᵃ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Negative & Zero Exponents",
+        formulaOrStatement = "x⁻ᵃ = 1 / xᵃ  |  x⁰ = 1  (x ≠ 0)"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Properties of Radicals",
+    ribbonLabel = "Radicals",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Fractional Exponent",
-        formulaOrStatement = "[ xᵐ/ⁿ = ⁿ√(xᵐ) = (ⁿ√x)ᵐ ]"
+        formulaOrStatement = "xᵐ/ⁿ = ⁿ√(xᵐ) = (ⁿ√x)ᵐ"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Product / Quotient",
-        formulaOrStatement = "[ ⁿ√(xy) = ⁿ√x · ⁿ√y ] | [ ⁿ√(x/y) = ⁿ√x / ⁿ√y ]"
+        title = "Product & Quotient of Roots",
+        formulaOrStatement = "ⁿ√(xy) = ⁿ√x · ⁿ√y  |  ⁿ√(x/y) = ⁿ√x / ⁿ√y"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Root of a Root",
-        formulaOrStatement = "[ ᵐ√(ⁿ√x) = ᵐⁿ√x ]"
+        title = "Nested Radicals",
+        formulaOrStatement = "ᵐ√(ⁿ√x) = ᵐⁿ√x"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "6. Logarithms",
+    sectionTitle = "Logarithms",
+    ribbonLabel = "Logarithms",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Product / Quotient",
-        formulaOrStatement = "[ logₐ(xy) = logₐ(x) + logₐ(y) ] | [ logₐ(x/y) = logₐ(x) - logₐ(y) ]"
+        title = "Product & Quotient Rules",
+        formulaOrStatement = "log_b(xy) = log_b(x) + log_b(y)  |  log_b(x/y) = log_b(x) - log_b(y)"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Power Rule",
-        formulaOrStatement = "[ logₐ(xᵏ) = k · logₐ(x) ]"
+        title = "Power & Identity Rules",
+        formulaOrStatement = "log_b(xᵏ) = k · log_b(x)  |  log_b(b) = 1,  log_b(1) = 0"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Change of Base",
-        formulaOrStatement = "[ logₐ(x) = ln(x) / ln(a) = log₁₀(x) / log₁₀(a) ]"
+        formulaOrStatement = "log_b(x) = ln(x) / ln(b) = log₁₀(x) / log₁₀(b)"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "7. Polynomials",
+    sectionTitle = "Polynomials",
+    ribbonLabel = "Polynomials",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
         title = "Remainder Theorem",
-        formulaOrStatement = "[ If P(x) is divided by (x - c), the remainder is P(c) ]"
+        formulaOrStatement = "P(x) ÷ (x - r)  ⇒  Remainder R = P(r)"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
         title = "Factor Theorem",
-        formulaOrStatement = "[ (x - c) is a factor of P(x) if and only if P(c) = 0 ]"
+        formulaOrStatement = "(x - r) is a factor of P(x)  ⇔  P(r) = 0"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Vieta's Root Relations (Degree n)",
+        formulaOrStatement = "∑rᵢ = -aₙ₋₁ / aₙ  |  ∏rᵢ = (-1)ⁿ (a₀ / aₙ)"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "8. Binomial Theorem",
+    sectionTitle = "Binomial Theorem",
+    ribbonLabel = "Binomial",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Expansion",
-        formulaOrStatement = "[ (a + b)ⁿ = ∑ₖ₌₀..ₙ C(n, k) · aⁿ⁻ᵏ · bᵏ ]"
+        title = "General Expansion",
+        formulaOrStatement = "(a + b)ⁿ = ∑ (k=0 to n) ₙCₖ · aⁿ⁻ᵏ · bᵏ"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "General r-th Term (1-indexed)",
-        formulaOrStatement = "[ Tᵣ = C(n, r - 1) · aⁿ⁻ʳ⁺¹ · bʳ⁻¹ ]"
+        title = "r-th Term Formula",
+        formulaOrStatement = "Tᵣ = ₙCᵣ₋₁ · aⁿ⁻ʳ⁺¹ · bʳ⁻¹"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Middle Term (Even n)",
+        formulaOrStatement = "T_mid = T_(n/2 + 1) = ₙC_(n/2) · aⁿ/² · bⁿ/²"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "9. Pascal's Triangle",
+    sectionTitle = "Pascal's Triangle & Combinatorics",
+    ribbonLabel = "Combinatorics",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Combinatorial Relation",
-        formulaOrStatement = "[ C(n, k) = C(n - 1, k - 1) + C(n - 1, k) ]"
+        title = "Recursive Identity",
+        formulaOrStatement = "ₙCₖ = ₙ₋₁Cₖ₋₁ + ₙ₋₁Cₖ"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Row Sum",
-        formulaOrStatement = "[ Sum of coefficients in row n is 2ⁿ ]"
+        title = "Combination Formula",
+        formulaOrStatement = "ₙCₖ = n! / ( k!(n - k)! )"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Sum of Coefficients (Row n)",
+        formulaOrStatement = "∑ (k=0 to n) ₙCₖ = 2ⁿ"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "10. Quadratic Formula",
+    sectionTitle = "Quadratic Formula & Roots",
+    ribbonLabel = "Quadratic",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Roots",
-        formulaOrStatement = "[ x = [-b ± √(b² - 4ac)] / 2a ]"
+        title = "Quadratic Roots",
+        formulaOrStatement = "x = ( -b ± √(b² - 4ac) ) / 2a"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Discriminant (Δ = b² - 4ac)",
-        formulaOrStatement = "[ Δ > 0 (Real & Unequal), Δ = 0 (Real & Equal), Δ < 0 (Imaginary) ]"
+        title = "Discriminant Nature",
+        formulaOrStatement = "Δ = b² - 4ac  |  Δ > 0 (Real),  Δ = 0 (Equal),  Δ < 0 (Complex)"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Sum & Product of Roots",
-        formulaOrStatement = "[ x₁ + x₂ = -b/a ] | [ x₁ · x₂ = c/a ]"
+        formulaOrStatement = "x₁ + x₂ = -b / a  |  x₁ · x₂ = c / a"
       )
     )
   )
@@ -14659,27 +18047,21 @@ private fun MsteAlgebraSheet(
   onOpenToc: () -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+  val localView = LocalView.current
   val palette = currentGlassPalette()
+  val coroutineScope = rememberCoroutineScope()
   val allSections = remember { buildAlgebraHandbookSections() }
   var selectedSectionForDetailModal by remember { mutableStateOf<Pair<Int, AlgebraHandbookSection>?>(null) }
-  val scrollState = rememberScrollState()
-  val sectionYOffsets = remember { mutableMapOf<Int, Int>() }
-
-  LaunchedEffect(highlightedSectionIndex) {
-    if (highlightedSectionIndex != null) {
-      val targetY = sectionYOffsets[highlightedSectionIndex]
-      if (targetY != null) {
-        scrollState.animateScrollTo(targetY)
-      }
-    }
-  }
 
   val filteredSections = remember(allSections, searchQuery) {
     if (searchQuery.isEmpty()) {
       allSections.mapIndexed { idx, sec -> idx to sec }
     } else {
       allSections.mapIndexedNotNull { idx, section ->
-        if (section.sectionTitle.contains(searchQuery, ignoreCase = true)) {
+        if (section.sectionTitle.contains(searchQuery, ignoreCase = true) ||
+          section.ribbonLabel.contains(searchQuery, ignoreCase = true)
+        ) {
           idx to section
         } else {
           val matchingItems = section.items.filter { item ->
@@ -14697,307 +18079,305 @@ private fun MsteAlgebraSheet(
     }
   }
 
-  val mathCalloutBg = if (palette.isDark) {
-    palette.cardSurface.copy(alpha = 0.90f)
-  } else {
-    Color(0xFFEEF2FF).copy(alpha = 0.94f)
-  }
-  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.28f)
-  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
-
-  Column(
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(12.dp),
-    modifier = modifier
-      .fillMaxSize()
-      .verticalScroll(scrollState)
-      .padding(bottom = 120.dp)
-      .testTag("algebra_a4_paper_sheet")
-  ) {
-    // ====================================================================
-    // HEADER: Breadcrumb Bar + Liquid Glass Algebra Reference Banner
-    // ====================================================================
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .widthIn(max = 680.dp),
-      verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Surface(
-          onClick = onBackToShelf,
-          shape = RoundedCornerShape(10.dp),
-          color = palette.cardFill,
-          border = palette.glassBorder,
-          modifier = Modifier.testTag("back_to_notebook_shelf_chip")
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-          ) {
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-              contentDescription = "Back to MSTE Library",
-              tint = palette.accentIndigo,
-              modifier = Modifier.size(16.dp)
-            )
-            Text(
-              text = "MSTE Library",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.5.sp
-              ),
-              color = palette.accentIndigo
-            )
-          }
-        }
-
-        Surface(
-          onClick = onOpenToc,
-          shape = RoundedCornerShape(10.dp),
-          color = palette.cardFill,
-          border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f))
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-          ) {
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.ViewList,
-              contentDescription = "Table of Contents",
-              tint = palette.accentIndigo,
-              modifier = Modifier.size(14.dp)
-            )
-            Text(
-              text = "MSTE / CE-01 • TOC",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.8.sp
-              ),
-              color = palette.accentIndigo
-            )
-          }
-        }
-      }
-
-      LiquidGlassCard(
-        cornerRadius = 22.dp,
-        elevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
-      ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          Text(
-            text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER I: ALGEBRA",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontFamily = FontFamily.Monospace,
-              fontSize = 10.5.sp,
-              fontWeight = FontWeight.Bold,
-              letterSpacing = 1.2.sp
-            ),
-            color = palette.accentIndigo,
-            softWrap = true,
-            modifier = Modifier.fillMaxWidth()
-          )
-
-          HorizontalDivider(
-            thickness = 1.5.dp,
-            color = palette.accentIndigo.copy(alpha = 0.45f)
-          )
-
-          Text(
-            text = "ENGINEERING ALGEBRA & NUMBER THEORY",
-            style = MaterialTheme.typography.headlineSmall.copy(
-              fontSize = 20.sp,
-              fontWeight = FontWeight.Bold,
-              letterSpacing = 0.4.sp
-            ),
-            color = palette.textPrimary,
-            softWrap = true,
-            modifier = Modifier.fillMaxWidth()
-          )
-
-          if (filteredSections.isEmpty()) {
-            Text(
-              text = "No Algebra formulas match \"$searchQuery\".",
-              style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-              color = palette.textSecondary,
-              softWrap = true,
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp)
-            )
-          }
+  val activeRibbonSectionIndex by remember(filteredSections, highlightedSectionIndex) {
+    derivedStateOf {
+      if (highlightedSectionIndex != null) {
+        highlightedSectionIndex
+      } else {
+        val firstVisible = lazyListState.firstVisibleItemIndex
+        if (firstVisible <= 0) {
+          filteredSections.firstOrNull()?.first ?: 0
+        } else {
+          filteredSections.getOrNull((firstVisible - 1).coerceIn(0, (filteredSections.size - 1).coerceAtLeast(0)))?.first ?: 0
         }
       }
     }
+  }
 
-    // ====================================================================
-    // SECTIONS 1..10: Compact Liquid Glass Formula Cards (Titles + Monospace Capsules Only)
-    // ====================================================================
-    filteredSections.forEach { (originalSectionIndex, section) ->
-      val isHighlighted = highlightedSectionIndex == originalSectionIndex
+  val sectionAccents = remember {
+    listOf(
+      Color(0xFF6366F1),
+      Color(0xFF3B82F6),
+      Color(0xFF06B6D4),
+      Color(0xFF8B5CF6),
+      Color(0xFF10B981),
+      Color(0xFFEC4899),
+      Color(0xFFF59E0B),
+      Color(0xFF14B8A6),
+      Color(0xFFA855F7),
+      Color(0xFF0EA5E9)
+    )
+  }
 
-      val sectionHeaderBgAlpha by animateFloatAsState(
-        targetValue = if (isHighlighted) 0.24f else 0f,
-        animationSpec = tween(durationMillis = 420),
-        label = "toc_arrival_glow_alpha"
-      )
-      val sectionHeaderBorderAlpha by animateFloatAsState(
-        targetValue = if (isHighlighted) 0.75f else 0f,
-        animationSpec = tween(durationMillis = 420),
-        label = "toc_arrival_border_alpha"
-      )
-
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .onGloballyPositioned { coords ->
-            sectionYOffsets[originalSectionIndex] = coords.positionInParent().y.toInt()
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = 680.dp)
+      .testTag("algebra_a4_paper_sheet"),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    // 1. STICKY QUICK-JUMP SECTION RIBBON (Directly below Top App Bar)
+    if (filteredSections.isNotEmpty()) {
+      StickyFormulaSectionRibbon(
+        sections = filteredSections,
+        activeSectionIndex = activeRibbonSectionIndex,
+        accentColor = Color(0xFF6366F1),
+        onSelectSection = { listIdx ->
+          playCardHapticSound(context, localView)
+          coroutineScope.launch {
+            lazyListState.animateScrollToItem(index = listIdx + 1)
           }
-          .clickable { selectedSectionForDetailModal = originalSectionIndex to section }
-          .testTag("algebra_section_${originalSectionIndex + 1}")
-      ) {
+        },
+        testTagPrefix = "algebra_ribbon"
+      )
+    }
+
+    // 2. SCROLLABLE NUMBERED LIQUID GLASS SECTIONS
+    LazyColumn(
+      state = lazyListState,
+      contentPadding = PaddingValues(bottom = 120.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      modifier = Modifier
+        .fillMaxWidth()
+        .weight(1f)
+    ) {
+      // ITEM 0: Breadcrumb Row (< MSTE Library and MSTE / CE-01 • 10 SECTIONS)
+      item(key = "algebra_blueprint_header_item_0") {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Surface(
+              onClick = onBackToShelf,
+              shape = RoundedCornerShape(10.dp),
+              color = palette.cardFill,
+              border = palette.glassBorder,
+              modifier = Modifier.testTag("back_to_notebook_shelf_chip")
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                  contentDescription = "Back to MSTE Library",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(16.dp)
+                )
+                Text(
+                  text = "MSTE Library",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.5.sp
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+            }
+
+            Surface(
+              onClick = onOpenToc,
+              shape = RoundedCornerShape(10.dp),
+              color = palette.cardFill,
+              border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.38f))
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.ViewList,
+                  contentDescription = "Table of Contents",
+                  tint = palette.accentIndigo,
+                  modifier = Modifier.size(14.dp)
+                )
+                Text(
+                  text = "MSTE / CE-01 • 10 SECTIONS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.8.sp
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+            }
+          }
+
+          if (filteredSections.isEmpty()) {
+            LiquidGlassCard(
+              cornerRadius = 18.dp,
+              elevation = 4.dp,
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = "No Algebra formulas match \"$searchQuery\".",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = palette.textSecondary,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)
+              )
+            }
+          }
+        }
+      }
+
+      // ITEMS 1..10: Numbered Liquid Glass Section Cards with MathFormulaCapsule items
+      items(
+        count = filteredSections.size,
+        key = { idx -> "algebra_section_card_${filteredSections[idx].first + 1}" }
+      ) { listIdx ->
+        val (originalSectionIndex, section) = filteredSections[listIdx]
+        val sectionAccent = sectionAccents[originalSectionIndex % sectionAccents.size]
+        val isHighlighted = highlightedSectionIndex == originalSectionIndex
+        val badgeText = String.format(Locale.US, "%02d", originalSectionIndex + 1)
+
+        val borderAlpha by animateFloatAsState(
+          targetValue = if (isHighlighted) 0.90f else 0.42f,
+          animationSpec = tween(durationMillis = 420),
+          label = "algebra_sec_border_alpha"
+        )
+
         LiquidGlassCard(
           cornerRadius = 22.dp,
           elevation = 6.dp,
-          modifier = Modifier.fillMaxWidth()
+          borderStroke = BorderStroke(
+            width = if (isHighlighted) 1.6.dp else 1.1.dp,
+            brush = Brush.linearGradient(
+              listOf(
+                sectionAccent.copy(alpha = borderAlpha),
+                Color.White.copy(alpha = if (palette.isDark) 0.16f else 0.65f)
+              )
+            )
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("algebra_section_${originalSectionIndex + 1}")
         ) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 20.dp, vertical = 16.dp),
+              .padding(horizontal = 16.dp, vertical = 15.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            // Section Heading Container
-            Column(
+            // Section Header Row: Numbered Badge + Bold Title + Formula Count Pill
+            Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
-                .border(
-                  width = 1.dp,
-                  color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
-                  shape = RoundedCornerShape(10.dp)
-                )
-                .padding(
-                  horizontal = if (isHighlighted) 10.dp else 0.dp,
-                  vertical = if (isHighlighted) 6.dp else 2.dp
-                )
+                .clickable { selectedSectionForDetailModal = originalSectionIndex to section },
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
             ) {
-              Text(
-                text = "• ${section.sectionTitle}",
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = 16.5.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = palette.textPrimary,
-                softWrap = true,
-                modifier = Modifier.fillMaxWidth()
-              )
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 8.dp)
+              ) {
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = sectionAccent.copy(alpha = if (palette.isDark) 0.22f else 0.14f),
+                  border = BorderStroke(1.dp, sectionAccent.copy(alpha = 0.55f))
+                ) {
+                  Text(
+                    text = badgeText,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = sectionAccent,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                  )
+                }
+
+                Text(
+                  text = section.sectionTitle,
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 16.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+
+              Surface(
+                shape = CircleShape,
+                color = sectionAccent.copy(alpha = if (palette.isDark) 0.16f else 0.10f),
+                border = BorderStroke(0.8.dp, sectionAccent.copy(alpha = 0.38f))
+              ) {
+                Text(
+                  text = "${section.items.size} FORMULAS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.6.sp
+                  ),
+                  color = sectionAccent,
+                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                )
+              }
             }
 
             HorizontalDivider(
               thickness = 0.8.dp,
-              color = palette.accentIndigo.copy(alpha = 0.25f)
+              color = sectionAccent.copy(alpha = 0.22f)
             )
 
-            // Compact Vertically Stacked Formula Rules (Titles + Monospace Capsules Only)
+            // Compact vertical stack of MathFormulaCapsule items
             Column(
               modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(10.dp)
+              verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-              section.items.forEach { rule ->
-                Column(
-                  modifier = Modifier.fillMaxWidth()
-                ) {
-                  // 1. Rule Title (Full Width)
-                  Text(
-                    text = "${rule.number}. ${rule.title}",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.Bold
-                    ),
-                    color = palette.textPrimary,
-                    softWrap = true,
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .padding(bottom = 5.dp)
-                  )
-
-                  // 2. Monospace Formula Capsule(s)
-                  val allFormulaCapsules = remember(rule) {
-                    listOf(rule.formulaOrStatement) + rule.subItems
-                  }
-                  Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                  ) {
-                    allFormulaCapsules.forEach { formulaLine ->
-                      Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = mathCalloutBg,
-                        border = BorderStroke(1.dp, mathCalloutBorder),
-                        shadowElevation = 2.dp,
-                        modifier = Modifier.fillMaxWidth()
-                      ) {
-                        Text(
-                          text = formulaLine,
-                          fontFamily = FontFamily.Monospace,
-                          fontSize = 15.sp,
-                          softWrap = true,
-                          style = MaterialTheme.typography.titleMedium.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 15.sp,
-                            lineHeight = 21.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.15.sp
-                          ),
-                          color = mathTextColor,
-                          modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                        )
-                      }
-                    }
-                  }
+              section.items.forEachIndexed { ruleIdx, rule ->
+                val secondaryEq = if (rule.subItems.isNotEmpty()) {
+                  rule.subItems.joinToString("  |  ")
+                } else {
+                  null
                 }
+                MathFormulaCapsule(
+                  label = rule.title,
+                  equation = rule.formulaOrStatement,
+                  secondaryEquation = secondaryEq,
+                  accentColor = sectionAccent,
+                  testTag = "algebra_formula_capsule_${originalSectionIndex + 1}_${ruleIdx + 1}"
+                )
               }
             }
           }
         }
       }
-    }
 
-    // Custom scholar formulas below the 10 Algebra sections
-    if (customFormulas.isNotEmpty()) {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .padding(top = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-      ) {
-        customFormulas.forEach { formula ->
-          InteractiveReferenceFormulaCard(
-            formula = formula,
-            isStarred = starredIds.contains(formula.id),
-            onToggleStar = { onToggleStar(formula.id) },
-            metrics = metrics
-          )
+      // Custom scholar formulas below the 10 Algebra sections
+      if (customFormulas.isNotEmpty()) {
+        item(key = "algebra_custom_formulas_footer") {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            customFormulas.forEach { formula ->
+              InteractiveReferenceFormulaCard(
+                formula = formula,
+                isStarred = starredIds.contains(formula.id),
+                onToggleStar = { onToggleStar(formula.id) },
+                metrics = metrics
+              )
+            }
+          }
         }
       }
     }
@@ -15046,13 +18426,7 @@ private fun AlgebraSectionDetailGlassModal(
   onDismiss: () -> Unit
 ) {
   val palette = currentGlassPalette()
-  val mathCalloutBg = if (palette.isDark) {
-    palette.cardSurface.copy(alpha = 0.92f)
-  } else {
-    Color(0xFFEEF2FF).copy(alpha = 0.95f)
-  }
-  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.30f)
-  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
+  val accentColor = Color(0xFF6366F1)
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -15087,8 +18461,8 @@ private fun AlgebraSectionDetailGlassModal(
           ) {
             Surface(
               shape = RoundedCornerShape(8.dp),
-              color = Color(0xFF6366F1).copy(alpha = 0.16f),
-              border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
+              color = accentColor.copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, accentColor.copy(alpha = 0.40f))
             ) {
               Text(
                 text = String.format(Locale.US, "MSTE / CE-01 • SECTION %02d", sectionNumber),
@@ -15135,59 +18509,25 @@ private fun AlgebraSectionDetailGlassModal(
 
           HorizontalDivider(
             thickness = 1.dp,
-            color = Color(0xFF6366F1).copy(alpha = 0.25f)
+            color = accentColor.copy(alpha = 0.25f)
           )
 
-          section.items.forEach { rule ->
-            Column(
-              modifier = Modifier.fillMaxWidth()
-            ) {
-              Text(
-                text = "${rule.number}. ${rule.title}",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                  fontSize = 14.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary,
-                softWrap = true,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(bottom = 5.dp)
-              )
-
-              val allFormulaCapsules = listOf(rule.formulaOrStatement) + rule.subItems
-              Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
-              ) {
-                allFormulaCapsules.forEach { formulaLine ->
-                  Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = mathCalloutBg,
-                    border = BorderStroke(1.dp, mathCalloutBorder),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.fillMaxWidth()
-                  ) {
-                    Text(
-                      text = formulaLine,
-                      fontFamily = FontFamily.Monospace,
-                      fontSize = 15.sp,
-                      softWrap = true,
-                      style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 15.sp,
-                        lineHeight = 21.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.15.sp
-                      ),
-                      color = mathTextColor,
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
-                  }
-                }
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            section.items.forEach { rule ->
+              val secondaryEq = if (rule.subItems.isNotEmpty()) {
+                rule.subItems.joinToString("  |  ")
+              } else {
+                null
               }
+              MathFormulaCapsule(
+                label = rule.title,
+                equation = rule.formulaOrStatement,
+                secondaryEquation = secondaryEq,
+                accentColor = accentColor
+              )
             }
           }
         }
@@ -15198,296 +18538,249 @@ private fun AlgebraSectionDetailGlassModal(
 
 private fun buildTrigonometryHandbookSections(): List<AlgebraHandbookSection> = listOf(
   AlgebraHandbookSection(
-    sectionTitle = "Functions of a Right Triangle",
+    sectionTitle = "Right Triangle Definitions",
+    ribbonLabel = "Functions",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Primary Ratios",
-        formulaOrStatement = "sin θ = opp / hyp ,  cos θ = adj / hyp ,  tan θ = opp / adj"
+        title = "Primary Trigonometric Ratios",
+        formulaOrStatement = "sin θ = opp / hyp  |  cos θ = adj / hyp  |  tan θ = opp / adj"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Reciprocal Ratios",
-        formulaOrStatement = "csc θ = hyp / opp ,  sec θ = hyp / adj ,  cot θ = adj / opp"
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Pythagorean Theorem & Right Triangle Metric Relations",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Hypotenuse & Legs",
-        formulaOrStatement = "c² = a² + b²  ⟹  c = √(a² + b²)"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Altitude to Hypotenuse (h)",
-        formulaOrStatement = "h = (a · b) / c ,  h² = p · q"
+        title = "Reciprocal Trigonometric Ratios",
+        formulaOrStatement = "csc θ = hyp / opp  |  sec θ = hyp / adj  |  cot θ = adj / opp"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Leg Projections",
-        formulaOrStatement = "a² = c · p ,  b² = c · q"
+        title = "Right Triangle Metric Relations",
+        formulaOrStatement = "c² = a² + b²  |  h = ab / c  |  h² = p · q  |  a² = cp,  b² = cq"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "Trigonometric Identities",
+    sectionTitle = "Reciprocal & Quotient Identities",
+    ribbonLabel = "Reciprocal",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Quotient & Reciprocal",
-        formulaOrStatement = "tan θ = sin θ / cos θ ,  cot θ = cos θ / sin θ = 1 / tan θ"
+        title = "Reciprocal Product Identities",
+        formulaOrStatement = "sin θ · csc θ = 1  |  cos θ · sec θ = 1  |  tan θ · cot θ = 1"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Pythagorean Identities",
-        formulaOrStatement = "sin²θ + cos²θ = 1",
-        subItems = listOf(
-          "1 + tan²θ = sec²θ",
-          "1 + cot²θ = csc²θ"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 3,
-        title = "Co-Function Identities",
-        formulaOrStatement = "sin(90° - θ) = cos θ ,  tan(90° - θ) = cot θ ,  sec(90° - θ) = csc θ"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 4,
-        title = "Sum & Difference of Two Angles",
-        formulaOrStatement = "sin(A ± B) = sin A cos B ± cos A sin B",
-        subItems = listOf(
-          "cos(A ± B) = cos A cos B ∓ sin A sin B",
-          "tan(A ± B) = (tan A ± tan B) / (1 ∓ tan A tan B)"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 5,
-        title = "Double-Angle Formulas",
-        formulaOrStatement = "sin 2θ = 2 sin θ cos θ",
-        subItems = listOf(
-          "cos 2θ = cos²θ - sin²θ = 2cos²θ - 1 = 1 - 2sin²θ",
-          "tan 2θ = (2 tan θ) / (1 - tan²θ)"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 6,
-        title = "Half-Angle Formulas",
-        formulaOrStatement = "sin(θ/2) = ±√[(1 - cos θ) / 2]",
-        subItems = listOf(
-          "cos(θ/2) = ±√[(1 + cos θ) / 2]",
-          "tan(θ/2) = (1 - cos θ) / sin θ = sin θ / (1 + cos θ)"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 7,
-        title = "Product-to-Sum Formulas",
-        formulaOrStatement = "sin A cos B = ½ [sin(A + B) + sin(A - B)]",
-        subItems = listOf(
-          "cos A cos B = ½ [cos(A + B) + cos(A - B)]",
-          "sin A sin B = -½ [cos(A + B) - cos(A - B)]"
-        )
+        title = "Quotient Identities",
+        formulaOrStatement = "tan θ = sin θ / cos θ  |  cot θ = cos θ / sin θ"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "Laws of Oblique Triangles",
+    sectionTitle = "Pythagorean Identities",
+    ribbonLabel = "Pythagorean",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Sine Law",
+        title = "Sine & Cosine Identity",
+        formulaOrStatement = "sin²θ + cos²θ = 1  |  sin²θ = 1 - cos²θ  |  cos²θ = 1 - sin²θ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Tangent & Secant Identity",
+        formulaOrStatement = "1 + tan²θ = sec²θ  |  sec²θ - tan²θ = 1"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Cotangent & Cosecant Identity",
+        formulaOrStatement = "1 + cot²θ = csc²θ  |  csc²θ - cot²θ = 1"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Co-Function & Even-Odd",
+    ribbonLabel = "Co-Function",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Complementary Co-Functions",
+        formulaOrStatement = "sin(90° - θ) = cos θ  |  tan(90° - θ) = cot θ  |  sec(90° - θ) = csc θ"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Even & Odd Symmetry",
+        formulaOrStatement = "cos(-θ) = cos θ  |  sin(-θ) = -sin θ  |  tan(-θ) = -tan θ"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Sum & Difference of Angles",
+    ribbonLabel = "Sum & Diff",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Sine Sum & Difference",
+        formulaOrStatement = "sin(α ± β) = sin α cos β ± cos α sin β"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Cosine Sum & Difference",
+        formulaOrStatement = "cos(α ± β) = cos α cos β ∓ sin α sin β"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Tangent Sum & Difference",
+        formulaOrStatement = "tan(α ± β) = (tan α ± tan β) / (1 ∓ tan α tan β)"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Double-Angle Identities",
+    ribbonLabel = "Double-Angle",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Double-Angle Sine & Tangent",
+        formulaOrStatement = "sin 2θ = 2 sin θ cos θ  |  tan 2θ = 2 tan θ / (1 - tan²θ)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Double-Angle Cosine Forms",
+        formulaOrStatement = "cos 2θ = cos²θ - sin²θ = 2cos²θ - 1 = 1 - 2sin²θ"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Half-Angle & Power-Reducing",
+    ribbonLabel = "Half-Angle",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Half-Angle Sine & Cosine",
+        formulaOrStatement = "sin(θ/2) = ±√((1 - cos θ) / 2)  |  cos(θ/2) = ±√((1 + cos θ) / 2)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Half-Angle Tangent",
+        formulaOrStatement = "tan(θ/2) = (1 - cos θ) / sin θ = sin θ / (1 + cos θ)"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Power-Reducing Formulas",
+        formulaOrStatement = "sin²θ = ½(1 - cos 2θ)  |  cos²θ = ½(1 + cos 2θ)"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Product-to-Sum & Sum-to-Product",
+    ribbonLabel = "Product-Sum",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Product-to-Sum Identities",
+        formulaOrStatement = "sin α cos β = ½(sin(α + β) + sin(α - β))  |  cos α cos β = ½(cos(α + β) + cos(α - β))"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Sine-Sine Product Identity",
+        formulaOrStatement = "sin α sin β = ½(cos(α - β) - cos(α + β))"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 3,
+        title = "Sum-to-Product Identities",
+        formulaOrStatement = "sin α + sin β = 2 sin(½(α + β)) cos(½(α - β))  |  cos α + cos β = 2 cos(½(α + β)) cos(½(α - β))"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Oblique Triangles: Law of Sines",
+    ribbonLabel = "Law of Sines",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Sine Law & Circumradius (R)",
         formulaOrStatement = "a / sin A = b / sin B = c / sin C = 2R"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Cosine Law",
-        formulaOrStatement = "a² = b² + c² - 2bc cos A",
-        subItems = listOf(
-          "b² = a² + c² - 2ac cos B",
-          "c² = a² + b² - 2ab cos C"
-        )
+        title = "Chord & Diameter Relations",
+        formulaOrStatement = "a = 2R sin A  |  b = 2R sin B  |  c = 2R sin C"
+      )
+    )
+  ),
+  AlgebraHandbookSection(
+    sectionTitle = "Law of Cosines & Tangents",
+    ribbonLabel = "Cosines & Tan",
+    items = listOf(
+      AlgebraHandbookRuleItem(
+        number = 1,
+        title = "Law of Cosines (Sides)",
+        formulaOrStatement = "a² = b² + c² - 2bc cos A  |  b² = a² + c² - 2ac cos B  |  c² = a² + b² - 2ab cos C"
+      ),
+      AlgebraHandbookRuleItem(
+        number = 2,
+        title = "Law of Cosines (Angle Form)",
+        formulaOrStatement = "cos A = (b² + c² - a²) / 2bc"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
         title = "Law of Tangents",
-        formulaOrStatement = "(a - b) / (a + b) = tan[½(A - B)] / tan[½(A + B)]"
+        formulaOrStatement = "(a - b) / (a + b) = tan(½(A - B)) / tan(½(A + B))"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "Angles & Classifications",
+    sectionTitle = "Area of Triangle & Mollweide's",
+    ribbonLabel = "Area & Mollweide",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Classifications",
-        formulaOrStatement = "Acute: 0° < θ < 90° | Right: θ = 90° | Obtuse: 90° < θ < 180° | Reflex: 180° < θ < 360°"
+        title = "Base-Altitude & SAS Area",
+        formulaOrStatement = "Area = ½bh  |  Area = ½ab sin C = ½bc sin A = ½ac sin B"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Pairs",
-        formulaOrStatement = "Complementary: A + B = 90° (π/2 rad)",
-        subItems = listOf(
-          "Supplementary: A + B = 180° (π rad)",
-          "Explementary (Conjugate): A + B = 360° (2π rad)"
-        )
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Units of Angular Measurement & Exact Conversions",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Equivalence Relation",
-        formulaOrStatement = "1 rev = 360° = 2π rad = 400 grads (gons) = 6400 mils"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Common Conversion Factors",
-        formulaOrStatement = "1 rad = 180° / π ≈ 57.29578° = 57°17'45\"",
-        subItems = listOf(
-          "1° = π / 180° rad ≈ 0.017453 rad",
-          "1 grad = 0.9° | 1 mil = 360° / 6400 = 0.05625°"
-        )
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Area of a Triangle (All Engineering Formulas)",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Base and Altitude",
-        formulaOrStatement = "Area = ½ · b · h"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Two Sides and Included Angle (SAS)",
-        formulaOrStatement = "Area = ½ a b sin C = ½ b c sin A = ½ a c sin B"
+        title = "Heron's Formula & Semi-Perimeter",
+        formulaOrStatement = "Area = √(s(s - a)(s - b)(s - c))  |  s = ½(a + b + c)"
       ),
       AlgebraHandbookRuleItem(
         number = 3,
-        title = "Three Sides (Heron's Formula)",
-        formulaOrStatement = "Area = √[s(s - a)(s - b)(s - c)] ,  where s = (a + b + c) / 2"
+        title = "Inradius (r), Circumradius (R) & Exradii",
+        formulaOrStatement = "Area = r · s = abc / 4R = √(r · r₁ · r₂ · r₃)"
       ),
       AlgebraHandbookRuleItem(
         number = 4,
-        title = "Inradius (r)",
-        formulaOrStatement = "Area = r · s  ⟹  r = Area / s"
+        title = "Apollonius Median & Angle Bisector",
+        formulaOrStatement = "mₐ = ½√(2b² + 2c² - a²)  |  tₐ = 2bc cos(A/2) / (b + c)"
       ),
       AlgebraHandbookRuleItem(
         number = 5,
-        title = "Circumradius (R)",
-        formulaOrStatement = "Area = (a · b · c) / 4R  ⟹  R = (a · b · c) / (4 · Area)"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 6,
-        title = "Exradii (r₁, r₂, r₃)",
-        formulaOrStatement = "Area = r₁(s - a) = r₂(s - b) = r₃(s - c)",
-        subItems = listOf(
-          "Area = √(r · r₁ · r₂ · r₃)"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 7,
-        title = "Analytic / Surveyor's Coordinates",
-        formulaOrStatement = "Area = ½ |(x₁y₂ + x₂y₃ + x₃y₁) - (y₁x₂ + y₂x₃ + y₃x₁)|"
+        title = "Mollweide's Equations",
+        formulaOrStatement = "(a - b) / c = sin(½(A - B)) / cos(½C)  |  (a + b) / c = cos(½(A - B)) / sin(½C)"
       )
     )
   ),
   AlgebraHandbookSection(
-    sectionTitle = "Medians of a Triangle & Centroid",
+    sectionTitle = "Inverse Trig & Radian Conversions",
+    ribbonLabel = "Inverse & Rad",
     items = listOf(
       AlgebraHandbookRuleItem(
         number = 1,
-        title = "Length of Medians (Apollonius' Theorem)",
-        formulaOrStatement = "m₁ = ½ √(2b² + 2c² - a²)",
-        subItems = listOf(
-          "m₂ = ½ √(2a² + 2c² - b²)",
-          "m₃ = ½ √(2a² + 2b² - c²)"
-        )
+        title = "Principal Inverse Identities",
+        formulaOrStatement = "arcsin x + arccos x = π / 2  |  arctan x + arccot x = π / 2"
       ),
       AlgebraHandbookRuleItem(
         number = 2,
-        title = "Centroid Intersection Properties",
-        formulaOrStatement = "Centroid (G) divides each median in a 2:1 ratio from vertex to midpoint",
-        subItems = listOf(
-          "Area of 6 subtriangles formed by medians are strictly equal (Area / 6)"
-        )
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Altitudes of a Triangle & Orthocenter",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Heights from Vertices",
-        formulaOrStatement = "h₁ = (2 · Area) / a ,  h₂ = (2 · Area) / b ,  h₃ = (2 · Area) / c"
+        title = "Angular Unit Equivalences",
+        formulaOrStatement = "1 rev = 360° = 2π rad = 400 grads = 6400 mils"
       ),
       AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Harmonic Relation",
-        formulaOrStatement = "1/h₁ + 1/h₂ + 1/h₃ = 1/r"
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Angle Bisectors of a Triangle & Incenter",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Length of Internal Angle Bisectors",
-        formulaOrStatement = "t₁ = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A / 2)] / (b + c)",
-        subItems = listOf(
-          "t₂ = [2 √(a c s (s - b))] / (a + c) = [2 a c cos(B / 2)] / (a + c)",
-          "t₃ = [2 √(a b s (s - c))] / (a + b) = [2 a b cos(C / 2)] / (a + b)"
-        )
+        number = 3,
+        title = "Radian & Degree Conversion Factors",
+        formulaOrStatement = "1 rad = 180° / π ≈ 57.2958°  |  1° = π / 180° rad"
       ),
       AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Angle Bisector Theorem",
-        formulaOrStatement = "Segments of opposite side: c₁ / c₂ = a / b"
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Circumcircle, Incircle & Euler Line Relations",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Euler's Theorem (Distance d between Circumcenter O & Incenter I)",
-        formulaOrStatement = "d² = R(R - 2r)  ⟹  R ≥ 2r"
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Exradii & Circumradius Identity",
-        formulaOrStatement = "r₁ + r₂ + r₃ - r = 4R ,  cos A + cos B + cos C = 1 + r / R"
-      )
-    )
-  ),
-  AlgebraHandbookSection(
-    sectionTitle = "Spherical Trigonometry (Right & Oblique Spherical Triangles)",
-    items = listOf(
-      AlgebraHandbookRuleItem(
-        number = 1,
-        title = "Napier's Rules for Right Spherical Triangles (C = 90°)",
-        formulaOrStatement = "sin(middle) = prod of cosines of opposite parts (SIN-COOP)",
-        subItems = listOf(
-          "sin(middle) = prod of tangents of adjacent parts (SIN-TAN-AD)",
-          "Circular Parts: a ,  b ,  co-A ,  co-c ,  co-B"
-        )
-      ),
-      AlgebraHandbookRuleItem(
-        number = 2,
-        title = "Oblique Spherical Triangles & Spherical Excess (E)",
-        formulaOrStatement = "sin a / sin A = sin b / sin B = sin c / sin C",
-        subItems = listOf(
-          "cos a = cos b cos c + sin b sin c cos A",
-          "E = (A + B + C) - 180° ,  Area = (π R² E) / 180°"
-        )
+        number = 4,
+        title = "Spherical Triangle Excess & Area",
+        formulaOrStatement = "E = (A + B + C) - 180°  |  Area = πR²E / 180°"
       )
     )
   )
@@ -15504,9 +18797,13 @@ private fun MsteTrigonometrySheet(
   onToggleStar: (String) -> Unit,
   onBackToShelf: () -> Unit,
   onOpenToc: () -> Unit,
+  onOpenHolographicTriangle: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+  val localView = LocalView.current
   val palette = currentGlassPalette()
+  val coroutineScope = rememberCoroutineScope()
   val allSections = remember { buildTrigonometryHandbookSections() }
 
   val filteredSections = remember(allSections, searchQuery) {
@@ -15514,7 +18811,9 @@ private fun MsteTrigonometrySheet(
       allSections.mapIndexed { idx, sec -> idx to sec }
     } else {
       allSections.mapIndexedNotNull { idx, section ->
-        if (section.sectionTitle.contains(searchQuery, ignoreCase = true)) {
+        if (section.sectionTitle.contains(searchQuery, ignoreCase = true) ||
+          section.ribbonLabel.contains(searchQuery, ignoreCase = true)
+        ) {
           idx to section
         } else {
           val matchingItems = section.items.filter { item ->
@@ -15532,330 +18831,311 @@ private fun MsteTrigonometrySheet(
     }
   }
 
-  val a4PaperColor = if (palette.isDark) Color(0xFF1E222B) else Color(0xFFFAFAFC)
-  val a4BorderColor = if (palette.isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFCBD5E1)
-  val a4HeadingColor = if (palette.isDark) Color(0xFFF8FAFC) else Color(0xFF0F172A)
-  val a4SubtleTextColor = if (palette.isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-
-  val mathCalloutBg = if (palette.isDark) {
-    palette.cardSurface.copy(alpha = 0.9f)
-  } else {
-    Color(0xFFEEF2FF).copy(alpha = 0.92f)
-  }
-  val mathCalloutBorder = Color(0xFF6366F1).copy(alpha = 0.25f)
-  val mathTextColor = if (palette.isDark) Color(0xFFC4B5FD) else Color(0xFF3730A3)
-
-  LazyColumn(
-    state = lazyListState,
-    contentPadding = PaddingValues(bottom = 120.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    modifier = modifier
-      .fillMaxSize()
-      .testTag("trigonometry_a4_paper_sheet")
-  ) {
-    // ====================================================================
-    // ITEM 0: Breadcrumb Bar + A4 Running Header & Title ("PLANE & SPHERICAL TRIGONOMETRY")
-    // ====================================================================
-    item(key = "trig_a4_header_item_0") {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Surface(
-            onClick = onBackToShelf,
-            shape = RoundedCornerShape(10.dp),
-            color = palette.cardFill,
-            border = palette.glassBorder,
-            modifier = Modifier.testTag("trig_back_to_notebook_shelf_chip")
-          ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                contentDescription = "Back to MSTE Library",
-                tint = palette.accentIndigo,
-                modifier = Modifier.size(16.dp)
-              )
-              Text(
-                text = "MSTE Library",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 11.5.sp
-                ),
-                color = palette.accentIndigo
-              )
-            }
-          }
-
-          Surface(
-            onClick = onOpenToc,
-            shape = RoundedCornerShape(10.dp),
-            color = palette.cardFill,
-            border = BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.35f))
-          ) {
-            Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-              Icon(
-                imageVector = Icons.AutoMirrored.Filled.ViewList,
-                contentDescription = "Table of Contents",
-                tint = palette.accentIndigo,
-                modifier = Modifier.size(14.dp)
-              )
-              Text(
-                text = "MSTE / CE-02 • TOC",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = FontFamily.Monospace,
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.Bold,
-                  letterSpacing = 0.8.sp
-                ),
-                color = palette.accentIndigo
-              )
-            }
-          }
-        }
-
-        // Top of the A4 Paper Sheet
-        Surface(
-          shape = if (filteredSections.isEmpty()) {
-            RoundedCornerShape(6.dp)
-          } else {
-            RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
-          },
-          color = a4PaperColor,
-          border = BorderStroke(1.dp, a4BorderColor),
-          shadowElevation = 4.dp,
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(start = 22.dp, end = 22.dp, top = 20.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            Text(
-              text = "CIVIL ENGINEERING REFERENCE MANUAL • CHAPTER II: TRIGONOMETRY",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.2.sp
-              ),
-              color = palette.accentIndigo
-            )
-
-            HorizontalDivider(
-              thickness = 1.5.dp,
-              color = palette.accentIndigo.copy(alpha = 0.45f)
-            )
-
-            Text(
-              text = "PLANE & SPHERICAL TRIGONOMETRY",
-              style = MaterialTheme.typography.headlineSmall.copy(
-                fontSize = 21.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.4.sp
-              ),
-              color = a4HeadingColor
-            )
-
-            if (filteredSections.isEmpty()) {
-              Text(
-                text = "No Trigonometry formulas match \"$searchQuery\".",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                color = a4SubtleTextColor,
-                modifier = Modifier.padding(vertical = 16.dp)
-              )
-            }
-          }
+  val activeRibbonSectionIndex by remember(filteredSections, highlightedSectionIndex) {
+    derivedStateOf {
+      if (highlightedSectionIndex != null) {
+        highlightedSectionIndex
+      } else {
+        val firstVisible = lazyListState.firstVisibleItemIndex
+        if (firstVisible <= 0) {
+          filteredSections.firstOrNull()?.first ?: 0
+        } else {
+          filteredSections.getOrNull((firstVisible - 1).coerceIn(0, (filteredSections.size - 1).coerceAtLeast(0)))?.first ?: 0
         }
       }
     }
+  }
 
-    // ====================================================================
-    // ITEMS 1..12: Compact Trigonometry Sections (Titles + Monospace Capsules Only)
-    // ====================================================================
-    items(
-      count = filteredSections.size,
-      key = { idx -> "trig_a4_section_item_${filteredSections[idx].first + 1}" }
-    ) { listIdx ->
-      val (originalSectionIndex, section) = filteredSections[listIdx]
-      val isLastSection = listIdx == filteredSections.lastIndex
-      val isHighlighted = highlightedSectionIndex == originalSectionIndex
+  val sectionAccents = remember {
+    listOf(
+      Color(0xFF06B6D4),
+      Color(0xFF3B82F6),
+      Color(0xFF6366F1),
+      Color(0xFF10B981),
+      Color(0xFF8B5CF6),
+      Color(0xFF0EA5E9),
+      Color(0xFFF59E0B),
+      Color(0xFFEC4899),
+      Color(0xFF14B8A6),
+      Color(0xFFA855F7),
+      Color(0xFF38BDF8),
+      Color(0xFF6366F1)
+    )
+  }
 
-      val sectionHeaderBgAlpha by animateFloatAsState(
-        targetValue = if (isHighlighted) 0.24f else 0f,
-        animationSpec = tween(durationMillis = 420),
-        label = "trig_toc_arrival_glow_alpha"
-      )
-      val sectionHeaderBorderAlpha by animateFloatAsState(
-        targetValue = if (isHighlighted) 0.75f else 0f,
-        animationSpec = tween(durationMillis = 420),
-        label = "trig_toc_arrival_border_alpha"
-      )
-
-      Surface(
-        shape = if (isLastSection) {
-          RoundedCornerShape(bottomStart = 6.dp, bottomEnd = 6.dp)
-        } else {
-          RoundedCornerShape(0.dp)
+  Column(
+    modifier = modifier
+      .fillMaxSize()
+      .widthIn(max = 680.dp)
+      .testTag("trigonometry_a4_paper_sheet"),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    // 1. STICKY QUICK-JUMP SECTION RIBBON (Directly below Top App Bar)
+    if (filteredSections.isNotEmpty()) {
+      StickyFormulaSectionRibbon(
+        sections = filteredSections,
+        activeSectionIndex = activeRibbonSectionIndex,
+        accentColor = Color(0xFF06B6D4),
+        onSelectSection = { listIdx ->
+          playCardHapticSound(context, localView)
+          coroutineScope.launch {
+            lazyListState.animateScrollToItem(index = listIdx + 1)
+          }
         },
-        color = a4PaperColor,
-        border = BorderStroke(1.dp, a4BorderColor),
-        shadowElevation = 4.dp,
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .testTag("trigonometry_section_${originalSectionIndex + 1}")
-      ) {
+        testTagPrefix = "trig_ribbon"
+      )
+    }
+
+    // 2. SCROLLABLE BLUEPRINT & NUMBERED LIQUID GLASS SECTIONS
+    LazyColumn(
+      state = lazyListState,
+      contentPadding = PaddingValues(bottom = 120.dp),
+      verticalArrangement = Arrangement.spacedBy(14.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      modifier = Modifier
+        .fillMaxWidth()
+        .weight(1f)
+    ) {
+      // ITEM 0: Breadcrumb Bar + Interactive Holographic Triangle / Mnemonic Hexagon Blueprint Banner
+      item(key = "trig_a4_header_item_0") {
         Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-              start = 22.dp,
-              end = 22.dp,
-              top = 12.dp,
-              bottom = if (isLastSection) 22.dp else 12.dp
-            ),
+          modifier = Modifier.fillMaxWidth(),
           verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-          // Section Bullet Heading with Subtle Arrival Highlight Glow
           Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .clip(RoundedCornerShape(10.dp))
-              .background(Color(0xFF6366F1).copy(alpha = sectionHeaderBgAlpha))
-              .border(
-                width = 1.dp,
-                color = Color(0xFF6366F1).copy(alpha = sectionHeaderBorderAlpha),
-                shape = RoundedCornerShape(10.dp)
-              )
-              .padding(
-                horizontal = if (isHighlighted) 10.dp else 0.dp,
-                vertical = if (isHighlighted) 6.dp else 2.dp
-              ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
           ) {
-            Text(
-              text = "•",
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = 19.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = palette.accentIndigo
-            )
-            Text(
-              text = section.sectionTitle,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontSize = 16.5.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = a4HeadingColor
-            )
-          }
-
-          // Compact Vertically Stacked Math Callout Blocks (Titles + Monospace Capsules Only)
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(start = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-          ) {
-            section.items.forEach { rule ->
-              Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+            Surface(
+              onClick = onBackToShelf,
+              shape = RoundedCornerShape(10.dp),
+              color = palette.cardFill,
+              border = palette.glassBorder,
+              modifier = Modifier.testTag("trig_back_to_notebook_shelf_chip")
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
               ) {
-                Text(
-                  text = "${rule.number}. ${rule.title}",
-                  style = MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = a4HeadingColor,
-                  softWrap = true,
-                  modifier = Modifier.fillMaxWidth()
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                  contentDescription = "Back to MSTE Library",
+                  tint = Color(0xFF06B6D4),
+                  modifier = Modifier.size(16.dp)
                 )
+                Text(
+                  text = "MSTE Library",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.5.sp
+                  ),
+                  color = Color(0xFF06B6D4)
+                )
+              }
+            }
 
-                val allFormulaCapsules = remember(rule) {
-                  listOf(rule.formulaOrStatement) + rule.subItems
-                }
-                Column(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp),
-                  verticalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                  allFormulaCapsules.forEach { formulaLine ->
-                    Surface(
-                      shape = RoundedCornerShape(8.dp),
-                      color = mathCalloutBg,
-                      border = BorderStroke(1.dp, mathCalloutBorder),
-                      shadowElevation = 2.dp,
-                      modifier = Modifier.fillMaxWidth()
-                    ) {
-                      Text(
-                        text = formulaLine,
-                        softWrap = true,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                          fontFamily = FontFamily.Monospace,
-                          fontSize = 16.5.sp,
-                          lineHeight = 23.sp,
-                          fontWeight = FontWeight.Bold,
-                          letterSpacing = 0.15.sp
-                        ),
-                        color = mathTextColor,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                      )
-                    }
-                  }
-                }
+            Surface(
+              onClick = onOpenToc,
+              shape = RoundedCornerShape(10.dp),
+              color = palette.cardFill,
+              border = BorderStroke(1.dp, Color(0xFF06B6D4).copy(alpha = 0.38f))
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.ViewList,
+                  contentDescription = "Table of Contents",
+                  tint = Color(0xFF06B6D4),
+                  modifier = Modifier.size(14.dp)
+                )
+                Text(
+                  text = "MSTE / CE-02 • 12 SECTIONS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.8.sp
+                  ),
+                  color = Color(0xFF06B6D4)
+                )
               }
             }
           }
 
-          if (!isLastSection) {
-            HorizontalDivider(
-              thickness = 0.8.dp,
-              color = a4BorderColor.copy(alpha = 0.55f),
-              modifier = Modifier.padding(top = 4.dp)
-            )
+          // Hero Blueprint Visual Banner with Mnemonic Hexagon & Holographic Triangle Modal Trigger
+          TrigMnemonicBlueprintBanner(
+            isDark = palette.isDark,
+            onOpenHolographicTriangle = onOpenHolographicTriangle,
+            modifier = Modifier.fillMaxWidth()
+          )
+
+          if (filteredSections.isEmpty()) {
+            LiquidGlassCard(
+              cornerRadius = 18.dp,
+              elevation = 4.dp,
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Text(
+                text = "No Trigonometry formulas match \"$searchQuery\".",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = palette.textSecondary,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)
+              )
+            }
           }
         }
       }
-    }
 
-    // Custom scholar formulas below the A4 paper sheet
-    if (customFormulas.isNotEmpty()) {
-      item(key = "trig_a4_custom_formulas_footer") {
-        Column(
+      // ITEMS 1..12: Numbered Liquid Glass Section Cards with MathFormulaCapsule items
+      items(
+        count = filteredSections.size,
+        key = { idx -> "trig_a4_section_item_${filteredSections[idx].first + 1}" }
+      ) { listIdx ->
+        val (originalSectionIndex, section) = filteredSections[listIdx]
+        val sectionAccent = sectionAccents[originalSectionIndex % sectionAccents.size]
+        val isHighlighted = highlightedSectionIndex == originalSectionIndex
+        val badgeText = String.format(Locale.US, "%02d", originalSectionIndex + 1)
+
+        val borderAlpha by animateFloatAsState(
+          targetValue = if (isHighlighted) 0.90f else 0.42f,
+          animationSpec = tween(durationMillis = 420),
+          label = "trig_sec_border_alpha"
+        )
+
+        LiquidGlassCard(
+          cornerRadius = 22.dp,
+          elevation = 6.dp,
+          borderStroke = BorderStroke(
+            width = if (isHighlighted) 1.6.dp else 1.1.dp,
+            brush = Brush.linearGradient(
+              listOf(
+                sectionAccent.copy(alpha = borderAlpha),
+                Color.White.copy(alpha = if (palette.isDark) 0.16f else 0.65f)
+              )
+            )
+          ),
           modifier = Modifier
             .fillMaxWidth()
-            .widthIn(max = 680.dp)
-            .padding(top = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp)
+            .testTag("trigonometry_section_${originalSectionIndex + 1}")
         ) {
-          customFormulas.forEach { formula ->
-            InteractiveReferenceFormulaCard(
-              formula = formula,
-              isStarred = starredIds.contains(formula.id),
-              onToggleStar = { onToggleStar(formula.id) },
-              metrics = metrics
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            // Section Header Row: Numbered Badge + Bold Title + Formula Count Pill
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 8.dp)
+              ) {
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = sectionAccent.copy(alpha = if (palette.isDark) 0.22f else 0.14f),
+                  border = BorderStroke(1.dp, sectionAccent.copy(alpha = 0.55f))
+                ) {
+                  Text(
+                    text = badgeText,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = sectionAccent,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                  )
+                }
+
+                Text(
+                  text = section.sectionTitle,
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 16.5.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+
+              Surface(
+                shape = CircleShape,
+                color = sectionAccent.copy(alpha = if (palette.isDark) 0.16f else 0.10f),
+                border = BorderStroke(0.8.dp, sectionAccent.copy(alpha = 0.38f))
+              ) {
+                Text(
+                  text = "${section.items.size} FORMULAS",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.6.sp
+                  ),
+                  color = sectionAccent,
+                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                )
+              }
+            }
+
+            HorizontalDivider(
+              thickness = 0.8.dp,
+              color = sectionAccent.copy(alpha = 0.22f)
             )
+
+            // Compact vertical stack of MathFormulaCapsule items
+            Column(
+              modifier = Modifier.fillMaxWidth(),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              section.items.forEachIndexed { ruleIdx, rule ->
+                val secondaryEq = if (rule.subItems.isNotEmpty()) {
+                  rule.subItems.joinToString("  |  ")
+                } else {
+                  null
+                }
+                MathFormulaCapsule(
+                  label = rule.title,
+                  equation = rule.formulaOrStatement,
+                  secondaryEquation = secondaryEq,
+                  accentColor = sectionAccent,
+                  testTag = "trig_formula_capsule_${originalSectionIndex + 1}_${ruleIdx + 1}"
+                )
+              }
+            }
+          }
+        }
+      }
+
+      // Custom scholar formulas below the 12 Trigonometry sections
+      if (customFormulas.isNotEmpty()) {
+        item(key = "trig_a4_custom_formulas_footer") {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            customFormulas.forEach { formula ->
+              InteractiveReferenceFormulaCard(
+                formula = formula,
+                isStarred = starredIds.contains(formula.id),
+                onToggleStar = { onToggleStar(formula.id) },
+                metrics = metrics
+              )
+            }
           }
         }
       }
@@ -15863,74 +19143,157 @@ private fun MsteTrigonometrySheet(
   }
 }
 
-private enum class HolographicTriangleTopic(
+private enum class MagicHexagonMode(
   val chipLabel: String,
-  val conceptTitle: String,
-  val accentColor: Color,
-  val engineeringDefinition: String,
-  val geometricTheorem: String,
-  val boardExamFormula: String
+  val accentColor: Color
 ) {
-  SIDES_AND_ANGLES(
-    chipLabel = "Sides & Angles",
-    conceptTitle = "Oblique Sides (a, b, c) & Interior Angles (A, B, C)",
-    accentColor = Color(0xFF06B6D4),
-    engineeringDefinition = "In structural truss resolution and geodetic triangulation, side lengths a, b, and c lie strictly opposite interior vertex angles A, B, and C.",
-    geometricTheorem = "Interior Angle Sum & Law of Sines / Cosines: A + B + C = 180°; any side is proportional to the sine of its opposite angle.",
-    boardExamFormula = "a / sin A = b / sin B = c / sin C = 2R\na² = b² + c² - 2bc cos A"
+  PYTHAGOREAN(
+    chipLabel = "Pythagorean (△)",
+    accentColor = Color(0xFF06B6D4)
   ),
-  MEDIANS_AND_CENTROID(
-    chipLabel = "Medians & Centroid",
-    conceptTitle = "Medians (m_a, m_b, m_c) & Centroid (G)",
-    accentColor = Color(0xFFA855F7),
-    engineeringDefinition = "A median connects a vertex to the midpoint of the opposite side. All three medians intersect at the Centroid (G), the center of gravity of a uniform triangular plate.",
-    geometricTheorem = "Apollonius' Theorem & 2:1 Trisection: Centroid G divides each median in an exact 2:1 ratio from vertex to midpoint and partitions the triangle into 6 equal-area subtriangles.",
-    boardExamFormula = "m_a = ½ √(2b² + 2c² - a²)\nAG : GM_a = 2 : 1  •  A_sub = Area / 6"
+  RECIPROCAL(
+    chipLabel = "Reciprocal (↔)",
+    accentColor = Color(0xFF818CF8)
   ),
-  ALTITUDES_AND_ORTHOCENTER(
-    chipLabel = "Altitudes & Orthocenter",
-    conceptTitle = "Altitudes (h_a, h_b, h_c) & Orthocenter (H)",
-    accentColor = Color(0xFFF59E0B),
-    engineeringDefinition = "An altitude is the perpendicular drop from a vertex to the opposite side (or its extension). The three altitudes concur at the Orthocenter (H).",
-    geometricTheorem = "Reciprocal Altitude-Inradius Harmonic Theorem: Each altitude is inversely proportional to its base length, and the sum of reciprocals of the three altitudes equals the reciprocal of the inradius r.",
-    boardExamFormula = "h_a = (2 · Area) / a = b sin C = c sin B\n1/h_a + 1/h_b + 1/h_c = 1/r"
+  QUOTIENT_PRODUCT(
+    chipLabel = "Quotient & Product (↻)",
+    accentColor = Color(0xFF10B981)
   ),
-  BISECTORS_AND_INCENTER(
-    chipLabel = "Bisectors & Incenter",
-    conceptTitle = "Angle Bisectors (t_a, t_b, t_c) & Incenter (I)",
-    accentColor = Color(0xFF10B981),
-    engineeringDefinition = "An internal angle bisector divides a vertex angle into two equal halves (A/2). All three bisectors intersect at the Incenter (I), equidistant from all three sides.",
-    geometricTheorem = "Angle Bisector Theorem: An internal bisector divides the opposite side into segments (c₁, c₂) strictly proportional to the adjacent triangle sides (a : b).",
-    boardExamFormula = "t_a = [2 √(b c s (s - a))] / (b + c) = [2 b c cos(A/2)] / (b + c)\nc₁ / c₂ = b / c"
-  ),
-  RADII_R_AND_CAP_R(
-    chipLabel = "Radii (r, R)",
-    conceptTitle = "Inradius (r), Circumradius (R) & Centers (I, O)",
-    accentColor = Color(0xFF3B82F6),
-    engineeringDefinition = "Incenter (I) is the center of the inscribed circle (radius r tangent to all sides); Circumcenter (O) is the intersection of perpendicular bisectors (radius R through all vertices).",
-    geometricTheorem = "Euler's Triangle Inequality & Heron-Radius Relations: R ≥ 2r (equality holds iff equilateral), with distance d between O and I satisfying d² = R(R - 2r).",
-    boardExamFormula = "r = Area / s  •  R = (a · b · c) / (4 · Area)\nArea = √[s(s - a)(s - b)(s - c)]"
+  CO_FUNCTION(
+    chipLabel = "Co-Function (═)",
+    accentColor = Color(0xFFF59E0B)
   )
 }
 
 @Composable
-private fun HolographicTriangleModal(
+private fun InteractiveMagicHexagonModal(
   onDismiss: () -> Unit
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
-  var selectedTopic by rememberSaveable { mutableStateOf(HolographicTriangleTopic.SIDES_AND_ANGLES) }
 
-  val pulseTransition = rememberInfiniteTransition(label = "holo_modal_canvas_pulse")
+  var selectedMode by rememberSaveable { mutableStateOf(MagicHexagonMode.PYTHAGOREAN) }
+  // 0 = Top (sin-cos-1), 1 = Left-Bottom (tan-1-sec), 2 = Right-Bottom (1-cot-csc)
+  var selectedTriangleIndex by rememberSaveable { mutableIntStateOf(0) }
+  // 0 = sin (Top-Left), 1 = cos (Top-Right), 2 = cot (Mid-Right), 3 = csc (Bot-Right), 4 = sec (Bot-Left), 5 = tan (Mid-Left)
+  var selectedVertexIndex by rememberSaveable { mutableIntStateOf(5) }
+
+  val currentModeState by rememberUpdatedState(selectedMode)
+
+  val pulseTransition = rememberInfiniteTransition(label = "magic_hexagon_pulse")
   val neonPulse by pulseTransition.animateFloat(
-    initialValue = 0.55f,
+    initialValue = 0.58f,
     targetValue = 1.0f,
     animationSpec = infiniteRepeatable(
-      animation = tween(durationMillis = 1350, easing = FastOutSlowInEasing),
+      animation = tween(durationMillis = 1300, easing = FastOutSlowInEasing),
       repeatMode = RepeatMode.Reverse
     ),
-    label = "neon_pulse"
+    label = "magic_hex_neon_pulse"
   )
+
+  val vertexNames = remember { listOf("sin", "cos", "cot", "csc", "sec", "tan") }
+  val vertexAnglesDeg = remember { listOf(-120f, -60f, 0f, 60f, 120f, 180f) }
+
+  // Derive live visual rule badge + formulas based on current mode & selection
+  val derivedRuleBadge: String
+  val derivedTitle: String
+  val derivedFormulas: List<Pair<String, String>>
+
+  when (selectedMode) {
+    MagicHexagonMode.PYTHAGOREAN -> {
+      when (selectedTriangleIndex) {
+        0 -> {
+          derivedRuleBadge = "TOP TRIANGLE (CLOCKWISE): Top-Left² + Top-Right² = Bottom²"
+          derivedTitle = "Sine-Cosine Pythagorean Triangle (sin • cos • 1)"
+          derivedFormulas = listOf(
+            "Primary Identity (Clockwise ↻)" to "sin²θ + cos²θ = 1",
+            "Rearranged Forms (Counter-Clockwise ↺)" to "sin²θ = 1 - cos²θ  |  cos²θ = 1 - sin²θ"
+          )
+        }
+        1 -> {
+          derivedRuleBadge = "LEFT TRIANGLE (CLOCKWISE): Top-Left² + Top-Right² = Bottom²"
+          derivedTitle = "Tangent-Secant Pythagorean Triangle (tan • 1 • sec)"
+          derivedFormulas = listOf(
+            "Primary Identity (Clockwise ↻)" to "tan²θ + 1 = sec²θ",
+            "Rearranged Forms (Counter-Clockwise ↺)" to "tan²θ = sec²θ - 1  |  sec²θ - tan²θ = 1"
+          )
+        }
+        else -> {
+          derivedRuleBadge = "RIGHT TRIANGLE (CLOCKWISE): Top-Left² + Top-Right² = Bottom²"
+          derivedTitle = "Cotangent-Cosecant Pythagorean Triangle (1 • cot • csc)"
+          derivedFormulas = listOf(
+            "Primary Identity (Clockwise ↻)" to "1 + cot²θ = csc²θ",
+            "Rearranged Forms (Counter-Clockwise ↺)" to "cot²θ = csc²θ - 1  |  csc²θ - cot²θ = 1"
+          )
+        }
+      }
+    }
+
+    MagicHexagonMode.RECIPROCAL -> {
+      val v = selectedVertexIndex.coerceIn(0, 5)
+      val opp = (v + 3) % 6
+      val fName = vertexNames[v]
+      val gName = vertexNames[opp]
+      derivedRuleBadge = "DIAGONAL THROUGH [ 1 ]: Opposite Vertices are Reciprocals"
+      derivedTitle = "Reciprocal Diagonal: $fName θ ↔ $gName θ"
+      derivedFormulas = listOf(
+        "Reciprocal Quotient Identity" to "$fName θ = 1 / $gName θ  |  $gName θ = 1 / $fName θ",
+        "Diagonal Product Through Center [ 1 ]" to "$fName θ · $gName θ = 1"
+      )
+    }
+
+    MagicHexagonMode.QUOTIENT_PRODUCT -> {
+      val v = selectedVertexIndex.coerceIn(0, 5)
+      val fName = vertexNames[v]
+      val cw1 = vertexNames[(v + 1) % 6]
+      val cw2 = vertexNames[(v + 2) % 6]
+      val ccw1 = vertexNames[(v + 5) % 6]
+      val ccw2 = vertexNames[(v + 4) % 6]
+      val leftNeighbor = vertexNames[(v + 5) % 6]
+      val rightNeighbor = vertexNames[(v + 1) % 6]
+      derivedRuleBadge = "PERIMETER RULE: First = Second / Third (↻)  •  Center = Left × Right"
+      derivedTitle = "Vertex [$fName θ]: Quotient & Flanking Product"
+      derivedFormulas = listOf(
+        "Clockwise & CCW Quotient (First = 2nd / 3rd)" to "$fName θ = $cw1 θ / $cw2 θ  |  $fName θ = $ccw1 θ / $ccw2 θ",
+        "Flanking Neighbor Product (Center = Left × Right)" to "$fName θ = $leftNeighbor θ · $rightNeighbor θ"
+      )
+    }
+
+    MagicHexagonMode.CO_FUNCTION -> {
+      val v = selectedVertexIndex.coerceIn(0, 5)
+      val pairCode = when (v) {
+        0, 1 -> 0
+        5, 2 -> 1
+        else -> 2
+      }
+      when (pairCode) {
+        0 -> {
+          derivedRuleBadge = "HORIZONTAL COMPLEMENTARY PAIR: Top Row (sin ═ cos)"
+          derivedTitle = "Co-Function Horizontal Pair: sin θ ⇔ cos(90° - θ)"
+          derivedFormulas = listOf(
+            "Complementary Degree Form" to "sin θ = cos(90° - θ)  |  cos θ = sin(90° - θ)",
+            "Radian Form (π/2)" to "sin(π/2 - θ) = cos θ  |  cos(π/2 - θ) = sin θ"
+          )
+        }
+        1 -> {
+          derivedRuleBadge = "HORIZONTAL COMPLEMENTARY PAIR: Middle Row (tan ═ cot)"
+          derivedTitle = "Co-Function Horizontal Pair: tan θ ⇔ cot(90° - θ)"
+          derivedFormulas = listOf(
+            "Complementary Degree Form" to "tan θ = cot(90° - θ)  |  cot θ = tan(90° - θ)",
+            "Radian Form (π/2)" to "tan(π/2 - θ) = cot θ  |  cot(π/2 - θ) = tan θ"
+          )
+        }
+        else -> {
+          derivedRuleBadge = "HORIZONTAL COMPLEMENTARY PAIR: Bottom Row (sec ═ csc)"
+          derivedTitle = "Co-Function Horizontal Pair: sec θ ⇔ csc(90° - θ)"
+          derivedFormulas = listOf(
+            "Complementary Degree Form" to "sec θ = csc(90° - θ)  |  csc θ = sec(90° - θ)",
+            "Radian Form (π/2)" to "sec(π/2 - θ) = csc θ  |  csc(π/2 - θ) = sec θ"
+          )
+        }
+      }
+    }
+  }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -15939,65 +19302,44 @@ private fun HolographicTriangleModal(
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .background(Color(0xFF030712).copy(alpha = 0.76f))
+        .background(Color(0xFF030712).copy(alpha = 0.78f))
         .clickable(
           interactionSource = remember { MutableInteractionSource() },
           indication = null,
           onClick = onDismiss
         ),
-      contentAlignment = Alignment.BottomCenter
+      contentAlignment = Alignment.Center
     ) {
       Surface(
         onClick = {},
-        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
-        color = Color(0xFF0B1120).copy(alpha = 0.97f),
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xFF0B1120).copy(alpha = 0.98f),
         border = BorderStroke(
           width = 1.3.dp,
           brush = Brush.linearGradient(
             listOf(
-              Color(0xFF06B6D4).copy(alpha = 0.75f),
-              Color(0xFF6366F1).copy(alpha = 0.45f),
-              Color(0xFFA855F7).copy(alpha = 0.40f)
+              selectedMode.accentColor.copy(alpha = 0.80f),
+              Color(0xFF38BDF8).copy(alpha = 0.45f),
+              Color(0xFF6366F1).copy(alpha = 0.45f)
             )
           )
         ),
         shadowElevation = 28.dp,
         modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 640.dp)
-          .fillMaxHeight(0.92f)
+          .fillMaxWidth(0.92f)
+          .widthIn(max = 580.dp)
+          .wrapContentHeight()
+          .heightIn(max = 760.dp)
           .testTag("holographic_triangle_modal")
       ) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .background(
-              brush = Brush.radialGradient(
-                colors = listOf(
-                  Color(0xFF06B6D4).copy(alpha = 0.12f),
-                  Color(0xFF1E1B4B).copy(alpha = 0.22f),
-                  Color.Transparent
-                ),
-                radius = 900f
-              )
-            )
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 18.dp)
-            .padding(bottom = 36.dp)
-            .navigationBarsPadding(),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(horizontal = 18.dp, vertical = 18.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-          // Subtle Drag Handle
-          Box(
-            modifier = Modifier
-              .align(Alignment.CenterHorizontally)
-              .width(44.dp)
-              .height(4.dp)
-              .clip(CircleShape)
-              .background(Color(0xFF06B6D4).copy(alpha = 0.45f))
-          )
-
-          // Header: "Interactive Triangle Anatomy" with Close Button
+          // Header Row
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -16008,7 +19350,7 @@ private fun HolographicTriangleModal(
               verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
               Text(
-                text = "Interactive Triangle Anatomy",
+                text = "Interactive Magic Hexagon",
                 style = MaterialTheme.typography.titleLarge.copy(
                   fontSize = 19.sp,
                   fontWeight = FontWeight.ExtraBold
@@ -16016,14 +19358,14 @@ private fun HolographicTriangleModal(
                 color = Color(0xFFF8FAFC)
               )
               Text(
-                text = "HOLOGRAPHIC CE BOARD GEOMETRY INSPECTOR • TAP CANVAS OR CHIPS",
+                text = "TAP VERTICES OR TRIANGLES TO DERIVE IDENTITIES",
                 style = MaterialTheme.typography.labelSmall.copy(
                   fontFamily = FontFamily.Monospace,
-                  fontSize = 10.sp,
+                  fontSize = 9.5.sp,
                   fontWeight = FontWeight.Bold,
-                  letterSpacing = 1.sp
+                  letterSpacing = 0.8.sp
                 ),
-                color = Color(0xFF06B6D4)
+                color = selectedMode.accentColor
               )
             }
 
@@ -16031,15 +19373,15 @@ private fun HolographicTriangleModal(
               onClick = onDismiss,
               shape = CircleShape,
               color = Color(0xFF1E293B),
-              border = BorderStroke(1.dp, Color(0xFF06B6D4).copy(alpha = 0.35f)),
+              border = BorderStroke(1.dp, selectedMode.accentColor.copy(alpha = 0.40f)),
               modifier = Modifier
-                .size(38.dp)
+                .size(36.dp)
                 .testTag("holographic_triangle_close_button")
             ) {
               Box(contentAlignment = Alignment.Center) {
                 Icon(
                   imageVector = Icons.Default.Close,
-                  contentDescription = "Close Interactive Triangle Anatomy",
+                  contentDescription = "Close Interactive Magic Hexagon",
                   tint = Color(0xFFE2E8F0),
                   modifier = Modifier.size(18.dp)
                 )
@@ -16048,19 +19390,63 @@ private fun HolographicTriangleModal(
           }
 
           // ==================================================================
-          // INTERACTIVE HOLOGRAPHIC CANVAS (OBLIQUE TRIANGLE ANATOMY)
+          // 1. MODE SELECTOR CHIPS (TOP OF MODAL)
+          // ==================================================================
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            MagicHexagonMode.entries.forEach { mode ->
+              val isSelected = selectedMode == mode
+              Surface(
+                onClick = {
+                  playCardHapticSound(context, localView)
+                  selectedMode = mode
+                },
+                shape = RoundedCornerShape(50),
+                color = if (isSelected) {
+                  mode.accentColor.copy(alpha = 0.22f)
+                } else {
+                  Color(0xFF1E293B).copy(alpha = 0.78f)
+                },
+                border = BorderStroke(
+                  width = if (isSelected) 1.4.dp else 1.dp,
+                  color = if (isSelected) mode.accentColor else Color.White.copy(alpha = 0.14f)
+                ),
+                modifier = Modifier.testTag("magic_hex_mode_${mode.name.lowercase(Locale.ROOT)}")
+              ) {
+                Text(
+                  text = mode.chipLabel,
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.5.sp,
+                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                  ),
+                  color = if (isSelected) mode.accentColor else Color(0xFFCBD5E1),
+                  maxLines = 1,
+                  softWrap = false,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+              }
+            }
+          }
+
+          // ==================================================================
+          // 2. INTERACTIVE 260.DP MAGIC HEXAGON CANVAS (CENTER OF MODAL)
           // ==================================================================
           Surface(
             shape = RoundedCornerShape(20.dp),
-            color = Color(0xFF060B16),
+            color = Color(0xFF0F172A),
             border = BorderStroke(
               width = 1.2.dp,
-              color = selectedTopic.accentColor.copy(alpha = 0.55f)
+              color = selectedMode.accentColor.copy(alpha = 0.52f)
             ),
             modifier = Modifier
               .fillMaxWidth()
-              .heightIn(min = 200.dp, max = 260.dp)
-              .height(228.dp)
+              .height(260.dp)
               .testTag("holographic_triangle_canvas")
           ) {
             Box(modifier = Modifier.fillMaxSize()) {
@@ -16071,469 +19457,500 @@ private fun HolographicTriangleModal(
                     detectTapGestures { tapOffset ->
                       val w = size.width.toFloat()
                       val h = size.height.toFloat()
-                      val ptA = Offset(w * 0.37f, h * 0.14f)
-                      val ptB = Offset(w * 0.12f, h * 0.82f)
-                      val ptC = Offset(w * 0.88f, h * 0.82f)
-                      val ptHFoot = Offset(ptA.x, ptB.y)
-                      val ptMidBC = Offset((ptB.x + ptC.x) / 2f, ptB.y)
-                      val ptG = Offset((ptA.x + ptB.x + ptC.x) / 3f, (ptA.y + ptB.y + ptC.y) / 3f)
-                      val ptI = Offset(w * 0.43f, h * 0.60f)
-                      val ptO = Offset(w * 0.50f, h * 0.56f)
+                      val cx = w * 0.50f
+                      val cy = h * 0.50f
+                      val hexR = minOf(w, h) * 0.36f
 
-                      fun dist(p1: Offset, p2: Offset): Float =
-                        sqrt((p1.x - p2.x).pow(2) + (p1.y - p2.y).pow(2))
+                      val pts = vertexAnglesDeg.map { deg ->
+                        val rad = Math.toRadians(deg.toDouble())
+                        Offset(
+                          x = cx + hexR * kotlin.math.cos(rad).toFloat(),
+                          y = cy + hexR * kotlin.math.sin(rad).toFloat()
+                        )
+                      }
+                      val centerPt = Offset(cx, cy)
 
-                      val hitRadius = 46f
-                      val nextTopic = when {
-                        dist(tapOffset, ptG) < hitRadius || dist(tapOffset, ptMidBC) < hitRadius ->
-                          HolographicTriangleTopic.MEDIANS_AND_CENTROID
-                        dist(tapOffset, ptHFoot) < hitRadius || kotlin.math.abs(tapOffset.x - ptA.x) < 22f ->
-                          HolographicTriangleTopic.ALTITUDES_AND_ORTHOCENTER
-                        dist(tapOffset, ptI) < hitRadius ->
-                          HolographicTriangleTopic.BISECTORS_AND_INCENTER
-                        dist(tapOffset, ptO) < hitRadius ->
-                          HolographicTriangleTopic.RADII_R_AND_CAP_R
-                        else -> {
-                          val all = HolographicTriangleTopic.entries
-                          all[(all.indexOf(selectedTopic) + 1) % all.size]
+                      // Check if user tapped one of the 6 perimeter vertex nodes
+                      val vertexHitRadius = 30.dp.toPx()
+                      val tappedVertex = pts.indexOfFirst { vPt ->
+                        distBetween(tapOffset, vPt) <= vertexHitRadius
+                      }
+
+                      // Centroids of the 3 Pythagorean sub-triangles:
+                      // 0 = Top (sin, cos, 1), 1 = Left-Bottom (tan, 1, sec), 2 = Right-Bottom (1, cot, csc)
+                      val tri0Center = Offset(
+                        (pts[0].x + pts[1].x + centerPt.x) / 3f,
+                        (pts[0].y + pts[1].y + centerPt.y) / 3f
+                      )
+                      val tri1Center = Offset(
+                        (pts[5].x + centerPt.x + pts[4].x) / 3f,
+                        (pts[5].y + centerPt.y + pts[4].y) / 3f
+                      )
+                      val tri2Center = Offset(
+                        (centerPt.x + pts[2].x + pts[3].x) / 3f,
+                        (centerPt.y + pts[2].y + pts[3].y) / 3f
+                      )
+                      val triCenters = listOf(tri0Center, tri1Center, tri2Center)
+
+                      if (currentModeState == MagicHexagonMode.PYTHAGOREAN) {
+                        // In Pythagorean mode, check if user tapped near a triangle centroid or vertex
+                        val nearestTri = triCenters.indices.minByOrNull { idx ->
+                          distBetween(tapOffset, triCenters[idx])
+                        } ?: 0
+                        if (tappedVertex != -1 && distBetween(tapOffset, pts[tappedVertex]) < distBetween(tapOffset, triCenters[nearestTri])) {
+                          selectedVertexIndex = tappedVertex
+                          selectedTriangleIndex = when (tappedVertex) {
+                            0, 1 -> 0
+                            5, 4 -> 1
+                            else -> 2
+                          }
+                        } else {
+                          selectedTriangleIndex = nearestTri
+                        }
+                      } else {
+                        if (tappedVertex != -1) {
+                          selectedVertexIndex = tappedVertex
+                          selectedTriangleIndex = when (tappedVertex) {
+                            0, 1 -> 0
+                            5, 4 -> 1
+                            else -> 2
+                          }
+                        } else {
+                          // If user tapped inside one of the 3 Pythagorean sub-triangles, select nearest vertex or triangle
+                          val nearestVertex = pts.indices.minByOrNull { idx ->
+                            distBetween(tapOffset, pts[idx])
+                          } ?: 0
+                          selectedVertexIndex = nearestVertex
                         }
                       }
                       playCardHapticSound(context, localView)
-                      selectedTopic = nextTopic
                     }
                   }
               ) {
                 val w = size.width
                 val h = size.height
+                val cx = w * 0.50f
+                val cy = h * 0.50f
+                val centerPt = Offset(cx, cy)
+                val hexR = minOf(w, h) * 0.36f
 
-                // Subtle holographic engineering grid lines
-                val gridStep = w / 10f
-                for (i in 1..9) {
+                // CAD Blueprint Grid
+                val gridStep = 20.dp.toPx()
+                var gx = gridStep
+                while (gx < w) {
                   drawLine(
-                    color = Color(0xFF06B6D4).copy(alpha = 0.06f),
-                    start = Offset(i * gridStep, 0f),
-                    end = Offset(i * gridStep, h),
+                    color = Color(0xFF38BDF8).copy(alpha = 0.07f),
+                    start = Offset(gx, 0f),
+                    end = Offset(gx, h),
                     strokeWidth = 1f
                   )
+                  gx += gridStep
                 }
-                val hStep = h / 6f
-                for (j in 1..5) {
+                var gy = gridStep
+                while (gy < h) {
                   drawLine(
-                    color = Color(0xFF06B6D4).copy(alpha = 0.06f),
-                    start = Offset(0f, j * hStep),
-                    end = Offset(w, j * hStep),
+                    color = Color(0xFF38BDF8).copy(alpha = 0.07f),
+                    start = Offset(0f, gy),
+                    end = Offset(w, gy),
                     strokeWidth = 1f
                   )
+                  gy += gridStep
                 }
 
-                // Oblique Triangle Vertices: A (top-left-ish apex), B (bottom-left), C (bottom-right)
-                val ptA = Offset(w * 0.37f, h * 0.14f)
-                val ptB = Offset(w * 0.12f, h * 0.82f)
-                val ptC = Offset(w * 0.88f, h * 0.82f)
-
-                // Key Foot Points on Base BC (side a)
-                // 1. Altitude foot H_a (perpendicular from A to BC)
-                val ptAltitudeFoot = Offset(ptA.x, ptB.y)
-                // 2. Median midpoint M_a of side BC
-                val ptMedianFoot = Offset((ptB.x + ptC.x) / 2f, ptB.y)
-                // 3. Angle Bisector foot T_a (divides BC in ratio c : b)
-                val sideA = distBetween(ptB, ptC)
-                val sideB = distBetween(ptA, ptC)
-                val sideC = distBetween(ptA, ptB)
-                val bisectorRatio = sideC / (sideB + sideC)
-                val ptBisectorFoot = Offset(
-                  x = ptB.x + (ptC.x - ptB.x) * bisectorRatio,
-                  y = ptB.y
-                )
-
-                // Notable Triangle Centers:
-                // Centroid G = (A + B + C) / 3
-                val ptG = Offset(
-                  x = (ptA.x + ptB.x + ptC.x) / 3f,
-                  y = (ptA.y + ptB.y + ptC.y) / 3f
-                )
-                // Incenter I = (aA + bB + cC) / (a + b + c)
-                val perimeter = sideA + sideB + sideC
-                val ptI = Offset(
-                  x = (sideA * ptA.x + sideB * ptB.x + sideC * ptC.x) / perimeter,
-                  y = (sideA * ptA.y + sideB * ptB.y + sideC * ptC.y) / perimeter
-                )
-                // Inradius r = 2 * Area / perimeter (since base BC is horizontal, Area = 0.5 * sideA * (ptB.y - ptA.y))
-                val triAreaPx = 0.5f * sideA * (ptB.y - ptA.y)
-                val inradiusPx = (2f * triAreaPx) / perimeter
-
-                // Circumcenter O (exact analytic circumcenter of A, B, C)
-                val dVal = 2f * (ptA.x * (ptB.y - ptC.y) + ptB.x * (ptC.y - ptA.y) + ptC.x * (ptA.y - ptB.y))
-                val aSq = ptA.x * ptA.x + ptA.y * ptA.y
-                val bSq = ptB.x * ptB.x + ptB.y * ptB.y
-                val cSq = ptC.x * ptC.x + ptC.y * ptC.y
-                val ptO = Offset(
-                  x = (aSq * (ptB.y - ptC.y) + bSq * (ptC.y - ptA.y) + cSq * (ptA.y - ptB.y)) / dVal,
-                  y = (aSq * (ptC.x - ptB.x) + bSq * (ptA.x - ptC.x) + cSq * (ptB.x - ptA.x)) / dVal
-                )
-
-                val dashEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
-
-                // Optional Radii (r, R) Holographic Rings
-                val isRadiiSelected = selectedTopic == HolographicTriangleTopic.RADII_R_AND_CAP_R
-                drawCircle(
-                  color = Color(0xFF3B82F6).copy(alpha = if (isRadiiSelected) 0.55f * neonPulse else 0.18f),
-                  radius = inradiusPx,
-                  center = ptI,
-                  style = Stroke(
-                    width = if (isRadiiSelected) 2.2.dp.toPx() else 1.2.dp.toPx(),
-                    pathEffect = dashEffect
+                val pts = vertexAnglesDeg.map { deg ->
+                  val rad = Math.toRadians(deg.toDouble())
+                  Offset(
+                    x = cx + hexR * kotlin.math.cos(rad).toFloat(),
+                    y = cy + hexR * kotlin.math.sin(rad).toFloat()
                   )
+                }
+
+                // Helper to draw directional arrow between two points
+                fun drawDirectionalArrow(
+                  from: Offset,
+                  to: Offset,
+                  color: Color,
+                  strokeW: Float
+                ) {
+                  drawLine(
+                    color = color,
+                    start = from,
+                    end = to,
+                    strokeWidth = strokeW,
+                    cap = StrokeCap.Round
+                  )
+                  val angle = kotlin.math.atan2((to.y - from.y).toDouble(), (to.x - from.x).toDouble())
+                  val arrowLen = 8.dp.toPx()
+                  val wing1 = Offset(
+                    x = to.x - arrowLen * kotlin.math.cos(angle - Math.PI / 6).toFloat(),
+                    y = to.y - arrowLen * kotlin.math.sin(angle - Math.PI / 6).toFloat()
+                  )
+                  val wing2 = Offset(
+                    x = to.x - arrowLen * kotlin.math.cos(angle + Math.PI / 6).toFloat(),
+                    y = to.y - arrowLen * kotlin.math.sin(angle + Math.PI / 6).toFloat()
+                  )
+                  drawLine(color, to, wing1, strokeWidth = strokeW, cap = StrokeCap.Round)
+                  drawLine(color, to, wing2, strokeWidth = strokeW, cap = StrokeCap.Round)
+                }
+
+                // 3 Pythagorean Sub-Triangles:
+                // Tri 0: Top-Center (sin [0], cos [1], 1 [center])
+                // Tri 1: Left-Bottom (tan [5], 1 [center], sec [4])
+                // Tri 2: Right-Bottom (1 [center], cot [2], csc [3])
+                val triPaths = listOf(
+                  Path().apply {
+                    moveTo(pts[0].x, pts[0].y)
+                    lineTo(pts[1].x, pts[1].y)
+                    lineTo(centerPt.x, centerPt.y)
+                    close()
+                  },
+                  Path().apply {
+                    moveTo(pts[5].x, pts[5].y)
+                    lineTo(centerPt.x, centerPt.y)
+                    lineTo(pts[4].x, pts[4].y)
+                    close()
+                  },
+                  Path().apply {
+                    moveTo(centerPt.x, centerPt.y)
+                    lineTo(pts[2].x, pts[2].y)
+                    lineTo(pts[3].x, pts[3].y)
+                    close()
+                  }
                 )
 
-                // 1. Dashed Amber Line: Altitude (h_a)
-                val isAltitudeSelected = selectedTopic == HolographicTriangleTopic.ALTITUDES_AND_ORTHOCENTER
-                drawLine(
-                  color = Color(0xFFF59E0B).copy(alpha = if (isAltitudeSelected) neonPulse else 0.65f),
-                  start = ptA,
-                  end = ptAltitudeFoot,
-                  strokeWidth = if (isAltitudeSelected) 3.2.dp.toPx() else 2.dp.toPx(),
-                  cap = StrokeCap.Round,
-                  pathEffect = dashEffect
-                )
-                // Right-angle marker at H_a
-                val sqSize = 8.dp.toPx()
-                drawLine(
-                  color = Color(0xFFF59E0B).copy(alpha = 0.85f),
-                  start = Offset(ptAltitudeFoot.x, ptAltitudeFoot.y - sqSize),
-                  end = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y - sqSize),
-                  strokeWidth = 1.4.dp.toPx()
-                )
-                drawLine(
-                  color = Color(0xFFF59E0B).copy(alpha = 0.85f),
-                  start = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y - sqSize),
-                  end = Offset(ptAltitudeFoot.x + sqSize, ptAltitudeFoot.y),
-                  strokeWidth = 1.4.dp.toPx()
-                )
+                triPaths.forEachIndexed { idx, path ->
+                  val isTriSelected = selectedMode == MagicHexagonMode.PYTHAGOREAN && selectedTriangleIndex == idx
+                  val baseFillAlpha = when {
+                    isTriSelected -> 0.34f * neonPulse
+                    selectedMode == MagicHexagonMode.PYTHAGOREAN -> 0.13f
+                    else -> 0.07f
+                  }
+                  val fillColor = if (isTriSelected) Color(0xFF06B6D4) else Color(0xFF38BDF8)
+                  drawPath(path = path, color = fillColor.copy(alpha = baseFillAlpha))
+                  if (isTriSelected) {
+                    drawPath(
+                      path = path,
+                      color = Color(0xFF10B981).copy(alpha = 0.90f),
+                      style = Stroke(width = 2.6.dp.toPx(), join = StrokeJoin.Round)
+                    )
+                  }
+                }
 
-                // 2. Dashed Emerald Line: Angle Bisector (t_a)
-                val isBisectorSelected = selectedTopic == HolographicTriangleTopic.BISECTORS_AND_INCENTER
-                drawLine(
-                  color = Color(0xFF10B981).copy(alpha = if (isBisectorSelected) neonPulse else 0.68f),
-                  start = ptA,
-                  end = ptBisectorFoot,
-                  strokeWidth = if (isBisectorSelected) 3.2.dp.toPx() else 2.dp.toPx(),
-                  cap = StrokeCap.Round,
-                  pathEffect = dashEffect
-                )
+                // Base Diagonals passing through [ 1 ]
+                val dashEffect = PathEffect.dashPathEffect(floatArrayOf(9f, 7f), 0f)
+                for (d in 0..2) {
+                  val isDiagHighlighted = selectedMode == MagicHexagonMode.RECIPROCAL &&
+                    (selectedVertexIndex % 3 == d)
+                  drawLine(
+                    color = if (isDiagHighlighted) {
+                      Color(0xFF818CF8).copy(alpha = neonPulse)
+                    } else {
+                      Color(0xFF64748B).copy(alpha = 0.45f)
+                    },
+                    start = pts[d],
+                    end = pts[d + 3],
+                    strokeWidth = if (isDiagHighlighted) 3.2.dp.toPx() else 1.4.dp.toPx(),
+                    pathEffect = if (isDiagHighlighted) null else dashEffect
+                  )
+                }
 
-                // 3. Dashed Purple Line: Median (m_a)
-                val isMedianSelected = selectedTopic == HolographicTriangleTopic.MEDIANS_AND_CENTROID
-                drawLine(
-                  color = Color(0xFFA855F7).copy(alpha = if (isMedianSelected) neonPulse else 0.72f),
-                  start = ptA,
-                  end = ptMedianFoot,
-                  strokeWidth = if (isMedianSelected) 3.2.dp.toPx() else 2.dp.toPx(),
-                  cap = StrokeCap.Round,
-                  pathEffect = dashEffect
-                )
-
-                // 4. Cyan Glowing Outer Triangle Border Lines (A-B-C)
-                val trianglePath = Path().apply {
-                  moveTo(ptA.x, ptA.y)
-                  lineTo(ptB.x, ptB.y)
-                  lineTo(ptC.x, ptC.y)
+                // Base Outer Hexagon Perimeter
+                val hexPerimeter = Path().apply {
+                  pts.forEachIndexed { index, pt ->
+                    if (index == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                  }
                   close()
                 }
-                val isSidesSelected = selectedTopic == HolographicTriangleTopic.SIDES_AND_ANGLES
-                // Outer Neon Halo
                 drawPath(
-                  path = trianglePath,
-                  color = Color(0xFF06B6D4).copy(alpha = if (isSidesSelected) 0.35f * neonPulse else 0.18f),
-                  style = Stroke(width = 7.dp.toPx(), cap = StrokeCap.Round)
-                )
-                // Crisp Cyan Core Line
-                drawPath(
-                  path = trianglePath,
-                  color = Color(0xFF06B6D4).copy(alpha = if (isSidesSelected) 1f else 0.88f),
-                  style = Stroke(width = if (isSidesSelected) 2.8.dp.toPx() else 2.2.dp.toPx(), cap = StrokeCap.Round)
+                  path = hexPerimeter,
+                  color = Color(0xFF38BDF8).copy(alpha = 0.48f),
+                  style = Stroke(width = 2.dp.toPx(), join = StrokeJoin.Round)
                 )
 
-                // Vertex Dots (A, B, C)
-                listOf(ptA, ptB, ptC).forEach { vPt ->
-                  drawCircle(
-                    color = Color(0xFF06B6D4).copy(alpha = 0.32f),
-                    radius = 8.dp.toPx(),
-                    center = vPt
-                  )
-                  drawCircle(
-                    color = Color(0xFFE0F2FE),
-                    radius = 4.dp.toPx(),
-                    center = vPt
-                  )
+                // Mode-Specific Animated Vectors & Directional Arrows
+                when (selectedMode) {
+                  MagicHexagonMode.PYTHAGOREAN -> {
+                    val triVertices = when (selectedTriangleIndex) {
+                      0 -> listOf(pts[0], pts[1], centerPt)
+                      1 -> listOf(pts[5], centerPt, pts[4])
+                      else -> listOf(centerPt, pts[2], pts[3])
+                    }
+                    val triCenter = Offset(
+                      (triVertices[0].x + triVertices[1].x + triVertices[2].x) / 3f,
+                      (triVertices[0].y + triVertices[1].y + triVertices[2].y) / 3f
+                    )
+                    // Draw clockwise arrows inside the selected Pythagorean triangle (Top-Left -> Top-Right -> Bottom)
+                    val p0 = Offset(
+                      triVertices[0].x * 0.72f + triCenter.x * 0.28f,
+                      triVertices[0].y * 0.72f + triCenter.y * 0.28f
+                    )
+                    val p1 = Offset(
+                      triVertices[1].x * 0.72f + triCenter.x * 0.28f,
+                      triVertices[1].y * 0.72f + triCenter.y * 0.28f
+                    )
+                    val p2 = Offset(
+                      triVertices[2].x * 0.72f + triCenter.x * 0.28f,
+                      triVertices[2].y * 0.72f + triCenter.y * 0.28f
+                    )
+                    drawDirectionalArrow(p0, p1, Color(0xFF67E8F9), 2.2.dp.toPx())
+                    drawDirectionalArrow(p1, p2, Color(0xFF10B981), 2.2.dp.toPx())
+                  }
+
+                  MagicHexagonMode.RECIPROCAL -> {
+                    val v = selectedVertexIndex.coerceIn(0, 5)
+                    val opp = (v + 3) % 6
+                    val midA = Offset(
+                      (pts[v].x + centerPt.x) / 2f,
+                      (pts[v].y + centerPt.y) / 2f
+                    )
+                    val midB = Offset(
+                      (pts[opp].x + centerPt.x) / 2f,
+                      (pts[opp].y + centerPt.y) / 2f
+                    )
+                    drawDirectionalArrow(centerPt, midA, Color(0xFFA5B4FC), 2.4.dp.toPx())
+                    drawDirectionalArrow(centerPt, midB, Color(0xFFA5B4FC), 2.4.dp.toPx())
+                  }
+
+                  MagicHexagonMode.QUOTIENT_PRODUCT -> {
+                    val v = selectedVertexIndex.coerceIn(0, 5)
+                    val cw1 = (v + 1) % 6
+                    val cw2 = (v + 2) % 6
+                    val leftN = (v + 5) % 6
+                    // Clockwise quotient arrows: v -> cw1 -> cw2
+                    drawDirectionalArrow(
+                      from = pts[v],
+                      to = Offset((pts[v].x + pts[cw1].x) / 2f, (pts[v].y + pts[cw1].y) / 2f),
+                      color = Color(0xFF10B981),
+                      strokeW = 2.8.dp.toPx()
+                    )
+                    drawLine(
+                      color = Color(0xFF10B981),
+                      start = pts[v],
+                      end = pts[cw1],
+                      strokeWidth = 2.6.dp.toPx()
+                    )
+                    drawDirectionalArrow(
+                      from = pts[cw1],
+                      to = Offset((pts[cw1].x + pts[cw2].x) / 2f, (pts[cw1].y + pts[cw2].y) / 2f),
+                      color = Color(0xFF38BDF8),
+                      strokeW = 2.6.dp.toPx()
+                    )
+                    drawLine(
+                      color = Color(0xFF38BDF8),
+                      start = pts[cw1],
+                      end = pts[cw2],
+                      strokeWidth = 2.4.dp.toPx()
+                    )
+                    // Dashed amber line for flanking product leftN <-> rightN (cw1)
+                    drawLine(
+                      color = Color(0xFFF59E0B).copy(alpha = 0.85f),
+                      start = pts[leftN],
+                      end = pts[v],
+                      strokeWidth = 2.2.dp.toPx(),
+                      pathEffect = dashEffect
+                    )
+                  }
+
+                  MagicHexagonMode.CO_FUNCTION -> {
+                    val pairs = listOf(0 to 1, 5 to 2, 4 to 3)
+                    val activePairIdx = when (selectedVertexIndex) {
+                      0, 1 -> 0
+                      5, 2 -> 1
+                      else -> 2
+                    }
+                    pairs.forEachIndexed { idx, (leftIdx, rightIdx) ->
+                      val isPairActive = idx == activePairIdx
+                      val lineCol = if (isPairActive) {
+                        Color(0xFFF59E0B).copy(alpha = neonPulse)
+                      } else {
+                        Color(0xFFF59E0B).copy(alpha = 0.32f)
+                      }
+                      val sw = if (isPairActive) 3.2.dp.toPx() else 1.6.dp.toPx()
+                      drawLine(
+                        color = lineCol,
+                        start = pts[leftIdx],
+                        end = pts[rightIdx],
+                        strokeWidth = sw
+                      )
+                      if (isPairActive) {
+                        val midPt = Offset(
+                          (pts[leftIdx].x + pts[rightIdx].x) / 2f,
+                          (pts[leftIdx].y + pts[rightIdx].y) / 2f
+                        )
+                        drawDirectionalArrow(midPt, Offset((midPt.x + pts[leftIdx].x) / 2f, midPt.y), Color(0xFFFBBF24), 2.2.dp.toPx())
+                        drawDirectionalArrow(midPt, Offset((midPt.x + pts[rightIdx].x) / 2f, midPt.y), Color(0xFFFBBF24), 2.2.dp.toPx())
+                      }
+                    }
+                  }
                 }
 
-                // Notable Center Points: Centroid (G), Incenter (I), Circumcenter (O)
-                // Centroid (G) - Purple
+                // Draw Center Node [ 1 ]
+                val isCenterHighlighted = selectedMode == MagicHexagonMode.PYTHAGOREAN ||
+                  selectedMode == MagicHexagonMode.RECIPROCAL
                 drawCircle(
-                  color = Color(0xFFA855F7).copy(alpha = 0.35f * neonPulse),
-                  radius = if (isMedianSelected) 10.dp.toPx() else 7.dp.toPx(),
-                  center = ptG
+                  color = Color(0xFFF59E0B).copy(alpha = if (isCenterHighlighted) 0.32f * neonPulse else 0.18f),
+                  radius = 22.dp.toPx(),
+                  center = centerPt
                 )
                 drawCircle(
-                  color = Color(0xFFA855F7),
-                  radius = 4.5.dp.toPx(),
-                  center = ptG
+                  color = Color(0xFF0F172A),
+                  radius = 16.dp.toPx(),
+                  center = centerPt
+                )
+                drawCircle(
+                  color = Color(0xFFF59E0B),
+                  radius = 16.dp.toPx(),
+                  center = centerPt,
+                  style = Stroke(width = 2.dp.toPx())
                 )
 
-                // Incenter (I) - Emerald
-                drawCircle(
-                  color = Color(0xFF10B981).copy(alpha = 0.35f * neonPulse),
-                  radius = if (isBisectorSelected || isRadiiSelected) 10.dp.toPx() else 7.dp.toPx(),
-                  center = ptI
-                )
-                drawCircle(
-                  color = Color(0xFF10B981),
-                  radius = 4.5.dp.toPx(),
-                  center = ptI
+                val nodeTextPaint = android.graphics.Paint().apply {
+                  isAntiAlias = true
+                  color = android.graphics.Color.WHITE
+                  textSize = 12.5.sp.toPx()
+                  typeface = android.graphics.Typeface.create(
+                    android.graphics.Typeface.MONOSPACE,
+                    android.graphics.Typeface.BOLD
+                  )
+                  textAlign = android.graphics.Paint.Align.CENTER
+                }
+                val fontMetrics = nodeTextPaint.fontMetrics
+                val textVerticalOffset = -(fontMetrics.ascent + fontMetrics.descent) / 2f
+
+                drawContext.canvas.nativeCanvas.drawText(
+                  "1",
+                  centerPt.x,
+                  centerPt.y + textVerticalOffset,
+                  nodeTextPaint
                 )
 
-                // Circumcenter (O) - Electric Blue
-                drawCircle(
-                  color = Color(0xFF3B82F6).copy(alpha = 0.35f * neonPulse),
-                  radius = if (isRadiiSelected) 10.dp.toPx() else 7.dp.toPx(),
-                  center = ptO
-                )
-                drawCircle(
-                  color = Color(0xFF3B82F6),
-                  radius = 4.5.dp.toPx(),
-                  center = ptO
-                )
-              }
+                // Draw 6 Clickable Perimeter Vertex Nodes
+                pts.forEachIndexed { idx, pt ->
+                  val isPrimarySelected = when (selectedMode) {
+                    MagicHexagonMode.PYTHAGOREAN -> {
+                      (selectedTriangleIndex == 0 && (idx == 0 || idx == 1)) ||
+                        (selectedTriangleIndex == 1 && (idx == 5 || idx == 4)) ||
+                        (selectedTriangleIndex == 2 && (idx == 2 || idx == 3))
+                    }
+                    MagicHexagonMode.RECIPROCAL -> {
+                      idx == selectedVertexIndex || idx == (selectedVertexIndex + 3) % 6
+                    }
+                    MagicHexagonMode.QUOTIENT_PRODUCT -> {
+                      idx == selectedVertexIndex ||
+                        idx == (selectedVertexIndex + 1) % 6 ||
+                        idx == (selectedVertexIndex + 2) % 6 ||
+                        idx == (selectedVertexIndex + 5) % 6
+                    }
+                    MagicHexagonMode.CO_FUNCTION -> {
+                      val activeRow = when (selectedVertexIndex) {
+                        0, 1 -> setOf(0, 1)
+                        5, 2 -> setOf(5, 2)
+                        else -> setOf(4, 3)
+                      }
+                      idx in activeRow
+                    }
+                  }
 
-              // Vertex & Anatomy Legend Overlay Labels inside Canvas
-              Text(
-                text = "A",
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 13.sp,
-                color = Color(0xFF67E8F9),
-                modifier = Modifier
-                  .align(Alignment.TopStart)
-                  .padding(start = 112.dp, top = 8.dp)
-              )
-              Text(
-                text = "B",
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 13.sp,
-                color = Color(0xFF67E8F9),
-                modifier = Modifier
-                  .align(Alignment.BottomStart)
-                  .padding(start = 18.dp, bottom = 22.dp)
-              )
-              Text(
-                text = "C",
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 13.sp,
-                color = Color(0xFF67E8F9),
-                modifier = Modifier
-                  .align(Alignment.BottomEnd)
-                  .padding(end = 18.dp, bottom = 22.dp)
-              )
+                  val nodeAccent = when {
+                    idx == selectedVertexIndex && selectedMode != MagicHexagonMode.PYTHAGOREAN -> selectedMode.accentColor
+                    isPrimarySelected -> Color(0xFF38BDF8)
+                    else -> Color(0xFF475569)
+                  }
 
-              // Compact Color Legend Bar at Bottom of Canvas
-              Row(
-                modifier = Modifier
-                  .align(Alignment.BottomCenter)
-                  .fillMaxWidth()
-                  .background(Color(0xFF020617).copy(alpha = 0.78f))
-                  .padding(horizontal = 10.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                HolographicLegendTag(color = Color(0xFFF59E0B), label = "h_a Altitude")
-                HolographicLegendTag(color = Color(0xFF10B981), label = "t_a Bisector • I")
-                HolographicLegendTag(color = Color(0xFFA855F7), label = "m_a Median • G")
-                HolographicLegendTag(color = Color(0xFF3B82F6), label = "Center O")
-              }
-            }
-          }
+                  if (isPrimarySelected) {
+                    drawCircle(
+                      color = nodeAccent.copy(alpha = 0.30f * neonPulse),
+                      radius = 25.dp.toPx(),
+                      center = pt
+                    )
+                  }
+                  drawCircle(
+                    color = if (isPrimarySelected) Color(0xFF0B1120) else Color(0xFF1E293B),
+                    radius = 19.dp.toPx(),
+                    center = pt
+                  )
+                  drawCircle(
+                    color = nodeAccent,
+                    radius = 19.dp.toPx(),
+                    center = pt,
+                    style = Stroke(width = if (isPrimarySelected) 2.2.dp.toPx() else 1.3.dp.toPx())
+                  )
 
-          // ==================================================================
-          // INTERACTIVE SELECTOR CHIPS (BELOW CANVAS)
-          // [Sides & Angles] [Medians & Centroid] [Altitudes & Orthocenter] [Bisectors & Incenter] [Radii (r, R)]
-          // ==================================================================
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            HolographicTriangleTopic.entries.forEach { topic ->
-              val isSelected = selectedTopic == topic
-              Surface(
-                onClick = {
-                  playCardHapticSound(context, localView)
-                  selectedTopic = topic
-                },
-                shape = RoundedCornerShape(14.dp),
-                color = if (isSelected) {
-                  topic.accentColor.copy(alpha = 0.22f)
-                } else {
-                  Color(0xFF1E293B).copy(alpha = 0.75f)
-                },
-                border = BorderStroke(
-                  width = if (isSelected) 1.4.dp else 1.dp,
-                  color = if (isSelected) topic.accentColor else Color.White.copy(alpha = 0.14f)
-                ),
-                modifier = Modifier.testTag("holo_chip_${topic.name.lowercase(Locale.ROOT)}")
-              ) {
-                Text(
-                  text = topic.chipLabel,
-                  style = MaterialTheme.typography.labelMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-                  ),
-                  color = if (isSelected) topic.accentColor else Color(0xFFCBD5E1),
-                  maxLines = 1,
-                  softWrap = false,
-                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                )
+                  nodeTextPaint.color = if (isPrimarySelected) {
+                    Color(0xFFE0F2FE).toArgb()
+                  } else {
+                    Color(0xFFCBD5E1).toArgb()
+                  }
+                  drawContext.canvas.nativeCanvas.drawText(
+                    vertexNames[idx],
+                    pt.x,
+                    pt.y + textVerticalOffset,
+                    nodeTextPaint
+                  )
+                }
               }
             }
           }
 
           // ==================================================================
-          // DYNAMIC CONCEPT CARD (UPDATES WHEN CHIP OR CANVAS ELEMENT IS TAPPED)
+          // 3. LIVE DERIVED FORMULA CARD (BOTTOM OF MODAL)
           // ==================================================================
           Surface(
             shape = RoundedCornerShape(18.dp),
-            color = Color(0xFF111827).copy(alpha = 0.94f),
-            border = BorderStroke(1.2.dp, selectedTopic.accentColor.copy(alpha = 0.48f)),
+            color = Color(0xFF111827).copy(alpha = 0.95f),
+            border = BorderStroke(1.2.dp, selectedMode.accentColor.copy(alpha = 0.48f)),
             modifier = Modifier
               .fillMaxWidth()
-              .padding(bottom = 36.dp)
               .testTag("holographic_triangle_concept_card")
           ) {
             Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(14.dp),
               verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+              // Visual Rule Badge
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = selectedMode.accentColor.copy(alpha = 0.16f),
+                border = BorderStroke(0.9.dp, selectedMode.accentColor.copy(alpha = 0.45f))
+              ) {
+                Text(
+                  text = derivedRuleBadge,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.5.sp
+                  ),
+                  color = selectedMode.accentColor,
+                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                )
+              }
+
               Text(
-                text = selectedTopic.conceptTitle,
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = 16.sp,
+                text = derivedTitle,
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = 14.5.sp,
                   fontWeight = FontWeight.ExtraBold
                 ),
-                color = selectedTopic.accentColor
+                color = Color(0xFFF8FAFC)
               )
 
-              Text(
-                text = selectedTopic.engineeringDefinition,
-                style = MaterialTheme.typography.bodySmall.copy(
-                  fontSize = 13.sp,
-                  lineHeight = 18.sp,
-                  fontWeight = FontWeight.Medium
-                ),
-                color = Color(0xFFE2E8F0)
-              )
-
-              Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xFF1E293B).copy(alpha = 0.72f),
-                border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.12f)),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Column(
-                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                  verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                  Text(
-                    text = "GEOMETRIC THEOREM",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                      fontFamily = FontFamily.Monospace,
-                      fontSize = 10.sp,
-                      fontWeight = FontWeight.ExtraBold,
-                      letterSpacing = 0.8.sp
-                    ),
-                    color = selectedTopic.accentColor
-                  )
-                  Text(
-                    text = selectedTopic.geometricTheorem,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                      fontSize = 12.5.sp,
-                      lineHeight = 17.5.sp,
-                      fontWeight = FontWeight.SemiBold
-                    ),
-                    color = Color(0xFFCBD5E1)
-                  )
-                }
-              }
-
-              // Primary Board Exam Formula Boxes (each formula line rendered in its own distinct box)
-              val formulaLines = remember(selectedTopic) {
-                selectedTopic.boardExamFormula.split("\n").filter { it.isNotBlank() }
-              }
-              Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                formulaLines.forEach { formulaLine ->
-                  Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFF060B16),
-                    border = BorderStroke(1.dp, selectedTopic.accentColor.copy(alpha = 0.55f)),
-                    modifier = Modifier.fillMaxWidth()
-                  ) {
-                    Text(
-                      text = formulaLine,
-                      style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 14.5.sp,
-                        lineHeight = 21.sp,
-                        fontWeight = FontWeight.Bold
-                      ),
-                      color = Color(0xFF67E8F9),
-                      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                    )
-                  }
-                }
+              // Derived Formula Capsules with one-tap copy support
+              derivedFormulas.forEachIndexed { idx, (label, formulaText) ->
+                MathFormulaCapsule(
+                  label = "${idx + 1}. $label",
+                  equation = formulaText,
+                  accentColor = selectedMode.accentColor,
+                  testTag = "magic_hex_formula_capsule_${idx + 1}"
+                )
               }
             }
           }
         }
       }
     }
-  }
-}
-
-@Composable
-private fun HolographicLegendTag(
-  color: Color,
-  label: String
-) {
-  Row(
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(4.dp)
-  ) {
-    Box(
-      modifier = Modifier
-        .size(7.dp)
-        .clip(CircleShape)
-        .background(color)
-    )
-    Text(
-      text = label,
-      style = MaterialTheme.typography.labelSmall.copy(
-        fontFamily = FontFamily.Monospace,
-        fontSize = 9.5.sp,
-        fontWeight = FontWeight.Bold
-      ),
-      color = Color(0xFFE2E8F0),
-      maxLines = 1,
-      softWrap = false
-    )
   }
 }
 
@@ -19054,16 +22471,12 @@ fun FlashcardMainView(
       metrics = metrics,
       onDismiss = { isImportDeckCodeDialogOpen = false },
       onImportDeck = { importedDeck ->
-        val savedDeck = viewModel.addFlashcardDeck(
-          title = importedDeck.title,
-          subjectTag = importedDeck.subjectTag,
-          initialCards = importedDeck.cards
-        )
+        val savedDeck = viewModel.importSharedFlashcardDeck(importedDeck)
         isImportDeckCodeDialogOpen = false
         Toast.makeText(
           context,
-          "Imported \"${savedDeck.title}\" (${savedDeck.cards.size} cards) with zero quota used!",
-          Toast.LENGTH_LONG
+          "Deck \"${savedDeck.title}\" imported successfully!",
+          Toast.LENGTH_SHORT
         ).show()
       }
     )
@@ -19072,30 +22485,69 @@ fun FlashcardMainView(
   // QR Code Share Dialog
   val targetDeckForQr = decks.firstOrNull { it.id == shareQrTargetDeckId }
   if (targetDeckForQr != null) {
-    val shareCode = remember(targetDeckForQr.id) {
-      GizmoBatchFlashcardEngine.encodeDeckToShareCode(targetDeckForQr)
+    val shareCode = remember(targetDeckForQr.id, targetDeckForQr.cards.size, targetDeckForQr.title) {
+      exportDeckToShareableCode(targetDeckForQr)
     }
     ShareDeckQrDialog(
       deckId = shareCode,
       deckTitle = targetDeckForQr.title,
+      deck = targetDeckForQr,
       onDismiss = { shareQrTargetDeckId = null }
     )
   }
 }
 
 /**
- * 1. QR Code Generator Helper using BarcodeEncoder
+ * 1. QR Code Generator Helper using BarcodeEncoder (never truncates Base64/GZIP streams mid-payload)
  */
-fun generateDeckQrBitmap(deckCode: String, size: Int = 400): Bitmap? {
-  return try {
-    BarcodeEncoder().encodeBitmap(deckCode, BarcodeFormat.QR_CODE, size, size)
-  } catch (_: Exception) {
+fun generateDeckQrBitmap(
+  deckCode: String,
+  size: Int = 400,
+  sourceDeck: FlashcardDeck? = null
+): Bitmap? {
+  val cleanCode = deckCode.replace("\n", "").replace("\r", "").trim()
+  if (cleanCode.isNotEmpty()) {
     try {
-      val fallbackPayload = if (deckCode.length > 1800) deckCode.take(1800) else "SIBIL_DECK"
-      BarcodeEncoder().encodeBitmap(fallbackPayload, BarcodeFormat.QR_CODE, size, size)
+      return BarcodeEncoder().encodeBitmap(cleanCode, BarcodeFormat.QR_CODE, size, size)
     } catch (_: Exception) {
-      null
+      // If the GZIP+Base64 payload exceeds QR Version 40 capacity, progressively encode a valid complete GZIP+Base64 subset
+      if (sourceDeck != null && sourceDeck.cards.size > 1) {
+        for (limit in listOf(25, 15, 10, 5, 1)) {
+          if (sourceDeck.cards.size > limit) {
+            val validSubsetCode = exportDeckToShareableCode(
+              sourceDeck.copy(cards = sourceDeck.cards.take(limit))
+            )
+            if (validSubsetCode.isNotEmpty()) {
+              try {
+                return BarcodeEncoder().encodeBitmap(validSubsetCode, BarcodeFormat.QR_CODE, size, size)
+              } catch (_: Exception) {
+                // Try smaller valid card subset
+              }
+            }
+          }
+        }
+      }
     }
+  }
+  return try {
+    val fallbackDeck = sourceDeck?.copy(cards = sourceDeck.cards.take(1))
+      ?: FlashcardDeck(
+        id = 0,
+        title = "Shared Study Deck",
+        subjectTag = "General",
+        cards = listOf(
+          FlashcardItem(
+            id = 1,
+            question = "Shared Deck",
+            answer = "Use Copy Code for full deck",
+            category = "General"
+          )
+        )
+      )
+    val validFallbackCode = exportDeckToShareableCode(fallbackDeck)
+    BarcodeEncoder().encodeBitmap(validFallbackCode, BarcodeFormat.QR_CODE, size, size)
+  } catch (_: Exception) {
+    null
   }
 }
 
@@ -19117,12 +22569,8 @@ fun launchDeckQrScanner(
     scanner.startScan()
       .addOnSuccessListener { barcode ->
         val rawValue = barcode.rawValue ?: ""
-        val deckId = if (rawValue.startsWith("SIBIL_DECK:")) {
-          rawValue.removePrefix("SIBIL_DECK:")
-        } else {
-          rawValue
-        }
-        onSuccess(deckId)
+        val deckPayload = rawValue.trim().removePrefix("SIBIL_DECK:").trim()
+        onSuccess(deckPayload)
       }
       .addOnFailureListener { error ->
         onError(error.localizedMessage ?: "Scan canceled or unavailable")
@@ -19139,26 +22587,31 @@ fun launchDeckQrScanner(
 fun ShareDeckQrDialog(
   deckId: String,
   deckTitle: String,
+  deck: FlashcardDeck? = null,
   onDismiss: () -> Unit
 ) {
   val context = LocalContext.current
   val palette = currentGlassPalette()
-  val deckCode = deckId.ifBlank { deckTitle.ifBlank { "SIBIL_DECK" } }
+  val nonWrappedShareCode = remember(deckId, deck) {
+    val candidate = deckId.replace("\n", "").replace("\r", "").trim()
+    if (candidate.isNotEmpty()) {
+      candidate
+    } else if (deck != null) {
+      exportDeckToShareableCode(deck)
+    } else {
+      ""
+    }
+  }
   var qrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
-  LaunchedEffect(deckCode) {
+  LaunchedEffect(nonWrappedShareCode, deck) {
     qrBitmap = null
     val encodedBitmap = withContext(Dispatchers.IO) {
-      try {
-        BarcodeEncoder().encodeBitmap(deckCode, BarcodeFormat.QR_CODE, 400, 400)
-      } catch (_: Exception) {
-        try {
-          val fallbackCode = if (deckCode.length > 1800) deckCode.take(1800) else deckTitle.ifBlank { "SIBIL_DECK" }
-          BarcodeEncoder().encodeBitmap(fallbackCode, BarcodeFormat.QR_CODE, 400, 400)
-        } catch (_: Exception) {
-          null
-        }
-      }
+      generateDeckQrBitmap(
+        deckCode = nonWrappedShareCode,
+        size = 400,
+        sourceDeck = deck
+      )
     }
     qrBitmap = encodedBitmap?.asImageBitmap()
   }
@@ -19244,7 +22697,7 @@ fun ShareDeckQrDialog(
           OutlinedButton(
             onClick = {
               val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-              clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", deckId))
+              clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", nonWrappedShareCode))
               Toast.makeText(context, "Deck code copied to clipboard!", Toast.LENGTH_SHORT).show()
             },
             shape = RoundedCornerShape(12.dp)
@@ -19328,16 +22781,13 @@ private fun ImportSharedDeckCodeDialog(
           onClick = {
             launchDeckQrScanner(
               context = context,
-              onSuccess = { scannedValue ->
-                val clean = if (scannedValue.startsWith("SIBIL_DECK:")) {
-                  scannedValue.removePrefix("SIBIL_DECK:")
-                } else scannedValue
-                val decoded = GizmoBatchFlashcardEngine.decodeDeckFromShareCode(clean)
-                if (decoded != null) {
-                  onImportDeck(decoded)
-                } else {
-                  deckCodeInput = clean
+              onSuccess = { scannedString ->
+                val importedDeck = parseImportedDeckCode(scannedString)
+                if (importedDeck != null) {
                   decodeError = null
+                  onImportDeck(importedDeck)
+                } else {
+                  val clean = scannedString.trim().removePrefix("SIBIL_DECK:").trim()
                   val deckIdInt = clean.toIntOrNull()
                   if (deckIdInt != null) {
                     val auth = FirebaseAuth.getInstance()
@@ -19349,8 +22799,19 @@ private fun ImportSharedDeckCodeDialog(
                       .get()
                       .addOnSuccessListener { doc ->
                         val remote = doc.toFlashcardDeckOrNull()
-                        if (remote != null) onImportDeck(remote)
+                        if (remote != null) {
+                          decodeError = null
+                          onImportDeck(remote)
+                        } else {
+                          decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
+                        }
                       }
+                      .addOnFailureListener {
+                        decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
+                      }
+                  } else {
+                    deckCodeInput = clean
+                    decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
                   }
                 }
               },
@@ -19385,7 +22846,7 @@ private fun ImportSharedDeckCodeDialog(
             decodeError = null
           },
           label = { Text("Paste Deck Code from Classmate") },
-          placeholder = { Text("eyJ2IjoxLCJ0aXRsZSI6...") },
+          placeholder = { Text("H4sIAAAAAAAA/...") },
           isError = decodeError != null,
           minLines = 3,
           maxLines = 6,
@@ -19454,11 +22915,12 @@ private fun ImportSharedDeckCodeDialog(
     confirmButton = {
       Button(
         onClick = {
-          val decoded = GizmoBatchFlashcardEngine.decodeDeckFromShareCode(deckCodeInput)
-          if (decoded == null) {
-            decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
+          val importedDeck = parseImportedDeckCode(deckCodeInput)
+          if (importedDeck != null) {
+            decodeError = null
+            onImportDeck(importedDeck)
           } else {
-            onImportDeck(decoded)
+            decodeError = "Invalid deck code. Please copy the full code shared by your classmate."
           }
         },
         shape = RoundedCornerShape(18.dp),
