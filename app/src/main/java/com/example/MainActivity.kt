@@ -122,6 +122,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -208,16 +209,28 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.CloseFullscreen
+import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.Label
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.outlined.Assignment
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CalendarToday
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.EventNote
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
@@ -254,7 +267,13 @@ import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import java.util.UUID
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -322,10 +341,14 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -533,24 +556,24 @@ private val LiquidInactiveCharcoal = Color(0xFF475569)
 
 private val LiquidOrbBrush: Brush = Brush.linearGradient(
   colors = listOf(
-    LiquidRoyalPeriwinkle,
-    LiquidDeepIndigo,
-    LiquidIndigoCore
+    Color(0xFF38BDF8),
+    Color(0xFF0284C7),
+    Color(0xFF2563EB)
   )
 )
 
 private val LiquidCyanVioletGradient: Brush = Brush.linearGradient(
   colors = listOf(
-    LiquidCyanGlow,
-    LiquidRoyalPeriwinkle,
-    LiquidElectricViolet
+    Color(0xFF38BDF8),
+    Color(0xFF0EA5E9),
+    Color(0xFF2563EB)
   )
 )
 
 private val LiquidVioletChipGradient: Brush = Brush.horizontalGradient(
   colors = listOf(
-    LiquidRoyalPeriwinkle,
-    LiquidElectricViolet
+    Color(0xFF38BDF8),
+    Color(0xFF2563EB)
   )
 )
 
@@ -631,77 +654,77 @@ data class GlassPalette(
 val DarkGlassPalette = GlassPalette(
   isDark = true,
   canvasColors = listOf(
-    Color(0xFF070B19),
-    Color(0xFF0F172A),
-    Color(0xFF1E1B4B),
-    Color(0xFF070B19)
+    Color(0xFF060B14),
+    Color(0xFF0A1120),
+    Color(0xFF060B14)
   ),
-  cardFill = Color(0xFF1E293B),
-  cardTopSheen = Color(0xFF1E293B),
-  cardBottomSheen = Color(0xFF0F172A),
-  nestedCardFill = Color(0xFF26334D),
-  nestedBorderColor = Color.White.copy(alpha = 0.16f),
-  glassBorderBrush = Brush.verticalGradient(
+  cardFill = Color(0xFF1E293B).copy(alpha = 0.62f),
+  cardTopSheen = Color(0xFF1E293B).copy(alpha = 0.55f),
+  cardBottomSheen = Color(0xFF0F172A).copy(alpha = 0.72f),
+  nestedCardFill = Color(0xFF0F172A).copy(alpha = 0.58f),
+  nestedBorderColor = Color.White.copy(alpha = 0.14f),
+  glassBorderBrush = Brush.linearGradient(
     colors = listOf(
-      Color.White.copy(alpha = 0.22f),
-      Color(0xFF818CF8).copy(alpha = 0.10f)
+      Color.White.copy(alpha = 0.20f),
+      Color(0xFF38BDF8).copy(alpha = 0.10f),
+      Color.White.copy(alpha = 0.04f)
     )
   ),
-  glassBorderWidth = 1.2.dp,
-  dockFill = Color(0xFF0F172A),
+  glassBorderWidth = 1.dp,
+  dockFill = Color(0xFF0F172A).copy(alpha = 0.74f),
   dockBorderColor = Color.White.copy(alpha = 0.22f),
   textPrimary = Color(0xFFF8FAFC),
   textSecondary = Color(0xFF94A3B8),
-  trackColor = Color(0xFF334155),
-  accentIndigo = Color(0xFF818CF8),
+  trackColor = Color(0xFF1E293B),
+  accentIndigo = Color(0xFF38BDF8),
   accentRed = Color(0xFFF87171),
-  dialogSurface = Color(0xFF0B1120),
-  shadowAmbient = Color.Black,
-  shadowSpot = Color(0x334F46E5),
-  stackTopFill = Color(0xFF1E293B),
-  stackMidFill = Color(0xFF162032),
+  dialogSurface = Color(0xFF0B1120).copy(alpha = 0.90f),
+  shadowAmbient = Color(0x14000000),
+  shadowSpot = Color(0xFF0EA5E9).copy(alpha = 0.14f),
+  stackTopFill = Color(0xFF1E293B).copy(alpha = 0.68f),
+  stackMidFill = Color(0xFF162032).copy(alpha = 0.60f),
   stackMidBorder = Color.White.copy(alpha = 0.14f),
-  stackBottomFill = Color(0xFF0F172A),
-  checkboxUncheckedFill = Color(0xFF1E293B),
-  checkboxUncheckedBorder = Color(0xFF818CF8)
+  stackBottomFill = Color(0xFF0F172A).copy(alpha = 0.55f),
+  checkboxUncheckedFill = Color(0xFF0F172A).copy(alpha = 0.65f),
+  checkboxUncheckedBorder = Color(0xFF38BDF8)
 )
 
 val LightGlassPalette = GlassPalette(
   isDark = false,
   canvasColors = listOf(
-    Color(0xFFDCE4F2),
-    Color(0xFFE6ECFA),
-    Color(0xFFEAE6F8),
-    Color(0xFFDCE4F2)
+    Color(0xFFEAF0F8),
+    Color(0xFFF4F7FB),
+    Color(0xFFEAF0F8)
   ),
-  cardFill = Color(0xFFFFFFFF),
-  cardTopSheen = Color(0xFFFFFFFF),
-  cardBottomSheen = Color(0xFFF4F7FB),
-  nestedCardFill = Color(0xFFEEF2FF),
-  nestedBorderColor = Color(0xFFD8E0EE),
-  glassBorderBrush = Brush.verticalGradient(
+  cardFill = Color.White.copy(alpha = 0.66f),
+  cardTopSheen = Color.White.copy(alpha = 0.74f),
+  cardBottomSheen = Color(0xFFF8FAFC).copy(alpha = 0.52f),
+  nestedCardFill = Color(0xFFF8FAFC).copy(alpha = 0.68f),
+  nestedBorderColor = Color(0xFFCBD5E1).copy(alpha = 0.72f),
+  glassBorderBrush = Brush.linearGradient(
     colors = listOf(
-      Color(0xFFFFFFFF),
-      Color(0xFFD8E0EE)
+      Color.White.copy(alpha = 0.98f),
+      Color(0xFF38BDF8).copy(alpha = 0.30f),
+      Color(0xFFCBD5E1).copy(alpha = 0.45f)
     )
   ),
   glassBorderWidth = 1.2.dp,
-  dockFill = Color(0xFFF8FAFC),
-  dockBorderColor = Color(0xFFCBD5E1),
+  dockFill = Color.White.copy(alpha = 0.74f),
+  dockBorderColor = Color.White.copy(alpha = 0.95f),
   textPrimary = Color(0xFF0F172A),
   textSecondary = Color(0xFF475569),
-  trackColor = Color(0xFFCBD5E1),
-  accentIndigo = Color(0xFF4F46E5),
+  trackColor = Color(0xFFCBD5E1).copy(alpha = 0.75f),
+  accentIndigo = Color(0xFF0284C7),
   accentRed = Color(0xFFEF4444),
-  dialogSurface = Color(0xFFF4F7FB),
-  shadowAmbient = Color(0x140F172A),
-  shadowSpot = Color(0x183730A3),
-  stackTopFill = Color(0xFFFFFFFF),
-  stackMidFill = Color(0xFFE2E8F0),
+  dialogSurface = Color(0xFFF4F7FB).copy(alpha = 0.92f),
+  shadowAmbient = Color(0x0D0284C7),
+  shadowSpot = Color(0xFF0284C7).copy(alpha = 0.12f),
+  stackTopFill = Color.White.copy(alpha = 0.76f),
+  stackMidFill = Color(0xFFE2E8F0).copy(alpha = 0.68f),
   stackMidBorder = Color(0xFFCBD5E1),
-  stackBottomFill = Color(0xFFCBD5E1),
-  checkboxUncheckedFill = Color(0xFFFFFFFF),
-  checkboxUncheckedBorder = Color(0xFF6366F1)
+  stackBottomFill = Color(0xFFCBD5E1).copy(alpha = 0.60f),
+  checkboxUncheckedFill = Color.White.copy(alpha = 0.80f),
+  checkboxUncheckedBorder = Color(0xFF0284C7)
 )
 
 val LocalGlassPalette = compositionLocalOf { LightGlassPalette }
@@ -806,121 +829,142 @@ fun liquidGlassSpecularBorder(
 }
 
 /**
- * Ambient, multi-stop Fluid Background Mesh canvas on the root Scaffold:
- * - Light Mode: Rich architectural daylight mesh (`#DCE4F2` -> `#E6ECFA` -> `#EAE6F8`) with visible
- *   diffused ambient color orbs (Periwinkle `#6366F1` at 16% alpha, Sky Cyan `#0EA5E9` at 14% alpha,
- *   Soft Violet `#A855F7` at 12% alpha) so frosted white glass cards immediately pop with 3D depth.
- * - Dark Mode: Deep midnight/obsidian mesh (`#070B19` -> `#0F172A` -> `#1E1B4B`) with soft ambient
- *   glowing orbs of indigo (`#4F46E5` at 18% alpha) and cyan (`#06B6D4` at 12% alpha).
+ * Reusable global adaptive Liquid Glass background shell (`LiquidGlassAppBackground`) matching `AuthScreen`:
+ * - Dark Mode (`isDarkMode == true`):
+ *   * Base: Deep obsidian-midnight (`Color(0xFF060B14)` to `Color(0xFF0A1120)`).
+ *   * Ambient Radial Blooms: Top-right/center cyan-blue bloom (`Color(0xFF0EA5E9).copy(alpha = 0.18f)`),
+ *     middle-left indigo-violet bloom (`Color(0xFF6366F1).copy(alpha = 0.14f)`), and bottom-right deep teal
+ *     bloom (`Color(0xFF0284C7).copy(alpha = 0.12f)`).
+ * - Light Mode (`isDarkMode == false`):
+ *   * Base: Crisp arctic pearl-slate (`Color(0xFFEAF0F8)` to `Color(0xFFF4F7FB)`).
+ *   * Ambient Radial Blooms: Top-right sky-cyan bloom (`Color(0xFF38BDF8).copy(alpha = 0.28f)`),
+ *     middle-left periwinkle-indigo bloom (`Color(0xFF818CF8).copy(alpha = 0.20f)`), and bottom-right aqua
+ *     bloom (`Color(0xFF0EA5E9).copy(alpha = 0.18f)`).
  */
 @Composable
-fun LiquidGlassBackgroundMesh(
+fun LiquidGlassAppBackground(
+  isDarkMode: Boolean = currentGlassPalette().isDark,
   modifier: Modifier = Modifier,
   content: @Composable BoxScope.() -> Unit
 ) {
-  val palette = currentGlassPalette()
-  val meshBrush = Brush.linearGradient(
-    colors = palette.canvasColors,
-    start = Offset(0f, 0f),
-    end = Offset(1400f, 2400f)
-  )
+  val baseGradient = remember(isDarkMode) {
+    if (isDarkMode) {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color(0xFF060B14),
+          Color(0xFF0A1120),
+          Color(0xFF060B14)
+        )
+      )
+    } else {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color(0xFFEAF0F8),
+          Color(0xFFF4F7FB),
+          Color(0xFFEAF0F8)
+        )
+      )
+    }
+  }
 
   Box(
     modifier = modifier
       .fillMaxSize()
-      .background(brush = meshBrush)
+      .background(brush = baseGradient)
   ) {
     Canvas(modifier = Modifier.fillMaxSize()) {
       val w = size.width
       val h = size.height
 
-      if (!palette.isDark) {
-        // Light Mode Orb 1: Periwinkle (#6366F1 at 16% alpha)
+      if (isDarkMode) {
+        // Dark Mode Bloom 1: Top-right/center cyan-blue bloom
         drawCircle(
           brush = Brush.radialGradient(
             colors = listOf(
-              Color(0xFF6366F1).copy(alpha = 0.16f),
-              Color(0xFF6366F1).copy(alpha = 0.06f),
+              Color(0xFF0EA5E9).copy(alpha = 0.18f),
+              Color(0xFF0EA5E9).copy(alpha = 0.06f),
               Color.Transparent
             ),
-            center = Offset(w * 0.86f, h * 0.14f),
-            radius = w * 0.72f
+            center = Offset(w * 0.78f, h * 0.14f),
+            radius = w * 0.76f
           ),
-          radius = w * 0.72f,
-          center = Offset(w * 0.86f, h * 0.14f)
+          radius = w * 0.76f,
+          center = Offset(w * 0.78f, h * 0.14f)
         )
 
-        // Light Mode Orb 2: Soft Violet (#A855F7 at 12% alpha)
+        // Dark Mode Bloom 2: Middle-left indigo-violet bloom
         drawCircle(
           brush = Brush.radialGradient(
             colors = listOf(
-              Color(0xFFA855F7).copy(alpha = 0.12f),
-              Color(0xFFA855F7).copy(alpha = 0.05f),
+              Color(0xFF6366F1).copy(alpha = 0.14f),
+              Color(0xFF6366F1).copy(alpha = 0.04f),
               Color.Transparent
             ),
-            center = Offset(w * 0.14f, h * 0.48f),
-            radius = w * 0.75f
+            center = Offset(w * 0.16f, h * 0.48f),
+            radius = w * 0.74f
           ),
-          radius = w * 0.75f,
-          center = Offset(w * 0.14f, h * 0.48f)
+          radius = w * 0.74f,
+          center = Offset(w * 0.16f, h * 0.48f)
         )
 
-        // Light Mode Orb 3: Sky Cyan (#0EA5E9 at 14% alpha)
+        // Dark Mode Bloom 3: Bottom-right deep teal bloom
         drawCircle(
           brush = Brush.radialGradient(
             colors = listOf(
-              Color(0xFF0EA5E9).copy(alpha = 0.14f),
-              Color(0xFF0EA5E9).copy(alpha = 0.05f),
+              Color(0xFF0284C7).copy(alpha = 0.12f),
+              Color(0xFF0284C7).copy(alpha = 0.04f),
               Color.Transparent
             ),
-            center = Offset(w * 0.80f, h * 0.86f),
-            radius = w * 0.68f
-          ),
-          radius = w * 0.68f,
-          center = Offset(w * 0.80f, h * 0.86f)
-        )
-      } else {
-        // Dark Mode Orb 1: Indigo (#4F46E5 at 18% alpha)
-        drawCircle(
-          brush = Brush.radialGradient(
-            colors = listOf(
-              Color(0xFF4F46E5).copy(alpha = 0.18f),
-              Color(0xFF4F46E5).copy(alpha = 0.05f),
-              Color.Transparent
-            ),
-            center = Offset(w * 0.86f, h * 0.15f),
-            radius = w * 0.72f
-          ),
-          radius = w * 0.72f,
-          center = Offset(w * 0.86f, h * 0.15f)
-        )
-
-        // Dark Mode Orb 2: Indigo/Violet mid bloom
-        drawCircle(
-          brush = Brush.radialGradient(
-            colors = listOf(
-              Color(0xFF4F46E5).copy(alpha = 0.14f),
-              Color.Transparent
-            ),
-            center = Offset(w * 0.14f, h * 0.50f),
+            center = Offset(w * 0.82f, h * 0.86f),
             radius = w * 0.70f
           ),
           radius = w * 0.70f,
-          center = Offset(w * 0.14f, h * 0.50f)
+          center = Offset(w * 0.82f, h * 0.86f)
         )
-
-        // Dark Mode Orb 3: Cyan (#06B6D4 at 12% alpha)
+      } else {
+        // Light Mode Bloom 1: Top-right sky-cyan bloom
         drawCircle(
           brush = Brush.radialGradient(
             colors = listOf(
-              Color(0xFF06B6D4).copy(alpha = 0.12f),
+              Color(0xFF38BDF8).copy(alpha = 0.28f),
+              Color(0xFF38BDF8).copy(alpha = 0.09f),
               Color.Transparent
             ),
-            center = Offset(w * 0.78f, h * 0.88f),
-            radius = w * 0.66f
+            center = Offset(w * 0.80f, h * 0.14f),
+            radius = w * 0.78f
           ),
-          radius = w * 0.66f,
-          center = Offset(w * 0.78f, h * 0.88f)
+          radius = w * 0.78f,
+          center = Offset(w * 0.80f, h * 0.14f)
+        )
+
+        // Light Mode Bloom 2: Middle-left periwinkle-indigo bloom
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF818CF8).copy(alpha = 0.20f),
+              Color(0xFF818CF8).copy(alpha = 0.06f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.15f, h * 0.48f),
+            radius = w * 0.76f
+          ),
+          radius = w * 0.76f,
+          center = Offset(w * 0.15f, h * 0.48f)
+        )
+
+        // Light Mode Bloom 3: Bottom-right aqua bloom
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF0EA5E9).copy(alpha = 0.18f),
+              Color(0xFF0EA5E9).copy(alpha = 0.05f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.82f, h * 0.86f),
+            radius = w * 0.72f
+          ),
+          radius = w * 0.72f,
+          center = Offset(w * 0.82f, h * 0.86f)
         )
       }
     }
@@ -929,17 +973,35 @@ fun LiquidGlassBackgroundMesh(
   }
 }
 
+@Composable
+fun LiquidGlassBackgroundMesh(
+  modifier: Modifier = Modifier,
+  content: @Composable BoxScope.() -> Unit
+) {
+  val palette = currentGlassPalette()
+  LiquidGlassAppBackground(
+    isDarkMode = palette.isDark,
+    modifier = modifier,
+    content = content
+  )
+}
+
 /**
- * Reusable `LiquidGlassCard` composable used for primary cards, dialogs, and panels across Sibil.
- * Uses 100% opaque multi-stop vertical frost gradients so Android's RenderNode shadow never bleeds
- * through the interior.
+ * Reusable `LiquidGlassCard` composable used for primary cards, dialogs, and panels across Sibil CE:
+ * - Dark Mode Glass Surface:
+ *   * Fill: `Brush.verticalGradient(listOf(Color(0xFF1E293B).copy(alpha = 0.55f), Color(0xFF0F172A).copy(alpha = 0.72f)))`
+ *   * Specular Border (`1.dp`): `Brush.linearGradient(listOf(Color.White.copy(alpha = 0.20f), Color(0xFF38BDF8).copy(alpha = 0.10f), Color.White.copy(alpha = 0.04f)))`
+ * - Light Mode Glass Surface:
+ *   * Fill: `Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.74f), Color(0xFFF8FAFC).copy(alpha = 0.52f)))`
+ *   * Specular Border (`1.2.dp`): `Brush.linearGradient(listOf(Color.White.copy(alpha = 0.98f), Color(0xFF38BDF8).copy(alpha = 0.30f), Color(0xFFCBD5E1).copy(alpha = 0.45f)))`
+ *   * Subtle Shadow: Soft ambient elevation (`4.dp`, spotColor = `Color(0xFF0284C7).copy(alpha = 0.12f)`).
  */
 @Composable
 fun LiquidGlassCard(
   modifier: Modifier = Modifier,
   cornerRadius: Dp = 24.dp,
   shape: Shape = RoundedCornerShape(cornerRadius),
-  elevation: Dp = 6.dp,
+  elevation: Dp = 4.dp,
   fillAlpha: Float = 1.0f,
   borderStroke: BorderStroke? = null,
   onClick: (() -> Unit)? = null,
@@ -947,23 +1009,38 @@ fun LiquidGlassCard(
 ) {
   val palette = currentGlassPalette()
   val resolvedBorder = borderStroke ?: palette.glassBorder
-  val resolvedElevation = if (palette.isDark && elevation == 6.dp) 8.dp else elevation
-  val sheenBrush = remember(palette.isDark, palette.cardTopSheen, palette.cardBottomSheen) {
-    Brush.verticalGradient(
-      colors = listOf(
-        palette.cardTopSheen,
-        palette.cardBottomSheen
+  val resolvedElevation = if (palette.isDark) 0.dp else 4.dp
+  val sheenBrush = remember(palette.isDark) {
+    if (palette.isDark) {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color(0xFF1E293B).copy(alpha = 0.55f),
+          Color(0xFF0F172A).copy(alpha = 0.72f)
+        )
       )
-    )
+    } else {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.74f),
+          Color(0xFFF8FAFC).copy(alpha = 0.52f)
+        )
+      )
+    }
   }
 
   val cardModifier = modifier
-    .shadow(
-      elevation = resolvedElevation,
-      shape = shape,
-      ambientColor = palette.shadowAmbient,
-      spotColor = palette.shadowSpot
-    )
+    .let { mod ->
+      if (resolvedElevation > 0.dp) {
+        mod.shadow(
+          elevation = resolvedElevation,
+          shape = shape,
+          ambientColor = palette.shadowAmbient,
+          spotColor = Color(0xFF0284C7).copy(alpha = 0.12f)
+        )
+      } else {
+        mod
+      }
+    }
     .clip(shape)
     .background(brush = sheenBrush, shape = shape)
     .border(border = resolvedBorder, shape = shape)
@@ -982,8 +1059,7 @@ fun LiquidGlassCard(
 }
 
 /**
- * Reusable `LiquidGlassContainer` for inner pods, search bars, chips, and status tiles.
- * Uses 100% opaque `palette.nestedCardFill` (`#EEF2FF` Light / `#26334D` Dark) and crisp `palette.nestedBorder`.
+ * Reusable `LiquidGlassContainer` for recessed inner glass capsules, search bars, chips, and status tiles.
  */
 @Composable
 fun LiquidGlassContainer(
@@ -998,11 +1074,27 @@ fun LiquidGlassContainer(
 ) {
   val palette = currentGlassPalette()
   val resolvedBorder = borderStroke ?: palette.nestedBorder
-  val fill = palette.nestedCardFill
+  val fillBrush = remember(palette.isDark) {
+    if (palette.isDark) {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color(0xFF0F172A).copy(alpha = 0.62f),
+          Color(0xFF1E293B).copy(alpha = 0.48f)
+        )
+      )
+    } else {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.78f),
+          Color(0xFFF1F5F9).copy(alpha = 0.58f)
+        )
+      )
+    }
+  }
 
   val podModifier = modifier
     .clip(shape)
-    .background(color = fill, shape = shape)
+    .background(brush = fillBrush, shape = shape)
     .border(border = resolvedBorder, shape = shape)
     .let { mod ->
       if (onClick != null) {
@@ -1021,7 +1113,9 @@ fun LiquidGlassContainer(
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    WindowCompat.setDecorFitsSystemWindows(window, false)
+    @Suppress("DEPRECATION")
+    window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
     enableEdgeToEdge()
     createClockNotificationChannel(this)
 
@@ -1141,53 +1235,252 @@ enum class CeNavTab(
 }
 
 const val DEFAULT_TASK_CATEGORY = "General"
+val CE_CORE_SUBJECT_TAGS = listOf("MSTE", "HPGE", "PSAD", DEFAULT_TASK_CATEGORY)
 
-/**
- * Shared Task Data Model including `id`, `title`, `dueDate`, `isCompleted`, and `subjectCategory`.
- */
-data class Task(
-  val id: Int = 0,
-  val title: String = "",
-  val dueDate: String = "",
-  @get:PropertyName("isCompleted")
-  val isCompleted: Boolean = false,
-  val subjectCategory: String = DEFAULT_TASK_CATEGORY
+data class SubtaskItem(
+  val id: String = UUID.randomUUID().toString(),
+  val text: String = "",
+  @get:PropertyName("isDone")
+  val isDone: Boolean = false
 ) {
   fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
     "id" to id,
-    "title" to title,
-    "dueDate" to dueDate,
-    "isCompleted" to isCompleted,
-    "completed" to isCompleted,
-    "subjectCategory" to subjectCategory
+    "text" to text,
+    "isDone" to isDone
   )
+}
+
+fun inferIsoDateFromLegacyText(rawDueDate: String?, existingIso: String? = null): String {
+  val trimmedIso = existingIso?.trim().orEmpty()
+  if (trimmedIso.matches(Regex("""\d{4}-\d{2}-\d{2}"""))) {
+    return trimmedIso
+  }
+  val clean = rawDueDate?.trim().orEmpty()
+  if (clean.isEmpty() || clean.equals("Upcoming", ignoreCase = true) || clean.equals("No Date", ignoreCase = true)) {
+    return ""
+  }
+  if (clean.matches(Regex("""\d{4}-\d{2}-\d{2}"""))) {
+    return clean
+  }
+  val now = try {
+    LocalDate.now()
+  } catch (_: Throwable) {
+    return ""
+  }
+  if (clean.equals("Today", ignoreCase = true)) {
+    return now.toString()
+  }
+  if (clean.equals("Tomorrow", ignoreCase = true)) {
+    return now.plusDays(1).toString()
+  }
+  if (clean.equals("Yesterday", ignoreCase = true) || clean.equals("Overdue", ignoreCase = true)) {
+    return now.minusDays(1).toString()
+  }
+  val inDaysMatch = Regex("""(?i)(?:in\s+)?(\d+)\s*days?""").find(clean)
+  if (inDaysMatch != null) {
+    val d = inDaysMatch.groupValues[1].toLongOrNull() ?: return ""
+    return now.plusDays(d).toString()
+  }
+  val datePatterns = listOf(
+    "yyyy-MM-dd",
+    "MM/dd/yyyy",
+    "M/d/yyyy",
+    "MMM d, yyyy",
+    "MMM dd, yyyy",
+    "MMMM d, yyyy",
+    "MMM d",
+    "MMM dd",
+    "MMMM d"
+  )
+  for (pattern in datePatterns) {
+    try {
+      val formatter = DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH)
+      val target = if (pattern.contains("y")) {
+        LocalDate.parse(clean, formatter)
+      } else {
+        MonthDay.parse(clean, formatter).atYear(now.year)
+      }
+      return target.toString()
+    } catch (_: Throwable) {
+    }
+  }
+  return ""
+}
+
+fun formatIsoDateSmartDisplay(dueDateIso: String?, fallbackDueDate: String = ""): String {
+  val iso = inferIsoDateFromLegacyText(fallbackDueDate, dueDateIso)
+  if (iso.isNotBlank()) {
+    try {
+      val parsed = LocalDate.parse(iso)
+      val today = LocalDate.now()
+      return when (parsed) {
+        today -> "Today"
+        else -> parsed.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH))
+      }
+    } catch (_: Throwable) {
+    }
+  }
+  val cleanFallback = fallbackDueDate.trim()
+  return if (cleanFallback.isNotEmpty() && !cleanFallback.equals("Upcoming", ignoreCase = true)) {
+    cleanFallback
+  } else {
+    ""
+  }
+}
+
+fun taskPriorityColor(priority: Int, isDark: Boolean = true): Color = when (priority.coerceIn(0, 3)) {
+  3 -> Color(0xFFEF4444) // High = Coral Red
+  2 -> Color(0xFFF59E0B) // Medium = Amber
+  1 -> Color(0xFF3B82F6) // Low = Blue
+  else -> if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8) // None = Slate Grey
+}
+
+fun taskPriorityColor(priority: Int, defaultColor: Color): Color = when (priority.coerceIn(0, 3)) {
+  3 -> Color(0xFFEF4444) // High = Coral Red
+  2 -> Color(0xFFF59E0B) // Medium = Amber
+  1 -> Color(0xFF3B82F6) // Low = Blue
+  else -> defaultColor
+}
+
+fun taskPriorityLabel(priority: Int): String = when (priority.coerceIn(0, 3)) {
+  3 -> "High"
+  2 -> "Medium"
+  1 -> "Low"
+  else -> "None"
+}
+
+/**
+ * Upgraded TickTick-Style Task Data Model (Backward-Compatible Firestore Schema).
+ */
+data class Task(
+  val id: Int = 0,
+  val taskUid: String = UUID.randomUUID().toString(),
+  val title: String = "",
+  val description: String = "",
+  val dueDate: String = "",
+  val dueDateIso: String = "",
+  val priority: Int = 0,
+  @get:PropertyName("isCompleted")
+  val isCompleted: Boolean = false,
+  val subjectCategory: String = DEFAULT_TASK_CATEGORY,
+  val categoryTag: String = subjectCategory,
+  val subtasks: List<SubtaskItem> = emptyList(),
+  val completedAtMillis: Long? = null,
+  val createdAtMillis: Long = System.currentTimeMillis()
+) {
+  val effectiveCategoryTag: String
+    get() = categoryTag.trim().ifEmpty {
+      subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+    }
+
+  fun resolveLocalDateOrNull(): LocalDate? {
+    val iso = inferIsoDateFromLegacyText(dueDate, dueDateIso)
+    if (iso.isBlank()) return null
+    return try {
+      LocalDate.parse(iso)
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  fun toFirestoreMap(): HashMap<String, Any?> {
+    val cleanTag = effectiveCategoryTag
+    val resolvedIso = inferIsoDateFromLegacyText(dueDate, dueDateIso)
+    val resolvedDueDisplay = when {
+      dueDate.isNotBlank() -> dueDate
+      resolvedIso.isNotBlank() -> formatIsoDateSmartDisplay(resolvedIso, "")
+      else -> "Upcoming"
+    }
+    return hashMapOf(
+      "id" to id,
+      "taskUid" to taskUid,
+      "title" to title,
+      "description" to description,
+      "dueDate" to resolvedDueDisplay,
+      "dueDateIso" to resolvedIso,
+      "priority" to priority.coerceIn(0, 3),
+      "categoryTag" to cleanTag,
+      "subjectCategory" to cleanTag,
+      "subtasks" to subtasks.map { it.toFirestoreMap() },
+      "isCompleted" to isCompleted,
+      "completed" to isCompleted,
+      "completedAtMillis" to completedAtMillis,
+      "createdAtMillis" to createdAtMillis
+    )
+  }
 }
 
 typealias TaskItem = Task
 
 fun DocumentSnapshot.toTaskItemOrNull(): TaskItem? {
-  val parsed = try {
-    toObject(TaskItem::class.java)
+  return try {
+    val rawData = data ?: return null
+    val rawTitle = (getString("title") ?: (rawData["title"] as? String).orEmpty()).trim()
+    if (rawTitle.isEmpty() || LocalStorageManager.isLegacyPlaceholderTaskTitle(rawTitle)) {
+      return null
+    }
+    val rawIdNum = (rawData["id"] as? Number)?.toInt()
+    val rawIdStr = (rawData["id"] as? String)?.trim()
+    val resolvedId = rawIdNum
+      ?: rawIdStr?.toIntOrNull()
+      ?: id.toIntOrNull()
+      ?: kotlin.math.abs(id.hashCode()).let { if (it == 0) 1 else it }
+    val resolvedTaskUid = (rawData["taskUid"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+      ?: rawIdStr?.takeIf { it.isNotEmpty() }
+      ?: id
+
+    val resolvedDescription = (rawData["description"] as? String).orEmpty()
+    val rawDueDate = (rawData["dueDate"] as? String)?.trim().orEmpty()
+    val rawDueDateIso = (rawData["dueDateIso"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+    val resolvedDueDateIso = inferIsoDateFromLegacyText(rawDueDate, rawDueDateIso)
+    val resolvedDueDateDisplay = when {
+      rawDueDate.isNotEmpty() -> rawDueDate
+      resolvedDueDateIso.isNotBlank() -> formatIsoDateSmartDisplay(resolvedDueDateIso, "")
+      else -> "Upcoming"
+    }
+    val resolvedPriority = ((rawData["priority"] as? Number)?.toInt() ?: 0).coerceIn(0, 3)
+    val resolvedCategory = (
+      (rawData["categoryTag"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: (rawData["subjectCategory"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: DEFAULT_TASK_CATEGORY
+      )
+
+    val rawSubtasksList = rawData["subtasks"] as? List<*>
+    val resolvedSubtasks = rawSubtasksList?.mapNotNull { entry ->
+      val map = entry as? Map<*, *> ?: return@mapNotNull null
+      val subText = (map["text"] as? String)?.trim().orEmpty()
+      if (subText.isEmpty()) return@mapNotNull null
+      val subId = (map["id"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: UUID.randomUUID().toString()
+      val subDone = (map["isDone"] as? Boolean) ?: (map["done"] as? Boolean) ?: false
+      SubtaskItem(id = subId, text = subText, isDone = subDone)
+    }.orEmpty()
+
+    val resolvedCompleted = (rawData["isCompleted"] as? Boolean)
+      ?: (rawData["completed"] as? Boolean)
+      ?: false
+    val resolvedCompletedAt = (rawData["completedAtMillis"] as? Number)?.toLong()
+    val resolvedCreatedAt = (rawData["createdAtMillis"] as? Number)?.toLong()
+      ?: System.currentTimeMillis()
+
+    Task(
+      id = resolvedId,
+      taskUid = resolvedTaskUid,
+      title = rawTitle,
+      description = resolvedDescription,
+      dueDate = resolvedDueDateDisplay,
+      dueDateIso = resolvedDueDateIso,
+      priority = resolvedPriority,
+      isCompleted = resolvedCompleted,
+      subjectCategory = resolvedCategory,
+      categoryTag = resolvedCategory,
+      subtasks = resolvedSubtasks,
+      completedAtMillis = resolvedCompletedAt,
+      createdAtMillis = resolvedCreatedAt
+    )
   } catch (_: Throwable) {
     null
-  } ?: return null
-  val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: parsed.id
-  val resolvedCompleted = getBoolean("isCompleted") ?: getBoolean("completed") ?: parsed.isCompleted
-  val resolvedTitle = (getString("title") ?: parsed.title).trim()
-  if (resolvedTitle.isEmpty() || LocalStorageManager.isLegacyPlaceholderTaskTitle(resolvedTitle)) {
-    return null
   }
-  val resolvedDueDate = (getString("dueDate") ?: parsed.dueDate).trim().ifEmpty { "Upcoming" }
-  val resolvedCategory = (getString("subjectCategory") ?: parsed.subjectCategory).trim().ifEmpty {
-    DEFAULT_TASK_CATEGORY
-  }
-  return parsed.copy(
-    id = resolvedId,
-    title = resolvedTitle,
-    dueDate = resolvedDueDate,
-    isCompleted = resolvedCompleted,
-    subjectCategory = resolvedCategory
-  )
 }
 
 /**
@@ -3321,12 +3614,35 @@ class LocalStorageManager(context: Context) {
   fun saveTasks(tasks: List<Task>, username: String = GUEST_ACCOUNT_KEY) {
     val jsonArray = JSONArray()
     for (task in tasks) {
+      val resolvedCategory = task.categoryTag.trim().ifEmpty {
+        task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+      }
+      val subtasksJson = JSONArray()
+      task.subtasks.forEach { st ->
+        subtasksJson.put(
+          JSONObject().apply {
+            put("id", st.id)
+            put("text", st.text)
+            put("isDone", st.isDone)
+          }
+        )
+      }
       val obj = JSONObject().apply {
         put("id", task.id)
+        put("taskUid", task.taskUid.ifBlank { task.id.toString() })
         put("title", task.title)
-        put("dueDate", task.dueDate)
+        put("description", task.description)
+        put("dueDateIso", task.dueDateIso)
+        put("dueDate", task.dueDate.ifBlank { formatIsoDateSmartDisplay(task.dueDateIso) })
+        put("priority", task.priority.coerceIn(0, 3))
+        put("categoryTag", resolvedCategory)
+        put("subjectCategory", resolvedCategory)
+        put("subtasks", subtasksJson)
         put("isCompleted", task.isCompleted)
-        put("subjectCategory", task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY })
+        if (task.completedAtMillis != null) {
+          put("completedAtMillis", task.completedAtMillis)
+        }
+        put("createdAtMillis", task.createdAtMillis)
       }
       jsonArray.put(obj)
     }
@@ -3346,16 +3662,46 @@ class LocalStorageManager(context: Context) {
           val obj = jsonArray.optJSONObject(i) ?: continue
           val title = obj.optString("title", "").trim()
           if (title.isEmpty() || isLegacyPlaceholderTaskTitle(title)) continue
-          val category = obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY)
-            .trim()
-            .ifEmpty { DEFAULT_TASK_CATEGORY }
+          val category = obj.optString("categoryTag", "").trim().ifEmpty {
+            obj.optString("subjectCategory", DEFAULT_TASK_CATEGORY).trim().ifEmpty { DEFAULT_TASK_CATEGORY }
+          }
+          val legacyDueDate = obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" }
+          val dueDateIso = obj.optString("dueDateIso", "").trim().ifEmpty {
+            inferIsoDateFromLegacyText(legacyDueDate)
+          }
+          val subtasksList = mutableListOf<SubtaskItem>()
+          val subtasksArr = obj.optJSONArray("subtasks")
+          if (subtasksArr != null) {
+            for (j in 0 until subtasksArr.length()) {
+              val stObj = subtasksArr.optJSONObject(j) ?: continue
+              val stText = stObj.optString("text", "").trim()
+              if (stText.isNotEmpty()) {
+                subtasksList.add(
+                  SubtaskItem(
+                    id = stObj.optString("id", UUID.randomUUID().toString()),
+                    text = stText,
+                    isDone = stObj.optBoolean("isDone", false)
+                  )
+                )
+              }
+            }
+          }
+          val idVal = obj.optInt("id", i + 1)
           loaded.add(
             Task(
-              id = obj.optInt("id", i + 1),
+              id = idVal,
+              taskUid = obj.optString("taskUid", idVal.toString()).ifBlank { idVal.toString() },
               title = title,
-              dueDate = obj.optString("dueDate", "Upcoming").ifBlank { "Upcoming" },
+              description = obj.optString("description", ""),
+              dueDateIso = dueDateIso,
+              dueDate = if (dueDateIso.isNotBlank()) formatIsoDateSmartDisplay(dueDateIso, legacyDueDate) else legacyDueDate,
+              priority = obj.optInt("priority", 0).coerceIn(0, 3),
+              categoryTag = category,
+              subjectCategory = category,
+              subtasks = subtasksList,
               isCompleted = obj.optBoolean("isCompleted", false),
-              subjectCategory = category
+              completedAtMillis = if (obj.has("completedAtMillis") && !obj.isNull("completedAtMillis")) obj.optLong("completedAtMillis") else null,
+              createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis())
             )
           )
         } catch (_: Exception) {
@@ -3702,11 +4048,18 @@ class LocalStorageManager(context: Context) {
   }
 
   fun saveDarkMode(enabled: Boolean) {
-    prefs.edit().putBoolean(KEY_DARK_MODE, enabled).apply()
+    prefs.edit()
+      .putBoolean("dark_mode", enabled)
+      .putBoolean(KEY_DARK_MODE, enabled)
+      .apply()
   }
 
   fun loadDarkMode(defaultValue: Boolean = false): Boolean {
-    return prefs.getBoolean(KEY_DARK_MODE, defaultValue)
+    return if (prefs.contains("dark_mode")) {
+      prefs.getBoolean("dark_mode", false)
+    } else {
+      prefs.getBoolean(KEY_DARK_MODE, defaultValue)
+    }
   }
 
   fun saveGeminiApiKey(apiKey: String) {
@@ -4467,7 +4820,7 @@ class TaskViewModel(
   private fun loadFromStorage(manager: LocalStorageManager) {
     hasLoadedFromStorage = true
 
-    isDarkMode = manager.loadDarkMode(defaultValue = isDarkMode)
+    isDarkMode = manager.loadDarkMode(defaultValue = false)
     savedGeminiApiKey = manager.loadSavedGeminiApiKey()
     lastSyncedTimestamp = manager.loadLastSyncedTimestamp()
 
@@ -5389,39 +5742,94 @@ class TaskViewModel(
     }
   }
 
+  var selectedTaskIdForDetail by mutableStateOf<Int?>(null)
+  var preselectedQuickAddDateIso by mutableStateOf("")
+
+  fun openTaskDetail(taskId: Int?) {
+    selectedTaskIdForDetail = taskId
+  }
+
+  private fun persistTaskToFirestore(task: Task) {
+    try {
+      val auth = FirebaseAuth.getInstance()
+      FirebaseFirestore.getInstance()
+        .collection("users")
+        .document(auth.currentUser?.uid ?: "offline_fallback")
+        .collection("tasks")
+        .document(task.id.toString())
+        .set(task.toFirestoreMap())
+        .addOnSuccessListener { markSyncedNow() }
+        .addOnFailureListener { e ->
+          Log.e("SibilSync", "Failed to persist task ${task.id}: ${e.message}", e)
+        }
+    } catch (e: Throwable) {
+      Log.e("SibilSync", "Error persisting task ${task.id}: ${e.message}", e)
+    }
+  }
+
   fun addTask(
     title: String,
-    dueDate: String,
-    subjectCategory: String = DEFAULT_TASK_CATEGORY
-  ) {
+    dueDate: String = "Upcoming",
+    subjectCategory: String = DEFAULT_TASK_CATEGORY,
+    description: String = "",
+    dueDateIso: String = "",
+    priority: Int = 0,
+    subtasks: List<SubtaskItem> = emptyList()
+  ): Task? {
     val trimmedTitle = title.trim()
-    val trimmedDueDate = dueDate.trim().ifEmpty { "Upcoming" }
+    val resolvedIso = dueDateIso.trim().ifEmpty { inferIsoDateFromLegacyText(dueDate) }
+    val trimmedDueDate = if (resolvedIso.isNotBlank()) {
+      formatIsoDateSmartDisplay(resolvedIso, dueDate.trim().ifEmpty { "Upcoming" })
+    } else {
+      dueDate.trim().ifEmpty { "Upcoming" }
+    }
     val trimmedCategory = subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
     if (trimmedTitle.isNotEmpty()) {
+      val allocatedId = nextId++
       val newTask = Task(
-        id = nextId++,
+        id = allocatedId,
+        taskUid = allocatedId.toString(),
         title = trimmedTitle,
+        description = description,
+        dueDateIso = resolvedIso,
         dueDate = trimmedDueDate,
+        priority = priority.coerceIn(0, 3),
+        categoryTag = trimmedCategory,
+        subjectCategory = trimmedCategory,
+        subtasks = subtasks,
         isCompleted = false,
-        subjectCategory = trimmedCategory
+        completedAtMillis = null,
+        createdAtMillis = System.currentTimeMillis()
       )
       _tasks.add(0, newTask)
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("tasks")
-          .document(newTask.id.toString())
-          .set(newTask.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to write task: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in addTask: ${e.message}", e)
+      persistTaskToFirestore(newTask)
+      return newTask
+    }
+    return null
+  }
+
+  fun updateTask(updatedTask: Task) {
+    val index = _tasks.indexOfFirst { it.id == updatedTask.id }
+    if (index != -1) {
+      val resolvedCategory = updatedTask.categoryTag.trim().ifEmpty {
+        updatedTask.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
       }
+      val resolvedDueLabel = if (updatedTask.dueDateIso.isNotBlank()) {
+        formatIsoDateSmartDisplay(updatedTask.dueDateIso, updatedTask.dueDate)
+      } else {
+        updatedTask.dueDate.ifBlank { "Upcoming" }
+      }
+      val normalized = updatedTask.copy(
+        title = updatedTask.title.ifBlank { "Untitled Task" },
+        dueDate = resolvedDueLabel,
+        priority = updatedTask.priority.coerceIn(0, 3),
+        categoryTag = resolvedCategory,
+        subjectCategory = resolvedCategory
+      )
+      _tasks[index] = normalized
+      storageManager?.saveTasks(_tasks, currentAccountKey)
+      persistTaskToFirestore(normalized)
     }
   }
 
@@ -5429,28 +5837,21 @@ class TaskViewModel(
     val index = _tasks.indexOfFirst { it.id == taskId }
     if (index != -1) {
       val current = _tasks[index]
-      val updatedTask = current.copy(isCompleted = !current.isCompleted)
+      val nowCompleted = !current.isCompleted
+      val updatedTask = current.copy(
+        isCompleted = nowCompleted,
+        completedAtMillis = if (nowCompleted) System.currentTimeMillis() else null
+      )
       _tasks[index] = updatedTask
       storageManager?.saveTasks(_tasks, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("tasks")
-          .document(updatedTask.id.toString())
-          .set(updatedTask.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to toggle task: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in toggleTaskCompletion: ${e.message}", e)
-      }
+      persistTaskToFirestore(updatedTask)
     }
   }
 
   fun deleteTask(taskId: Int) {
+    if (selectedTaskIdForDetail == taskId) {
+      selectedTaskIdForDetail = null
+    }
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
@@ -5480,7 +5881,7 @@ class TaskViewModel(
     val resetTasks = _tasks.map { task ->
       if (task.isCompleted) {
         hasChanges = true
-        task.copy(isCompleted = false)
+        task.copy(isCompleted = false, completedAtMillis = null)
       } else {
         task
       }
@@ -5515,6 +5916,9 @@ class TaskViewModel(
   fun clearCompletedTasks() {
     val completedIds = _tasks.filter { it.isCompleted }.map { it.id }
     if (completedIds.isEmpty()) return
+    if (selectedTaskIdForDetail != null && completedIds.contains(selectedTaskIdForDetail)) {
+      selectedTaskIdForDetail = null
+    }
     _tasks.removeAll { it.isCompleted }
     storageManager?.saveTasks(_tasks, currentAccountKey)
     try {
@@ -5994,6 +6398,7 @@ fun CivilEngineeringProductivityApp(
       ) { loggedIn ->
         if (!loggedIn) {
           StartupLoginScreen(
+            isDarkMode = resolvedViewModel.isDarkMode,
             onAttemptLogin = { typedEmail, typedPassword ->
               val result = resolvedViewModel.attemptLogin(typedEmail, typedPassword)
               if (result == LoginValidationResult.SUCCESS) {
@@ -6073,8 +6478,235 @@ fun CivilEngineeringProductivityApp(
  * - Submit Button (`"Sign In"` or `"Create Account"`) disabled while `isLoading` is true with a circular progress spinner.
  * - `"Continue as Offline Scholar →"` guest bypass at the bottom.
  */
+/**
+ * Custom `SibilCeAppIconBadge` emblem drawn via Compose `Canvas` to match the installed launcher icon:
+ * - Glossy slate-blue rounded square emblem (`Color(0xFF1E3A5F)` to `Color(0xFF0F172A)`) with a top glass highlight.
+ * - Rolled blue CAD blueprint scroll with engineering grid lines.
+ * - Yellow Civil Engineering safety hard hat with crown ridge and visor brim.
+ * - Yellow measuring tape with tick marks and an orange/gold drafting pencil.
+ */
+@Composable
+fun SibilCeAppIconBadge(
+  modifier: Modifier = Modifier,
+  size: Dp = 64.dp
+) {
+  val badgeShape = RoundedCornerShape((size.value * 0.28f).dp)
+  Box(
+    modifier = modifier
+      .size(size)
+      .shadow(
+        elevation = if (size >= 56.dp) 12.dp else 6.dp,
+        shape = badgeShape,
+        ambientColor = Color(0xFF0284C7).copy(alpha = 0.35f),
+        spotColor = Color(0xFF1E3A8A).copy(alpha = 0.40f)
+      )
+      .clip(badgeShape)
+      .border(
+        width = 1.4.dp,
+        brush = Brush.linearGradient(
+          colors = listOf(
+            Color.White.copy(alpha = 0.78f),
+            Color(0xFF38BDF8).copy(alpha = 0.45f),
+            Color(0xFF0F172A).copy(alpha = 0.60f)
+          )
+        ),
+        shape = badgeShape
+      )
+      .testTag("sibil_ce_app_icon_badge")
+  ) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+      val w = this.size.width
+      val h = this.size.height
+
+      // 1. Glossy Slate-Blue Base
+      drawRect(
+        brush = Brush.linearGradient(
+          colors = listOf(
+            Color(0xFF254B7C),
+            Color(0xFF162C4E),
+            Color(0xFF0B172A)
+          ),
+          start = Offset(0f, 0f),
+          end = Offset(w, h)
+        )
+      )
+
+      // Subtle inner cyan radial sheen
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(
+            Color(0xFF38BDF8).copy(alpha = 0.28f),
+            Color.Transparent
+          ),
+          center = Offset(w * 0.28f, h * 0.24f),
+          radius = w * 0.72f
+        ),
+        center = Offset(w * 0.28f, h * 0.24f),
+        radius = w * 0.72f
+      )
+
+      // 2. Rolled Blue Blueprint Scroll (lower-left to upper-right diagonal sheet + curl)
+      val bpLeft = w * 0.14f
+      val bpTop = h * 0.42f
+      val bpRight = w * 0.76f
+      val bpBottom = h * 0.84f
+      drawRoundRect(
+        brush = Brush.linearGradient(
+          colors = listOf(Color(0xFF0284C7), Color(0xFF0369A1)),
+          start = Offset(bpLeft, bpTop),
+          end = Offset(bpRight, bpBottom)
+        ),
+        topLeft = Offset(bpLeft, bpTop),
+        size = Size(bpRight - bpLeft, bpBottom - bpTop),
+        cornerRadius = CornerRadius(w * 0.08f, w * 0.08f)
+      )
+      drawRoundRect(
+        color = Color(0xFFBAE6FD).copy(alpha = 0.75f),
+        topLeft = Offset(bpLeft, bpTop),
+        size = Size(bpRight - bpLeft, bpBottom - bpTop),
+        cornerRadius = CornerRadius(w * 0.08f, w * 0.08f),
+        style = Stroke(width = w * 0.022f)
+      )
+      // Blueprint CAD grid lines
+      val gridColor = Color.White.copy(alpha = 0.42f)
+      for (i in 1..3) {
+        val gx = bpLeft + (bpRight - bpLeft) * (i / 4f)
+        drawLine(
+          color = gridColor,
+          start = Offset(gx, bpTop + h * 0.04f),
+          end = Offset(gx, bpBottom - h * 0.04f),
+          strokeWidth = w * 0.015f
+        )
+      }
+      for (i in 1..2) {
+        val gy = bpTop + (bpBottom - bpTop) * (i / 3f)
+        drawLine(
+          color = gridColor,
+          start = Offset(bpLeft + w * 0.04f, gy),
+          end = Offset(bpRight - w * 0.04f, gy),
+          strokeWidth = w * 0.015f
+        )
+      }
+      // Rolled cylinder end on left of blueprint
+      drawCircle(
+        color = Color(0xFF7DD3FC),
+        radius = w * 0.065f,
+        center = Offset(bpLeft + w * 0.02f, (bpTop + bpBottom) * 0.5f)
+      )
+      drawCircle(
+        color = Color(0xFF0C4A6E),
+        radius = w * 0.028f,
+        center = Offset(bpLeft + w * 0.02f, (bpTop + bpBottom) * 0.5f)
+      )
+
+      // 3. Drafting Pencil (angled across the right side)
+      val pStart = Offset(w * 0.56f, h * 0.78f)
+      val pEnd = Offset(w * 0.86f, h * 0.26f)
+      drawLine(
+        color = Color(0xFFF97316),
+        start = pStart,
+        end = pEnd,
+        strokeWidth = w * 0.095f,
+        cap = StrokeCap.Round
+      )
+      drawLine(
+        color = Color(0xFFFDE047),
+        start = pStart,
+        end = pEnd,
+        strokeWidth = w * 0.035f,
+        cap = StrokeCap.Round
+      )
+      // Pencil tip cone
+      drawCircle(
+        color = Color(0xFFFDE68A),
+        radius = w * 0.045f,
+        center = pEnd
+      )
+      drawCircle(
+        color = Color(0xFF1E293B),
+        radius = w * 0.020f,
+        center = Offset(pEnd.x + w * 0.015f, pEnd.y - h * 0.02f)
+      )
+
+      // 4. Tape Measure (bottom-right badge)
+      val tapeCenter = Offset(w * 0.74f, h * 0.73f)
+      drawCircle(
+        brush = Brush.radialGradient(
+          colors = listOf(Color(0xFFFACC15), Color(0xFFCA8A04)),
+          center = tapeCenter,
+          radius = w * 0.15f
+        ),
+        radius = w * 0.145f,
+        center = tapeCenter
+      )
+      drawCircle(
+        color = Color(0xFF1E293B),
+        radius = w * 0.065f,
+        center = tapeCenter
+      )
+      drawCircle(
+        color = Color.White.copy(alpha = 0.85f),
+        radius = w * 0.145f,
+        center = tapeCenter,
+        style = Stroke(width = w * 0.02f)
+      )
+
+      // 5. Yellow CE Hard Hat (upper-center dome + ridge + visor brim)
+      val domeLeft = w * 0.18f
+      val domeRight = w * 0.72f
+      val domeTop = h * 0.15f
+      val domeBottom = h * 0.54f
+      drawArc(
+        brush = Brush.verticalGradient(
+          colors = listOf(Color(0xFFFEF08A), Color(0xFFFACC15), Color(0xFFEAB308)),
+          startY = domeTop,
+          endY = domeBottom
+        ),
+        startAngle = 180f,
+        sweepAngle = 180f,
+        useCenter = true,
+        topLeft = Offset(domeLeft, domeTop),
+        size = Size(domeRight - domeLeft, (domeBottom - domeTop) * 1.45f)
+      )
+      // Hard hat central crown ridge
+      val ridgeCenter = (domeLeft + domeRight) * 0.5f
+      drawRoundRect(
+        color = Color(0xFFFEF9C3),
+        topLeft = Offset(ridgeCenter - w * 0.045f, domeTop - h * 0.02f),
+        size = Size(w * 0.09f, h * 0.22f),
+        cornerRadius = CornerRadius(w * 0.04f, w * 0.04f)
+      )
+      // Hard hat brim / visor
+      drawRoundRect(
+        brush = Brush.horizontalGradient(
+          colors = listOf(Color(0xFFEAB308), Color(0xFFFACC15), Color(0xFFCA8A04))
+        ),
+        topLeft = Offset(domeLeft - w * 0.05f, h * 0.39f),
+        size = Size((domeRight - domeLeft) + w * 0.12f, h * 0.075f),
+        cornerRadius = CornerRadius(w * 0.04f, w * 0.04f)
+      )
+
+      // 6. Top Specular Glass Sheen across badge
+      drawRoundRect(
+        brush = Brush.verticalGradient(
+          colors = listOf(
+            Color.White.copy(alpha = 0.28f),
+            Color.White.copy(alpha = 0.0f)
+          ),
+          startY = 0f,
+          endY = h * 0.45f
+        ),
+        topLeft = Offset(w * 0.04f, h * 0.03f),
+        size = Size(w * 0.92f, h * 0.40f),
+        cornerRadius = CornerRadius(w * 0.22f, w * 0.22f)
+      )
+    }
+  }
+}
+
 @Composable
 fun StartupLoginScreen(
+  isDarkMode: Boolean = currentGlassPalette().isDark,
   onAttemptLogin: (String, String) -> LoginValidationResult = { _, _ -> LoginValidationResult.NO_ACCOUNT_FOUND },
   onFirebaseLoginSuccess: (email: String, displayName: String, password: String) -> Unit = { _, _, _ -> },
   onCheckUsernameRegistered: (String) -> Boolean = { false },
@@ -6085,10 +6717,9 @@ fun StartupLoginScreen(
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
-  val palette = currentGlassPalette()
   val metrics = rememberResponsiveMetrics()
 
-  // Mode toggle: false = "Log In", true = "Sign Up"
+  // Mode toggle: false = "Sign In", true = "Sign Up"
   var isSignUpMode by rememberSaveable { mutableStateOf(false) }
   var fullName by rememberSaveable { mutableStateOf("") }
   var email by rememberSaveable { mutableStateOf("") }
@@ -6218,70 +6849,132 @@ fun StartupLoginScreen(
     }
   }
 
-  val backdropColors = if (palette.isDark) {
-    listOf(
-      Color(0xFF0B1120),
-      Color(0xFF0F172A),
-      Color(0xFF1E1B4B)
+  // Adaptive High-Visibility Frosted Glass Tokens for Light Mode (!isDarkMode) & Dark Mode (isDarkMode)
+  val backgroundBrush = if (isDarkMode) {
+    Brush.verticalGradient(
+      colors = listOf(Color(0xFF070B14), Color(0xFF070B14))
     )
   } else {
-    palette.canvasColors
+    Brush.verticalGradient(
+      colors = listOf(Color(0xFFE2E8F0), Color(0xFFF1F5F9))
+    )
   }
+
+  val glassCardShape = RoundedCornerShape(26.dp)
+  val glassCardBackgroundBrush = if (isDarkMode) {
+    Brush.verticalGradient(
+      colors = listOf(
+        Color.White.copy(alpha = 0.08f),
+        Color.White.copy(alpha = 0.05f)
+      )
+    )
+  } else {
+    Brush.verticalGradient(
+      colors = listOf(
+        Color.White.copy(alpha = 0.72f),
+        Color.White.copy(alpha = 0.48f)
+      )
+    )
+  }
+
+  val glassCardBorderStroke = if (isDarkMode) {
+    BorderStroke(
+      width = 1.dp,
+      brush = Brush.linearGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.20f),
+          Color.White.copy(alpha = 0.06f)
+        )
+      )
+    )
+  } else {
+    BorderStroke(
+      width = 1.5.dp,
+      brush = Brush.linearGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.95f),
+          Color(0xFF94A3B8).copy(alpha = 0.35f)
+        )
+      )
+    )
+  }
+
+  val titleTextColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
+  val subtitleTextColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
 
   Box(
     modifier = modifier
       .fillMaxSize()
-      .background(Brush.verticalGradient(backdropColors))
+      .background(brush = backgroundBrush)
       .testTag("startup_login_screen"),
     contentAlignment = Alignment.Center
   ) {
-    // Ambient radial mesh background with subtle indigo, violet, and dark slate tones
-    // to provide refraction depth behind the frosted glass container.
+    // Atmospheric background orbs drawn behind the frosted glass card so the translucent card has rich color to refract:
+    // - Light Mode (!isDarkMode): Sky-cyan orb (Color(0xFF38BDF8).copy(alpha = 0.35f)) in upper-right +
+    //   soft royal-indigo orb (Color(0xFF6366F1).copy(alpha = 0.25f)) in lower-left.
+    // - Dark Mode (isDarkMode): Deep cyan-teal bloom (Color(0xFF0EA5E9).copy(alpha = 0.22f)) in upper-right +
+    //   royal-violet bloom (Color(0xFF6366F1).copy(alpha = 0.18f)) in lower-left.
     Canvas(modifier = Modifier.fillMaxSize()) {
       val w = size.width
       val h = size.height
 
-      drawCircle(
-        brush = Brush.radialGradient(
-          colors = listOf(
-            Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.36f else 0.25f),
-            Color(0xFF6366F1).copy(alpha = 0.08f),
-            Color.Transparent
+      if (isDarkMode) {
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF0EA5E9).copy(alpha = 0.22f),
+              Color(0xFF0284C7).copy(alpha = 0.08f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.74f, h * 0.18f),
+            radius = w * 0.85f
           ),
-          center = Offset(w * 0.16f, h * 0.18f),
-          radius = w * 0.75f
-        ),
-        radius = w * 0.75f,
-        center = Offset(w * 0.16f, h * 0.18f)
-      )
+          radius = w * 0.85f,
+          center = Offset(w * 0.74f, h * 0.18f)
+        )
 
-      drawCircle(
-        brush = Brush.radialGradient(
-          colors = listOf(
-            Color(0xFF8B5CF6).copy(alpha = if (palette.isDark) 0.32f else 0.22f),
-            Color(0xFF7C3AED).copy(alpha = 0.08f),
-            Color.Transparent
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF6366F1).copy(alpha = 0.18f),
+              Color(0xFF4F46E5).copy(alpha = 0.06f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.18f, h * 0.82f),
+            radius = w * 0.82f
           ),
-          center = Offset(w * 0.88f, h * 0.44f),
-          radius = w * 0.70f
-        ),
-        radius = w * 0.70f,
-        center = Offset(w * 0.88f, h * 0.44f)
-      )
+          radius = w * 0.82f,
+          center = Offset(w * 0.18f, h * 0.82f)
+        )
+      } else {
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF38BDF8).copy(alpha = 0.35f),
+              Color(0xFF0284C7).copy(alpha = 0.12f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.78f, h * 0.20f),
+            radius = w * 0.80f
+          ),
+          radius = w * 0.80f,
+          center = Offset(w * 0.78f, h * 0.20f)
+        )
 
-      drawCircle(
-        brush = Brush.radialGradient(
-          colors = listOf(
-            Color(0xFF334155).copy(alpha = if (palette.isDark) 0.42f else 0.16f),
-            Color(0xFF06B6D4).copy(alpha = if (palette.isDark) 0.18f else 0.14f),
-            Color.Transparent
+        drawCircle(
+          brush = Brush.radialGradient(
+            colors = listOf(
+              Color(0xFF6366F1).copy(alpha = 0.25f),
+              Color(0xFF4F46E5).copy(alpha = 0.08f),
+              Color.Transparent
+            ),
+            center = Offset(w * 0.18f, h * 0.80f),
+            radius = w * 0.78f
           ),
-          center = Offset(w * 0.26f, h * 0.84f),
-          radius = w * 0.76f
-        ),
-        radius = w * 0.76f,
-        center = Offset(w * 0.26f, h * 0.84f)
-      )
+          radius = w * 0.78f,
+          center = Offset(w * 0.18f, h * 0.80f)
+        )
+      }
     }
 
     Column(
@@ -6289,167 +6982,119 @@ fun StartupLoginScreen(
         .fillMaxWidth()
         .widthIn(max = 440.dp)
         .windowInsetsPadding(WindowInsets.safeDrawing)
+        .imePadding()
         .verticalScroll(rememberScrollState())
-        .padding(20.dp),
-      horizontalAlignment = Alignment.CenterHorizontally
+        .padding(horizontal = 20.dp, vertical = 18.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-      // Main Glass Authentication Card:
-      // Centered frosted glass card (28.dp corner radius) with specular gradient border and subtle depth shadow.
-      val cardShape = RoundedCornerShape(28.dp)
+      // 1. Clean Emblem Header: Custom SibilCeAppIconBadge() paired with "Sibil CE" and "Civil Engineering Board Companion"
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        SibilCeAppIconBadge()
+
+        Column(
+          modifier = Modifier.weight(1f),
+          verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+          Text(
+            text = "Sibil CE",
+            style = MaterialTheme.typography.headlineMedium.copy(
+              fontSize = 27.sp,
+              lineHeight = 32.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = (-0.4).sp
+            ),
+            color = titleTextColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("login_app_title")
+          )
+
+          Text(
+            text = "Civil Engineering Board Companion",
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = 13.5.sp,
+              fontWeight = FontWeight.SemiBold,
+              letterSpacing = 0.1.sp
+            ),
+            color = subtitleTextColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("login_app_slogan")
+          )
+        }
+      }
+
+      // 2. Main Translucent Frosted Glass Card
       Box(
         modifier = Modifier
           .fillMaxWidth()
           .shadow(
-            elevation = 24.dp,
-            shape = cardShape,
-            ambientColor = Color(0xFF6366F1).copy(alpha = if (palette.isDark) 0.42f else 0.22f),
-            spotColor = Color(0xFF8B5CF6).copy(alpha = if (palette.isDark) 0.42f else 0.24f)
+            elevation = if (isDarkMode) 24.dp else 18.dp,
+            shape = glassCardShape,
+            ambientColor = if (isDarkMode) {
+              Color(0xFF0EA5E9).copy(alpha = 0.18f)
+            } else {
+              Color(0xFF0284C7).copy(alpha = 0.22f)
+            },
+            spotColor = if (isDarkMode) {
+              Color(0xFF2563EB).copy(alpha = 0.24f)
+            } else {
+              Color(0xFF334155).copy(alpha = 0.20f)
+            }
           )
-          .clip(cardShape)
-          .background(palette.cardSurface.copy(alpha = if (palette.isDark) 0.88f else 0.86f))
-          .border(
-            width = 1.dp,
-            brush = Brush.linearGradient(
-              colors = listOf(
-                Color.White.copy(alpha = 0.45f),
-                Color.White.copy(alpha = 0.08f)
-              )
-            ),
-            shape = cardShape
-          )
+          .clip(glassCardShape)
+          .background(brush = glassCardBackgroundBrush)
+          .border(border = glassCardBorderStroke, shape = glassCardShape)
       ) {
         Column(
           modifier = Modifier
             .fillMaxWidth()
             .padding(
-              horizontal = metrics.scaledDp(22),
-              vertical = metrics.scaledDp(24)
+              horizontal = metrics.scaledDp(20),
+              vertical = metrics.scaledDp(22)
             ),
           horizontalAlignment = Alignment.CenterHorizontally,
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
         ) {
-          // App Header:
-          // Sibil brand icon/monogram inside a glowing glass pill + Title "Sibil" (24.sp Bold) + Subtitle (12.sp)
-          Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-          ) {
-            Box(
-              modifier = Modifier
-                .shadow(
-                  elevation = 12.dp,
-                  shape = CircleShape,
-                  ambientColor = Color(0xFF6366F1).copy(alpha = 0.45f),
-                  spotColor = Color(0xFF8B5CF6).copy(alpha = 0.45f)
-                )
-                .clip(CircleShape)
-                .background(
-                  brush = Brush.horizontalGradient(
-                    colors = listOf(
-                      Color(0xFF6366F1).copy(alpha = 0.22f),
-                      Color(0xFF8B5CF6).copy(alpha = 0.22f)
-                    )
-                  )
-                )
-                .border(
-                  width = 1.dp,
-                  brush = Brush.linearGradient(
-                    listOf(
-                      Color.White.copy(alpha = 0.55f),
-                      Color(0xFF6366F1).copy(alpha = 0.35f)
-                    )
-                  ),
-                  shape = CircleShape
-                )
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-              contentAlignment = Alignment.Center
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-              ) {
-                Box(
-                  modifier = Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .background(
-                      Brush.linearGradient(
-                        listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
-                      )
-                    ),
-                  contentAlignment = Alignment.Center
-                ) {
-                  Icon(
-                    imageVector = Icons.Filled.Architecture,
-                    contentDescription = "Sibil Monogram",
-                    tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                  )
-                }
-                Text(
-                  text = "SIBIL CE",
-                  style = MaterialTheme.typography.labelMedium.copy(
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 1.2.sp
-                  ),
-                  color = palette.accentIndigo
-                )
-              }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-              text = "Sibil",
-              style = MaterialTheme.typography.headlineMedium.copy(
-                fontSize = 24.sp,
-                lineHeight = 30.sp,
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary,
-              textAlign = TextAlign.Center,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_app_title")
+          // Interactive Mode Pill Switcher (Sign In | Sign Up)
+          val pillTrackFill = if (isDarkMode) {
+            Color(0xFF0F172A).copy(alpha = 0.72f)
+          } else {
+            Color(0xFFE2E8F0).copy(alpha = 0.78f)
+          }
+          val pillTrackBorder = if (isDarkMode) {
+            Brush.linearGradient(
+              listOf(
+                Color.White.copy(alpha = 0.20f),
+                Color.White.copy(alpha = 0.05f)
+              )
             )
-
-            Text(
-              text = "Civil Engineering Board Examination Companion",
-              style = MaterialTheme.typography.bodySmall.copy(
-                fontSize = 12.sp,
-                lineHeight = 16.sp,
-                fontWeight = FontWeight.Medium
-              ),
-              color = palette.textSecondary.copy(alpha = 0.85f),
-              textAlign = TextAlign.Center,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("login_app_slogan")
+          } else {
+            Brush.linearGradient(
+              listOf(
+                Color.White.copy(alpha = 0.90f),
+                Color(0xFFCBD5E1).copy(alpha = 0.75f)
+              )
             )
           }
+          val inactiveTabTextColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
 
-          // Animated Mode Switcher:
-          // Segmented pill slider at top of the card switching between "Log In" and "Sign Up"
           BoxWithConstraints(
             modifier = Modifier
               .fillMaxWidth()
               .height(48.dp)
               .clip(CircleShape)
-              .background(palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.72f else 0.65f))
+              .background(pillTrackFill)
               .border(
                 width = 1.dp,
-                brush = Brush.linearGradient(
-                  listOf(
-                    Color.White.copy(alpha = 0.35f),
-                    Color.White.copy(alpha = 0.08f)
-                  )
-                ),
+                brush = pillTrackBorder,
                 shape = CircleShape
               )
               .padding(4.dp)
@@ -6470,20 +7115,20 @@ fun StartupLoginScreen(
                 .width(segmentWidth)
                 .fillMaxHeight()
                 .shadow(
-                  elevation = 6.dp,
+                  elevation = 8.dp,
                   shape = CircleShape,
-                  ambientColor = Color(0xFF6366F1).copy(alpha = 0.35f),
-                  spotColor = Color(0xFF8B5CF6).copy(alpha = 0.35f)
+                  ambientColor = Color(0xFF38BDF8).copy(alpha = 0.40f),
+                  spotColor = Color(0xFF0284C7).copy(alpha = 0.45f)
                 )
                 .clip(CircleShape)
                 .background(
                   brush = Brush.horizontalGradient(
-                    colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+                    colors = listOf(Color(0xFF0284C7), Color(0xFF38BDF8))
                   )
                 )
                 .border(
                   width = 1.dp,
-                  color = Color.White.copy(alpha = 0.45f),
+                  color = Color.White.copy(alpha = 0.55f),
                   shape = CircleShape
                 )
             )
@@ -6502,12 +7147,12 @@ fun StartupLoginScreen(
                 contentAlignment = Alignment.Center
               ) {
                 Text(
-                  text = "Log In",
+                  text = "Sign In",
                   style = MaterialTheme.typography.titleSmall.copy(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                   ),
-                  color = if (!isSignUpMode) Color.White else palette.textSecondary
+                  color = if (!isSignUpMode) Color.White else inactiveTabTextColor
                 )
               }
 
@@ -6530,17 +7175,17 @@ fun StartupLoginScreen(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                   ),
-                  color = if (isSignUpMode) Color.White else palette.textSecondary
+                  color = if (isSignUpMode) Color.White else inactiveTabTextColor
                 )
               }
             }
           }
 
-          // Prominent Frosted Glass Success Message (e.g. after Sign Up email verification dispatch)
+          // Prominent Frosted Glass Success Message
           loginSuccessMessage?.let { successText ->
             Surface(
               shape = RoundedCornerShape(14.dp),
-              color = Color(0xFF10B981).copy(alpha = 0.16f),
+              color = Color(0xFF10B981).copy(alpha = if (isDarkMode) 0.16f else 0.14f),
               border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.50f)),
               modifier = Modifier.fillMaxWidth()
             ) {
@@ -6550,7 +7195,7 @@ fun StartupLoginScreen(
                   fontSize = 13.sp,
                   fontWeight = FontWeight.Bold
                 ),
-                color = if (palette.isDark) Color(0xFF6EE7B7) else Color(0xFF047857),
+                color = if (isDarkMode) Color(0xFF6EE7B7) else Color(0xFF047857),
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                   .fillMaxWidth()
@@ -6560,7 +7205,7 @@ fun StartupLoginScreen(
             }
           }
 
-          // Sign Up Field 1: Full Name / Nickname (Leading Icon: Icons.Default.Badge)
+          // Sign Up Field 1: Full Name / Nickname
           AnimatedVisibility(
             visible = isSignUpMode,
             enter = expandVertically() + fadeIn(),
@@ -6577,6 +7222,7 @@ fun StartupLoginScreen(
               leadingIcon = Icons.Default.Badge,
               isFocused = isFullNameFocused,
               onFocusChange = { isFullNameFocused = it },
+              isDarkMode = isDarkMode,
               keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.Words,
                 keyboardType = KeyboardType.Text,
@@ -6589,7 +7235,7 @@ fun StartupLoginScreen(
             )
           }
 
-          // Email Address Field (Icons.Default.Email, KeyboardType.Email, KeyboardCapitalization.None)
+          // Frosted Glass Email Address Field
           GlassElevatedInputCapsule(
             value = email,
             onValueChange = {
@@ -6601,6 +7247,7 @@ fun StartupLoginScreen(
             leadingIcon = Icons.Default.Email,
             isFocused = isEmailFocused,
             onFocusChange = { isEmailFocused = it },
+            isDarkMode = isDarkMode,
             keyboardOptions = KeyboardOptions(
               capitalization = KeyboardCapitalization.None,
               autoCorrectEnabled = false,
@@ -6613,7 +7260,7 @@ fun StartupLoginScreen(
               .testTag("login_username_input")
           )
 
-          // Password Field (Icons.Default.Lock, min 6 characters on Sign Up, eye toggle)
+          // Frosted Glass Password Field
           GlassElevatedInputCapsule(
             value = password,
             onValueChange = {
@@ -6625,6 +7272,7 @@ fun StartupLoginScreen(
             leadingIcon = Icons.Default.Lock,
             isFocused = isPasswordFocused,
             onFocusChange = { isPasswordFocused = it },
+            isDarkMode = isDarkMode,
             isPassword = true,
             isPasswordVisible = isPasswordVisible,
             onTogglePasswordVisibility = { isPasswordVisible = !isPasswordVisible },
@@ -6646,8 +7294,8 @@ fun StartupLoginScreen(
           loginErrorMessage?.let { errorText ->
             Surface(
               shape = RoundedCornerShape(14.dp),
-              color = Color(0xFFEF4444).copy(alpha = 0.14f),
-              border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.45f)),
+              color = Color(0xFFEF4444).copy(alpha = if (isDarkMode) 0.16f else 0.12f),
+              border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.50f)),
               modifier = Modifier.fillMaxWidth()
             ) {
               Text(
@@ -6656,7 +7304,7 @@ fun StartupLoginScreen(
                   fontSize = 13.sp,
                   fontWeight = FontWeight.Bold
                 ),
-                color = if (palette.isDark) Color(0xFFFCA5A5) else Color(0xFFD32F2F),
+                color = if (isDarkMode) Color(0xFFFCA5A5) else Color(0xFFB91C1C),
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                   .fillMaxWidth()
@@ -6668,47 +7316,46 @@ fun StartupLoginScreen(
 
           Spacer(modifier = Modifier.height(2.dp))
 
-          // Primary Action Button:
-          // While isLoading is true, disable the submit button and show a circular progress spinner inside the button.
-          // Button label: "Sign In" or "Create Account".
+          // Primary Action Pill Button ("Sign In" / "Create Account")
+          val primaryPillShape = RoundedCornerShape(50)
           val buttonBrush = if (isLoading) {
             Brush.horizontalGradient(
               colors = listOf(
-                Color(0xFF6366F1).copy(alpha = 0.65f),
-                Color(0xFF8B5CF6).copy(alpha = 0.65f)
+                Color(0xFF0284C7).copy(alpha = 0.65f),
+                Color(0xFF2563EB).copy(alpha = 0.65f)
               )
             )
           } else {
             Brush.horizontalGradient(
-              colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+              colors = listOf(Color(0xFF0284C7), Color(0xFF2563EB))
             )
           }
 
           Box(
             modifier = Modifier
               .fillMaxWidth()
-              .height(metrics.scaledDp(54))
+              .height(metrics.scaledDp(52))
               .graphicsLayer {
                 scaleX = pressScale
                 scaleY = pressScale
               }
               .shadow(
-                elevation = if (isLoading) 4.dp else 12.dp,
-                shape = RoundedCornerShape(16.dp),
-                ambientColor = Color(0xFF6366F1).copy(alpha = 0.45f),
-                spotColor = Color(0xFF8B5CF6).copy(alpha = 0.45f)
+                elevation = if (isLoading) 4.dp else 14.dp,
+                shape = primaryPillShape,
+                ambientColor = Color(0xFF0284C7).copy(alpha = 0.45f),
+                spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
               )
-              .clip(RoundedCornerShape(16.dp))
+              .clip(primaryPillShape)
               .background(brush = buttonBrush)
               .border(
                 width = 1.dp,
-                brush = Brush.linearGradient(
+                brush = Brush.verticalGradient(
                   listOf(
-                    Color.White.copy(alpha = 0.50f),
-                    Color.White.copy(alpha = 0.12f)
+                    Color.White.copy(alpha = 0.55f),
+                    Color.White.copy(alpha = 0.10f)
                   )
                 ),
-                shape = RoundedCornerShape(16.dp)
+                shape = primaryPillShape
               )
               .clickable(
                 enabled = !isLoading,
@@ -6750,36 +7397,70 @@ fun StartupLoginScreen(
               }
             }
           }
+        }
+      }
 
-          // Offline Scholar / Guest Bypass:
-          // Text button at bottom: "Continue as Offline Scholar →"
-          // Allows offline students to access study tools immediately without signing up.
-          TextButton(
-            onClick = {
-              if (!isLoading) {
-                loginErrorMessage = null
-                loginSuccessMessage = null
-                onContinueAsGuest()
-              }
-            },
-            enabled = !isLoading,
-            shape = CircleShape,
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(metrics.scaledDp(46))
-              .testTag("continue_as_guest_button")
-          ) {
-            Text(
-              text = "Continue as Offline Scholar →",
-              style = MaterialTheme.typography.titleSmall.copy(
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = palette.textSecondary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
+      // 3. Sleek Translucent Frosted Glass Pill for "Continue as Offline Scholar →" directly below the main Auth card
+      val guestPillFill = if (isDarkMode) {
+        Color.White.copy(alpha = 0.06f)
+      } else {
+        Color.White.copy(alpha = 0.66f)
+      }
+      val guestPillBorder = if (isDarkMode) {
+        BorderStroke(
+          width = 1.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              Color.White.copy(alpha = 0.22f),
+              Color.White.copy(alpha = 0.06f)
             )
+          )
+        )
+      } else {
+        BorderStroke(
+          width = 1.5.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              Color.White.copy(alpha = 0.95f),
+              Color(0xFF94A3B8).copy(alpha = 0.35f)
+            )
+          )
+        )
+      }
+      val guestPillTextColor = if (isDarkMode) Color(0xFFE2E8F0) else Color(0xFF0F172A)
+
+      Surface(
+        onClick = {
+          if (!isLoading) {
+            loginErrorMessage = null
+            loginSuccessMessage = null
+            onContinueAsGuest()
           }
+        },
+        enabled = !isLoading,
+        shape = RoundedCornerShape(50),
+        color = guestPillFill,
+        shadowElevation = if (isDarkMode) 0.dp else 6.dp,
+        border = guestPillBorder,
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(metrics.scaledDp(48))
+          .testTag("continue_as_guest_button")
+      ) {
+        Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.Center
+        ) {
+          Text(
+            text = "Continue as Offline Scholar →",
+            style = MaterialTheme.typography.titleSmall.copy(
+              fontSize = 13.5.sp,
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = guestPillTextColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
         }
       }
     }
@@ -7119,49 +7800,59 @@ private fun GlassElevatedInputCapsule(
   onFocusChange: (Boolean) -> Unit,
   metrics: ResponsiveMetrics,
   modifier: Modifier = Modifier,
+  isDarkMode: Boolean = currentGlassPalette().isDark,
   isPassword: Boolean = false,
   isPasswordVisible: Boolean = false,
   onTogglePasswordVisibility: (() -> Unit)? = null,
   keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
   keyboardActions: KeyboardActions = KeyboardActions.Default
 ) {
-  val palette = currentGlassPalette()
-  val focusGlowColor = Color(0xFF6366F1)
-  val capsuleShape = RoundedCornerShape(14.dp)
+  val focusGlowColor = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val leadingIconColor = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val capsuleFillColor = if (isDarkMode) {
+    Color(0xFF0F172A).copy(alpha = if (isFocused) 0.80f else 0.65f)
+  } else {
+    Color(0xFFF8FAFC).copy(alpha = if (isFocused) 0.90f else 0.75f)
+  }
+  val capsuleBorderColor = when {
+    isFocused -> focusGlowColor
+    isDarkMode -> Color.White.copy(alpha = 0.12f)
+    else -> Color(0xFFCBD5E1)
+  }
+  val inputTextColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
+  val unfocusedLabelColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
+  val placeholderTextColor = if (isDarkMode) {
+    Color(0xFF94A3B8).copy(alpha = 0.70f)
+  } else {
+    Color(0xFF64748B).copy(alpha = 0.78f)
+  }
+  val capsuleShape = RoundedCornerShape(16.dp)
 
   Box(
     modifier = modifier
       .shadow(
-        elevation = if (isFocused) 10.dp else 4.dp,
+        elevation = if (isFocused) 10.dp else 3.dp,
         shape = capsuleShape,
-        ambientColor = if (isFocused) focusGlowColor.copy(alpha = 0.35f) else palette.shadowAmbient,
-        spotColor = if (isFocused) focusGlowColor.copy(alpha = 0.35f) else palette.shadowSpot
-      )
-      .clip(capsuleShape)
-      .background(
-        color = if (isFocused) {
-          palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.90f else 0.92f)
+        ambientColor = if (isFocused) {
+          focusGlowColor.copy(alpha = 0.35f)
+        } else if (isDarkMode) {
+          Color.Black.copy(alpha = 0.35f)
         } else {
-          palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.72f else 0.75f)
+          Color(0xFF64748B).copy(alpha = 0.18f)
+        },
+        spotColor = if (isFocused) {
+          focusGlowColor.copy(alpha = 0.35f)
+        } else if (isDarkMode) {
+          Color.Black.copy(alpha = 0.35f)
+        } else {
+          Color(0xFF64748B).copy(alpha = 0.18f)
         }
       )
+      .clip(capsuleShape)
+      .background(color = capsuleFillColor)
       .border(
-        width = if (isFocused) 1.6.dp else 1.dp,
-        brush = if (isFocused) {
-          Brush.linearGradient(
-            listOf(
-              focusGlowColor,
-              Color(0xFF8B5CF6).copy(alpha = 0.85f)
-            )
-          )
-        } else {
-          Brush.linearGradient(
-            listOf(
-              Color.White.copy(alpha = if (palette.isDark) 0.22f else 0.55f),
-              Color.White.copy(alpha = 0.08f)
-            )
-          )
-        },
+        width = if (isFocused) 1.4.dp else 1.dp,
+        color = capsuleBorderColor,
         shape = capsuleShape
       )
   ) {
@@ -7182,7 +7873,7 @@ private fun GlassElevatedInputCapsule(
         Text(
           text = placeholder,
           style = MaterialTheme.typography.bodyMedium,
-          color = palette.textSecondary.copy(alpha = 0.65f),
+          color = placeholderTextColor,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis
         )
@@ -7191,8 +7882,8 @@ private fun GlassElevatedInputCapsule(
         Icon(
           imageVector = leadingIcon,
           contentDescription = null,
-          tint = if (isFocused) focusGlowColor else palette.accentIndigo,
-          modifier = Modifier.size(22.dp)
+          tint = leadingIconColor,
+          modifier = Modifier.size(20.dp)
         )
       },
       trailingIcon = if (isPassword && onTogglePasswordVisibility != null) {
@@ -7211,8 +7902,8 @@ private fun GlassElevatedInputCapsule(
                 Icons.Filled.Visibility
               },
               contentDescription = if (isPasswordVisible) "Hide password" else "Show password",
-              tint = palette.textSecondary,
-              modifier = Modifier.size(22.dp)
+              tint = if (isFocused) focusGlowColor else unfocusedLabelColor,
+              modifier = Modifier.size(20.dp)
             )
           }
         }
@@ -7224,7 +7915,7 @@ private fun GlassElevatedInputCapsule(
       },
       textStyle = MaterialTheme.typography.bodyLarge.copy(
         fontSize = metrics.scaledSp(15),
-        color = palette.textPrimary,
+        color = inputTextColor,
         fontWeight = FontWeight.Medium
       ),
       singleLine = true,
@@ -7235,7 +7926,7 @@ private fun GlassElevatedInputCapsule(
         focusedContainerColor = Color.Transparent,
         unfocusedContainerColor = Color.Transparent,
         focusedLabelColor = focusGlowColor,
-        unfocusedLabelColor = palette.textSecondary,
+        unfocusedLabelColor = unfocusedLabelColor,
         cursorColor = focusGlowColor
       ),
       keyboardOptions = keyboardOptions,
@@ -7872,7 +8563,10 @@ private fun MainProductivityScaffold(
     }
   }
 
-  LiquidGlassBackgroundMesh(modifier = Modifier.fillMaxSize()) {
+  LiquidGlassAppBackground(
+    isDarkMode = taskViewModel.isDarkMode,
+    modifier = Modifier.fillMaxSize()
+  ) {
     Scaffold(
       modifier = Modifier
         .fillMaxSize()
@@ -7888,12 +8582,12 @@ private fun MainProductivityScaffold(
                 .shadow(
                   elevation = 14.dp,
                   shape = CircleShape,
-                  ambientColor = Color(0x284338CA),
-                  spotColor = Color(0x404F46E5)
+                  ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
+                  spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
                 )
                 .clip(CircleShape)
                 .background(brush = LiquidOrbBrush, shape = CircleShape)
-                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
+                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
                 .clickable { isAddTaskDialogOpen = true }
                 .testTag("add_task_fab"),
               contentAlignment = Alignment.Center
@@ -7913,12 +8607,12 @@ private fun MainProductivityScaffold(
                 .shadow(
                   elevation = 14.dp,
                   shape = CircleShape,
-                  ambientColor = Color(0x284338CA),
-                  spotColor = Color(0x404F46E5)
+                  ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
+                  spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
                 )
                 .clip(CircleShape)
                 .background(brush = LiquidOrbBrush, shape = CircleShape)
-                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
+                .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
                 .clickable {
                   editingSchedule = null
                   isAddScheduleDialogOpen = true
@@ -7973,9 +8667,13 @@ private fun MainProductivityScaffold(
           )
           CeNavTab.TASKS -> CourseworkTaskManagerScreen(
             viewModel = taskViewModel,
+            onOpenQuickAdd = { initialDateIso ->
+              taskViewModel.preselectedQuickAddDateIso = initialDateIso
+              isAddTaskDialogOpen = true
+            },
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = metrics.maxContentWidth)
+              .widthIn(max = if (metrics.isTabletLandscape) 1140.dp else metrics.maxContentWidth)
           )
           CeNavTab.SCHEDULE -> ClassTimetableScheduleScreen(
             viewModel = taskViewModel,
@@ -7996,10 +8694,13 @@ private fun MainProductivityScaffold(
         val schedulesSnapshot = taskViewModel.classSchedules.toList()
         val availableCategories = remember(schedulesSnapshot) {
           buildList {
-            add(DEFAULT_TASK_CATEGORY)
+            CE_CORE_SUBJECT_TAGS.forEach { add(it) }
             schedulesSnapshot
               .map { it.subjectName.trim() }
-              .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
+              .filter { subject ->
+                subject.isNotEmpty() &&
+                  CE_CORE_SUBJECT_TAGS.none { it.equals(subject, ignoreCase = true) }
+              }
               .distinctBy { it.lowercase(Locale.US) }
               .forEach { add(it) }
           }
@@ -8011,14 +8712,21 @@ private fun MainProductivityScaffold(
         AddTaskDialog(
           availableCategories = availableCategories,
           initialCategory = preselectedCategory,
-          onDismiss = { isAddTaskDialogOpen = false },
-          onAddTask = { newTaskTitle, newTaskDueDate, selectedCategory ->
+          initialDueDateIso = taskViewModel.preselectedQuickAddDateIso,
+          onDismiss = {
+            taskViewModel.preselectedQuickAddDateIso = ""
+            isAddTaskDialogOpen = false
+          },
+          onAddTask = { newTaskTitle, newTaskDueDate, selectedCategory, description, dueDateIso, priority ->
             taskViewModel.addTask(
               title = newTaskTitle,
               dueDate = newTaskDueDate,
-              subjectCategory = selectedCategory
+              subjectCategory = selectedCategory,
+              description = description,
+              dueDateIso = dueDateIso,
+              priority = priority
             )
-            taskViewModel.selectTaskFolder(selectedCategory)
+            taskViewModel.preselectedQuickAddDateIso = ""
             isAddTaskDialogOpen = false
           }
         )
@@ -8115,24 +8823,10 @@ private fun MainProductivityScaffold(
 }
 
 /**
- * ============================================================================
- * 2. THE HIGHLIGHT: FLOATING LIQUID GLASS TASK BAR ("LIQUID GLASS DOCK")
- * ============================================================================
- * - Floats detached above the bottom screen edge with
- *   `Modifier.navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)`.
- * - Dock Surface:
- *   * Rounded pill capsule (`RoundedCornerShape(32.dp)`).
- *   * Liquid glass material: `Color.White.copy(alpha = 0.72f)` background with a top-lit specular rim
- *     (`BorderStroke(1.5.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.95f), Color.White.copy(alpha = 0.3f))))`).
- *   * Soft atmospheric glow/shadow underneath (`elevation = 16.dp`).
- * - Center Dashboard "Liquid Orb" Button:
- *   * Sits prominently raised at the center of the dock (`RoundedCornerShape(22.dp)`, `elevation = 14.dp`).
- *   * Fluid Gradient Fill: `Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4F46E5), Color(0xFF4338CA)))`.
- *   * Specular Glass Sheen: `BorderStroke(1.5.dp, Color.White.copy(alpha = 0.6f))`.
- *   * Clean white icon that pops with high contrast.
- * - Side Nav Icons (Clock, Extras, Tasks, Schedule):
- *   * Active: Glowing translucent pill indicator (`Color(0xFF6366F1).copy(alpha = 0.15f)`) with saturated brand tint.
- *   * Inactive: Translucent charcoal tint (`Color(0xFF475569).copy(alpha = 0.65f)`) with clean micro-typography.
+ * Floating Translucent Bottom Navigation Dock ("Liquid Glass Dock") matching `AuthScreen`:
+ * - Rounded pill capsule (`RoundedCornerShape(32.dp)`) with translucent frosted glass surface,
+ *   crisp `1.dp` top specular highlight border, and glowing cyan-blue indicator (`Color(0xFF0EA5E9).copy(alpha = 0.18f)`)
+ *   for the active tab.
  */
 @Composable
 private fun CustomDockedBottomTaskBar(
@@ -8143,22 +8837,47 @@ private fun CustomDockedBottomTaskBar(
 ) {
   val palette = currentGlassPalette()
   val dockShape = RoundedCornerShape(32.dp)
-  val dockBackgroundColor = palette.dockFill
-  val dockSpecularBorder = if (!palette.isDark) {
-    BorderStroke(
-      width = 1.5.dp,
-      color = palette.dockBorderColor
-    )
-  } else {
-    BorderStroke(
-      width = 1.5.dp,
-      brush = Brush.verticalGradient(
+  val dockBrush = remember(palette.isDark) {
+    if (palette.isDark) {
+      Brush.verticalGradient(
         colors = listOf(
-          Color.White.copy(alpha = 0.35f),
-          Color(0xFF6366F1).copy(alpha = 0.25f)
+          Color(0xFF1E293B).copy(alpha = 0.72f),
+          Color(0xFF0F172A).copy(alpha = 0.86f)
         )
       )
-    )
+    } else {
+      Brush.verticalGradient(
+        colors = listOf(
+          Color.White.copy(alpha = 0.82f),
+          Color(0xFFF8FAFC).copy(alpha = 0.68f)
+        )
+      )
+    }
+  }
+  val dockSpecularBorder = remember(palette.isDark) {
+    if (palette.isDark) {
+      BorderStroke(
+        width = 1.dp,
+        brush = Brush.linearGradient(
+          colors = listOf(
+            Color.White.copy(alpha = 0.28f),
+            Color(0xFF38BDF8).copy(alpha = 0.16f),
+            Color.White.copy(alpha = 0.06f)
+          )
+        )
+      )
+    } else {
+      BorderStroke(
+        width = 1.2.dp,
+        brush = Brush.linearGradient(
+          colors = listOf(
+            Color.White.copy(alpha = 0.98f),
+            Color(0xFF38BDF8).copy(alpha = 0.35f),
+            Color(0xFFCBD5E1).copy(alpha = 0.55f)
+          )
+        )
+      )
+    }
   }
 
   Box(
@@ -8175,15 +8894,21 @@ private fun CustomDockedBottomTaskBar(
         .fillMaxWidth()
         .widthIn(max = metrics.maxContentWidth)
         .padding(top = 16.dp)
-        .shadow(
-          elevation = 16.dp,
-          shape = dockShape,
-          ambientColor = palette.shadowAmbient,
-          spotColor = palette.shadowSpot
-        )
+        .let { mod ->
+          if (!palette.isDark) {
+            mod.shadow(
+              elevation = 8.dp,
+              shape = dockShape,
+              ambientColor = palette.shadowAmbient,
+              spotColor = Color(0xFF0284C7).copy(alpha = 0.16f)
+            )
+          } else {
+            mod
+          }
+        }
         .clip(dockShape)
         .background(
-          color = dockBackgroundColor,
+          brush = dockBrush,
           shape = dockShape
         )
         .border(border = dockSpecularBorder, shape = dockShape)
@@ -8237,9 +8962,9 @@ private fun CustomDockedBottomTaskBar(
     val orbShape = RoundedCornerShape(22.dp)
     val orbBrush = Brush.linearGradient(
       colors = listOf(
-        Color(0xFF6366F1),
-        Color(0xFF4F46E5),
-        Color(0xFF4338CA)
+        Color(0xFF38BDF8),
+        Color(0xFF0284C7),
+        Color(0xFF2563EB)
       )
     )
 
@@ -8256,13 +8981,13 @@ private fun CustomDockedBottomTaskBar(
           .shadow(
             elevation = 14.dp,
             shape = orbShape,
-            ambientColor = Color(0x334338CA),
-            spotColor = Color(0x554F46E5)
+            ambientColor = Color(0xFF0284C7).copy(alpha = 0.35f),
+            spotColor = Color(0xFF2563EB).copy(alpha = 0.50f)
           )
           .clip(orbShape)
           .background(brush = orbBrush, shape = orbShape)
           .border(
-            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.6f)),
+            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)),
             shape = orbShape
           )
           .clickable { onSelectTab(CeNavTab.DASHBOARD) }
@@ -8278,7 +9003,7 @@ private fun CustomDockedBottomTaskBar(
             .background(
               brush = Brush.verticalGradient(
                 colors = listOf(
-                  Color.White.copy(alpha = 0.28f),
+                  Color.White.copy(alpha = 0.32f),
                   Color.Transparent
                 )
               )
@@ -8324,8 +9049,8 @@ private fun CustomSideBottomBarItem(
   modifier: Modifier = Modifier
 ) {
   val palette = currentGlassPalette()
-  val activePillColor = Color(0xFF6366F1).copy(alpha = 0.16f)
-  val saturatedBrandColor = palette.accentIndigo
+  val activePillColor = Color(0xFF0EA5E9).copy(alpha = 0.18f)
+  val saturatedBrandColor = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
   val inactiveTint = palette.textSecondary
 
   val animatedIconTint by animateColorAsState(
@@ -8358,7 +9083,7 @@ private fun CustomSideBottomBarItem(
         .then(
           if (isSelected) {
             Modifier.border(
-              BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.35f)),
+              BorderStroke(1.dp, saturatedBrandColor.copy(alpha = 0.45f)),
               CircleShape
             )
           } else {
@@ -8416,14 +9141,24 @@ fun DashboardScreen(
   val completedTasks = activeTasks.count { it.isCompleted }
   val progressRatio = if (totalTasks > 0) completedTasks.toFloat() / totalTasks else 0f
   val dueTasks = activeTasks
-    .filter { !it.isCompleted && it.dueDate.trim().isNotEmpty() }
+    .filter { !it.isCompleted && (it.dueDateIso.isNotBlank() || it.dueDate.trim().isNotEmpty()) }
     .map { task ->
-      val (days, label, urgency) = parseDaysRemainingAndUrgency(task.dueDate)
+      val resolvedIso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+      val dueLookup = resolvedIso.ifBlank { task.dueDate }
+      val (days, label, urgency) = parseDaysRemainingAndUrgency(dueLookup)
+      val displayDue = if (resolvedIso.isNotBlank()) {
+        formatIsoDateSmartDisplay(resolvedIso, task.dueDate.ifBlank { label })
+      } else {
+        task.dueDate.trim().ifBlank { label }
+      }
       DashboardUpcomingItem(
         id = task.id,
         title = task.title,
-        category = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
-        dueDateDisplay = task.dueDate.trim().ifBlank { label },
+        category = task.categoryTag.ifBlank { task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY } },
+        dueDateDisplay = displayDue,
+        dueDateIso = resolvedIso,
+        priority = task.priority,
+        hasNotesOrSubtasks = task.description.isNotBlank() || task.subtasks.isNotEmpty(),
         daysRemaining = days,
         urgencyLabel = label,
         urgencyType = urgency,
@@ -8432,10 +9167,14 @@ fun DashboardScreen(
       )
     }
     .sortedWith(
-      compareBy<DashboardUpcomingItem> { it.daysRemaining }
-        .thenBy { it.dueDateDisplay }
+      compareBy<DashboardUpcomingItem> {
+        if (it.dueDateIso.isNotBlank()) it.dueDateIso else "9999-12-31"
+      }
+        .thenBy { it.daysRemaining }
+        .thenByDescending { it.priority }
         .thenBy { it.id }
     )
+    .take(3)
 
   // Runtime permission launcher for ACCESS_COARSE_LOCATION
   val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -8641,31 +9380,57 @@ fun DashboardScreen(
             .widthIn(max = 680.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          // Ultra-compact Header Row: Username + Live Date/Time on Left, Profile Button on Right
+          // Header & Greeting Bar: SibilCeAppIconBadge + Username/DateTime + Sync Pill + Glass Action Buttons
           Row(
             modifier = Modifier
               .fillMaxWidth()
               .padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
+            SibilCeAppIconBadge(
+              size = 42.dp
+            )
+
             Column(
               modifier = Modifier.weight(1f),
               verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-              Text(
-                text = viewModel.displayUsername,
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = 15.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.accentIndigo,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("dashboard_username_header")
-              )
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Text(
+                  text = viewModel.displayUsername,
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier
+                    .weight(1f, fill = false)
+                    .testTag("dashboard_username_header")
+                )
+
+                Surface(
+                  shape = CircleShape,
+                  color = Color(0xFF0EA5E9).copy(alpha = 0.16f),
+                  border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.38f))
+                ) {
+                  Text(
+                    text = if (viewModel.isFirestoreSyncing) "Syncing" else "Sibil CE",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 9.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.accentIndigo,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                  )
+                }
+              }
 
               Text(
                 text = currentDateTimeText,
@@ -8685,7 +9450,6 @@ fun DashboardScreen(
             if (viewModel.isFirestoreSyncing) {
               CircularProgressIndicator(
                 modifier = Modifier
-                  .padding(end = 8.dp)
                   .size(18.dp)
                   .testTag("dashboard_firestore_sync_indicator"),
                 strokeWidth = 2.dp,
@@ -8694,8 +9458,7 @@ fun DashboardScreen(
             }
 
             LiquidGlassContainer(
-              cornerRadius = 20.dp,
-              fillAlpha = 0.65f,
+              cornerRadius = 16.dp,
               onClick = onProfileIconClick,
               modifier = Modifier
                 .size(48.dp)
@@ -8707,7 +9470,7 @@ fun DashboardScreen(
                   imageVector = Icons.Default.AccountCircle,
                   contentDescription = "Open Profile & Settings",
                   tint = palette.accentIndigo,
-                  modifier = Modifier.size(28.dp)
+                  modifier = Modifier.size(26.dp)
                 )
               }
             }
@@ -8896,7 +9659,8 @@ fun DashboardScreen(
           onToggleComplete = { itemId ->
             viewModel.toggleTaskCompletion(itemId)
           },
-          onItemClick = { _ ->
+          onItemClick = { clickedItem ->
+            viewModel.openTaskDetail(clickedItem.id)
             onNavigateToTab(CeNavTab.TASKS)
           },
           onAddTaskClick = onAddTaskClick
@@ -8956,6 +9720,19 @@ fun DashboardScreen(
 
     if (showCalendarDialog) {
       HolographicCalendarDialog(
+        tasks = activeTasks,
+        schedules = viewModel.classSchedules,
+        onToggleTaskComplete = { taskId -> viewModel.toggleTaskCompletion(taskId) },
+        onAddTaskOnDate = { dateIso ->
+          showCalendarDialog = false
+          viewModel.preselectedQuickAddDateIso = dateIso
+          onAddTaskClick()
+        },
+        onOpenTaskDetail = { taskId ->
+          showCalendarDialog = false
+          viewModel.openTaskDetail(taskId)
+          onNavigateToTab(CeNavTab.TASKS)
+        },
         onDismiss = { showCalendarDialog = false }
       )
     }
@@ -9004,20 +9781,25 @@ fun DashboardScreen(
 
 /**
  * Premium Offline Holographic Calendar Dialog anchored to the Dashboard Floating Calendar Button.
- * Uses built-in `java.time.YearMonth.now()` and `java.time.LocalDate.now()` with 7-column alignment.
+ * Uses built-in `java.time.YearMonth.now()` and `java.time.LocalDate.now()` with 7-column alignment,
+ * priority dots for active tasks with matching `dueDateIso`, and interactive selected-date agenda.
  */
 @Composable
 private fun HolographicCalendarDialog(
+  tasks: List<Task> = emptyList(),
+  schedules: List<ClassSchedule> = emptyList(),
+  onToggleTaskComplete: (Int) -> Unit = {},
+  onAddTaskOnDate: (String) -> Unit = {},
+  onOpenTaskDetail: (Int) -> Unit = {},
   onDismiss: () -> Unit
 ) {
   var currentYearMonth by remember { mutableStateOf(java.time.YearMonth.now()) }
+  var selectedDate by remember { mutableStateOf(LocalDate.now()) }
   val monthYearTitle = remember(currentYearMonth) {
     val monthName = currentYearMonth.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH)
     "$monthName ${currentYearMonth.year}"
   }
 
-  // DayOfWeek.value is 1 (Mon) .. 6 (Sat), 7 (Sun).
-  // Modulo 7 maps Sunday -> 0, Monday -> 1, ..., Saturday -> 6 so the 1st aligns under S, M, T, W, T, F, S.
   val leadingEmptyCells = remember(currentYearMonth) {
     currentYearMonth.atDay(1).dayOfWeek.value % 7
   }
@@ -9029,17 +9811,53 @@ private fun HolographicCalendarDialog(
   }
   val weekDayHeaders = remember { listOf("S", "M", "T", "W", "T", "F", "S") }
 
+  val tasksByIsoDate = remember(tasks) {
+    tasks
+      .filter { it.title.isNotBlank() }
+      .groupBy { task ->
+        task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+      }
+      .filterKeys { it.isNotBlank() }
+  }
+
+  val selectedDateIso = remember(selectedDate) { selectedDate.toString() }
+  val selectedDateFormatted = remember(selectedDate) {
+    selectedDate.format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH))
+  }
+  val selectedDateShortLabel = remember(selectedDate) {
+    selectedDate.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH))
+  }
+  val tasksForSelectedDate = remember(tasksByIsoDate, selectedDateIso) {
+    (tasksByIsoDate[selectedDateIso] ?: emptyList())
+      .sortedWith(compareBy<Task> { it.isCompleted }.thenByDescending { it.priority })
+  }
+  val schedulesForSelectedDate = remember(schedules, selectedDate) {
+    val dowToken = when (selectedDate.dayOfWeek) {
+      DayOfWeek.MONDAY -> "M"
+      DayOfWeek.TUESDAY -> "T"
+      DayOfWeek.WEDNESDAY -> "W"
+      DayOfWeek.THURSDAY -> "TH"
+      DayOfWeek.FRIDAY -> "F"
+      DayOfWeek.SATURDAY -> "S"
+      DayOfWeek.SUNDAY -> "SU"
+    }
+    schedules.filter { item ->
+      item.days.any { token -> token.trim().equals(dowToken, ignoreCase = true) }
+    }
+  }
+
   Dialog(
     onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false)
   ) {
     Surface(
       shape = RoundedCornerShape(24.dp),
-      color = Color(0xFF0B132B).copy(alpha = 0.88f),
-      border = BorderStroke(0.5.dp, Color.Cyan.copy(alpha = 0.5f)),
+      color = Color(0xFF0B132B).copy(alpha = 0.92f),
+      border = BorderStroke(0.8.dp, Color.Cyan.copy(alpha = 0.5f)),
       shadowElevation = 20.dp,
       modifier = Modifier
-        .fillMaxWidth(0.85f)
+        .fillMaxWidth(0.90f)
+        .widthIn(max = 460.dp)
         .wrapContentHeight()
         .testTag("holographic_calendar_dialog")
     ) {
@@ -9052,14 +9870,14 @@ private fun HolographicCalendarDialog(
               colors = listOf(
                 Color.White.copy(alpha = 0.1f),
                 Color.Cyan.copy(alpha = 0.06f),
-                Color(0xFF0B132B).copy(alpha = 0.45f)
+                Color(0xFF0B132B).copy(alpha = 0.55f)
               )
             ),
             shape = RoundedCornerShape(24.dp)
           )
-          .padding(horizontal = 20.dp, vertical = 20.dp),
+          .padding(horizontal = 18.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         // Top Header: Interactive Month & Year Navigation Row
         Row(
@@ -9068,7 +9886,10 @@ private fun HolographicCalendarDialog(
           verticalAlignment = Alignment.CenterVertically
         ) {
           IconButton(
-            onClick = { currentYearMonth = currentYearMonth.minusMonths(1) },
+            onClick = {
+              currentYearMonth = currentYearMonth.minusMonths(1)
+              selectedDate = currentYearMonth.atDay(1)
+            },
             modifier = Modifier
               .size(48.dp)
               .testTag("calendar_dialog_prev_month_button")
@@ -9098,7 +9919,10 @@ private fun HolographicCalendarDialog(
           )
 
           IconButton(
-            onClick = { currentYearMonth = currentYearMonth.plusMonths(1) },
+            onClick = {
+              currentYearMonth = currentYearMonth.plusMonths(1)
+              selectedDate = currentYearMonth.atDay(1)
+            },
             modifier = Modifier
               .size(48.dp)
               .testTag("calendar_dialog_next_month_button")
@@ -9126,7 +9950,7 @@ private fun HolographicCalendarDialog(
           verticalArrangement = Arrangement.spacedBy(6.dp),
           modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 340.dp)
+            .heightIn(max = 310.dp)
             .wrapContentHeight()
             .testTag("calendar_dialog_lazy_grid")
         ) {
@@ -9155,52 +9979,272 @@ private fun HolographicCalendarDialog(
           items(calendarCells.size) { cellIndex ->
             val dayNumber = calendarCells[cellIndex]
             if (dayNumber == null) {
-              Box(modifier = Modifier.size(36.dp))
+              Box(modifier = Modifier.size(38.dp))
             } else {
-              val isToday =
-                dayNumber == LocalDate.now().dayOfMonth &&
-                  currentYearMonth == java.time.YearMonth.now()
+              val cellDate = currentYearMonth.atDay(dayNumber)
+              val cellIso = cellDate.toString()
+              val isToday = cellDate == LocalDate.now()
+              val isSelected = cellDate == selectedDate
+              val activeTasksOnCell = (tasksByIsoDate[cellIso] ?: emptyList()).filter { !it.isCompleted }
+              val highestPriority = activeTasksOnCell.maxOfOrNull { it.priority } ?: -1
+              val dotColor = when (highestPriority) {
+                3 -> Color(0xFFEF4444)
+                2 -> Color(0xFFF59E0B)
+                1 -> Color(0xFF3B82F6)
+                0 -> Color.Cyan
+                else -> Color.Transparent
+              }
 
               Box(
                 modifier = Modifier
-                  .size(36.dp)
+                  .size(38.dp)
                   .then(
-                    if (isToday) {
-                      Modifier
-                        .shadow(
-                          elevation = 8.dp,
-                          shape = CircleShape,
-                          ambientColor = Color.Cyan,
-                          spotColor = Color.Cyan
-                        )
-                        .clip(CircleShape)
-                        .background(Color.Cyan, shape = CircleShape)
-                        .border(1.dp, Color.White.copy(alpha = 0.85f), CircleShape)
-                        .clickable(onClick = { /* Future: Add schedule action here */ })
-                        .testTag("calendar_dialog_today_cell")
-                    } else {
-                      Modifier
-                        .clip(CircleShape)
-                        .clickable(onClick = { /* Future: Add schedule action here */ })
-                        .testTag("calendar_dialog_day_cell_$dayNumber")
+                    when {
+                      isToday -> {
+                        Modifier
+                          .shadow(
+                            elevation = 8.dp,
+                            shape = CircleShape,
+                            ambientColor = Color.Cyan,
+                            spotColor = Color.Cyan
+                          )
+                          .clip(CircleShape)
+                          .background(Color.Cyan, shape = CircleShape)
+                          .border(
+                            width = if (isSelected) 2.dp else 1.dp,
+                            color = Color.White,
+                            shape = CircleShape
+                          )
+                          .clickable { selectedDate = cellDate }
+                          .testTag("calendar_dialog_today_cell")
+                      }
+                      isSelected -> {
+                        Modifier
+                          .clip(CircleShape)
+                          .background(Color.Cyan.copy(alpha = 0.22f), shape = CircleShape)
+                          .border(1.2.dp, Color.Cyan, CircleShape)
+                          .clickable { selectedDate = cellDate }
+                          .testTag("calendar_dialog_day_cell_$dayNumber")
+                      }
+                      else -> {
+                        Modifier
+                          .clip(CircleShape)
+                          .clickable { selectedDate = cellDate }
+                          .testTag("calendar_dialog_day_cell_$dayNumber")
+                      }
                     }
                   ),
                 contentAlignment = Alignment.Center
               ) {
-                Text(
-                  text = dayNumber.toString(),
-                  style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
-                    fontWeight = if (isToday) FontWeight.ExtraBold else FontWeight.SemiBold
-                  ),
-                  color = if (isToday) Color(0xFF041322) else Color.White,
-                  textAlign = TextAlign.Center,
-                  maxLines = 1,
-                  softWrap = false
-                )
+                Column(
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center
+                ) {
+                  Text(
+                    text = dayNumber.toString(),
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = 13.sp,
+                      fontWeight = if (isToday || isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                    ),
+                    color = if (isToday) Color(0xFF041322) else Color.White,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    softWrap = false
+                  )
+                  if (activeTasksOnCell.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Box(
+                      modifier = Modifier
+                        .size(5.dp)
+                        .clip(CircleShape)
+                        .background(if (isToday && dotColor == Color.Cyan) Color(0xFF041322) else dotColor)
+                    )
+                  }
+                }
               }
             }
+          }
+        }
+
+        // Selected Date Agenda & Quick-Add Section
+        HorizontalDivider(
+          thickness = 0.5.dp,
+          color = Color.Cyan.copy(alpha = 0.28f)
+        )
+
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("calendar_selected_date_agenda"),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = selectedDateFormatted,
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = Color.Cyan
+            )
+            Text(
+              text = "${tasksForSelectedDate.count { !it.isCompleted }} Tasks • ${schedulesForSelectedDate.size} Classes",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = Color.White.copy(alpha = 0.72f)
+            )
+          }
+
+          if (tasksForSelectedDate.isEmpty() && schedulesForSelectedDate.isEmpty()) {
+            Text(
+              text = "No tasks or classes scheduled for $selectedDateShortLabel.",
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+              ),
+              color = Color.White.copy(alpha = 0.6f),
+              modifier = Modifier.padding(vertical = 4.dp)
+            )
+          } else {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 140.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              tasksForSelectedDate.take(3).forEach { task ->
+                val pColor = taskPriorityColor(task.priority, Color.Cyan)
+                Surface(
+                  onClick = { onOpenTaskDetail(task.id) },
+                  shape = RoundedCornerShape(10.dp),
+                  color = Color.White.copy(alpha = 0.08f),
+                  border = BorderStroke(0.8.dp, pColor.copy(alpha = 0.55f)),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Box(
+                      modifier = Modifier
+                        .size(18.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(
+                          if (task.isCompleted) pColor.copy(alpha = 0.35f) else Color.Transparent
+                        )
+                        .border(1.5.dp, pColor, RoundedCornerShape(5.dp))
+                        .clickable { onToggleTaskComplete(task.id) },
+                      contentAlignment = Alignment.Center
+                    ) {
+                      if (task.isCompleted) {
+                        Icon(
+                          imageVector = Icons.Default.Check,
+                          contentDescription = "Completed",
+                          tint = Color.White,
+                          modifier = Modifier.size(12.dp)
+                        )
+                      }
+                    }
+                    Text(
+                      text = task.title,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+                      ),
+                      color = if (task.isCompleted) Color.White.copy(alpha = 0.5f) else Color.White,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                      text = task.categoryTag.ifBlank { DEFAULT_TASK_CATEGORY },
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = Color.Cyan
+                    )
+                  }
+                }
+              }
+
+              schedulesForSelectedDate.take(2).forEach { sched ->
+                Surface(
+                  shape = RoundedCornerShape(10.dp),
+                  color = Color.Cyan.copy(alpha = 0.10f),
+                  border = BorderStroke(0.6.dp, Color.Cyan.copy(alpha = 0.35f)),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                    Text(
+                      text = sched.subjectName,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = Color.White,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                      text = sched.timeRange,
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = Color.Cyan
+                    )
+                  }
+                }
+              }
+            }
+          }
+
+          Button(
+            onClick = { onAddTaskOnDate(selectedDateIso) },
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color.Cyan.copy(alpha = 0.20f),
+              contentColor = Color.Cyan
+            ),
+            border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.6f)),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .minimumInteractiveComponentSize()
+              .testTag("calendar_add_task_on_date_button")
+          ) {
+            Icon(
+              imageVector = Icons.Default.Add,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "+ Add Task on $selectedDateShortLabel",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+              )
+            )
           }
         }
       }
@@ -10626,14 +11670,14 @@ private fun CompactDailyProgressCard(
             style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
           )
 
-          // Vibrant Cyan to Electric Violet gradient progress arc
+          // Vibrant Cyan to Royal Blue gradient progress arc
           if (animatedProgress > 0f) {
             drawArc(
               brush = Brush.linearGradient(
                 colors = listOf(
-                  LiquidCyanGlow,
-                  LiquidRoyalPeriwinkle,
-                  LiquidElectricViolet
+                  Color(0xFF38BDF8),
+                  Color(0xFF0EA5E9),
+                  Color(0xFF2563EB)
                 ),
                 start = Offset(0f, 0f),
                 end = Offset(size.width, size.height)
@@ -10685,7 +11729,7 @@ private fun CompactDailyProgressCard(
             .height(8.dp)
             .clip(CircleShape)
             .testTag("daily_study_linear_progress"),
-          color = LiquidElectricViolet,
+          color = palette.accentIndigo,
           trackColor = ringTrackColor
         )
         Text(
@@ -10720,7 +11764,7 @@ private fun TodaysScheduleInteractiveCard(
 
   LiquidGlassCard(
     cornerRadius = 26.dp,
-    elevation = 8.dp,
+    elevation = 4.dp,
     modifier = modifier.testTag("todays_schedule_card")
   ) {
     Column(
@@ -10749,8 +11793,8 @@ private fun TodaysScheduleInteractiveCard(
         Box(
           modifier = Modifier
             .clip(CircleShape)
-            .background(LiquidRoyalPeriwinkle.copy(alpha = 0.16f))
-            .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
+            .background(Color(0xFF0EA5E9).copy(alpha = 0.16f))
+            .border(BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.38f)), CircleShape)
         ) {
           Text(
             text = "$todayAbbreviation • ${todaysClasses.size}",
@@ -10906,6 +11950,9 @@ data class DashboardUpcomingItem(
   val title: String = "",
   val category: String = DEFAULT_TASK_CATEGORY,
   val dueDateDisplay: String = "",
+  val dueDateIso: String = "",
+  val priority: Int = 0,
+  val hasNotesOrSubtasks: Boolean = false,
   val daysRemaining: Int = 0,
   val urgencyLabel: String = "Upcoming",
   val urgencyType: DeadlineUrgencyType = DeadlineUrgencyType.UPCOMING,
@@ -11001,7 +12048,7 @@ fun parseDaysRemainingAndUrgency(dueDate: String): Triple<Int, String, DeadlineU
 
 /**
  * Frosted Glass "Upcoming Deadlines" section (`LiquidGlassCard`) with translucent glass tiles,
- * live urgency badges, and empty state with "Add Task" button.
+ * live urgency badges, and empty state with glowing cyan-to-blue "Add Task" button.
  */
 @Composable
 private fun UpcomingDeadlinesSectionCard(
@@ -11014,7 +12061,7 @@ private fun UpcomingDeadlinesSectionCard(
   val palette = currentGlassPalette()
   LiquidGlassCard(
     cornerRadius = 26.dp,
-    elevation = 8.dp,
+    elevation = 4.dp,
     modifier = Modifier
       .fillMaxWidth()
       .testTag("upcoming_deadlines_section_card")
@@ -11047,8 +12094,8 @@ private fun UpcomingDeadlinesSectionCard(
         Box(
           modifier = Modifier
             .clip(CircleShape)
-            .background(LiquidRoyalPeriwinkle.copy(alpha = 0.15f))
-            .border(BorderStroke(1.dp, LiquidRoyalPeriwinkle.copy(alpha = 0.35f)), CircleShape)
+            .background(Color(0xFF0EA5E9).copy(alpha = 0.16f))
+            .border(BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.38f)), CircleShape)
         ) {
           Text(
             text = "${upcomingItems.size} Active",
@@ -11079,14 +12126,14 @@ private fun UpcomingDeadlinesSectionCard(
             modifier = Modifier
               .size(52.dp)
               .clip(CircleShape)
-              .background(palette.nestedCardFill)
-              .border(palette.glassBorder, CircleShape),
+              .background(Color(0xFF0EA5E9).copy(alpha = 0.16f))
+              .border(BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.38f)), CircleShape),
             contentAlignment = Alignment.Center
           ) {
             Icon(
               imageVector = Icons.Filled.CheckCircle,
               contentDescription = null,
-              tint = LiquidCyanGlow,
+              tint = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7),
               modifier = Modifier.size(28.dp)
             )
           }
@@ -11103,34 +12150,50 @@ private fun UpcomingDeadlinesSectionCard(
             overflow = TextOverflow.Ellipsis
           )
 
-          Button(
-            onClick = onAddTaskClick,
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-              containerColor = palette.accentIndigo,
-              contentColor = Color.White
-            ),
-            contentPadding = PaddingValues(
-              horizontal = metrics.scaledDp(20),
-              vertical = metrics.scaledDp(10)
-            ),
+          Box(
             modifier = Modifier
-              .testTag("upcoming_add_task_button")
-              .minimumInteractiveComponentSize()
-          ) {
-            Icon(
-              imageVector = Icons.Default.Add,
-              contentDescription = null,
-              modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-              text = "Add Task",
-              style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = metrics.scaledSp(14),
-                fontWeight = FontWeight.Bold
+              .clip(RoundedCornerShape(16.dp))
+              .background(
+                brush = Brush.horizontalGradient(
+                  colors = listOf(
+                    Color(0xFF38BDF8),
+                    Color(0xFF2563EB)
+                  )
+                ),
+                shape = RoundedCornerShape(16.dp)
               )
-            )
+              .border(
+                BorderStroke(1.dp, Color.White.copy(alpha = 0.55f)),
+                RoundedCornerShape(16.dp)
+              )
+              .clickable(onClick = onAddTaskClick)
+              .minimumInteractiveComponentSize()
+              .padding(
+                horizontal = metrics.scaledDp(20),
+                vertical = metrics.scaledDp(10)
+              )
+              .testTag("upcoming_add_task_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+              )
+              Text(
+                text = "Add Task",
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = metrics.scaledSp(14),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = Color.White
+              )
+            }
           }
         }
       } else {
@@ -11254,26 +12317,29 @@ private fun DashboardUpcomingItemCard(
           }
         }
       } else {
-        // Glowing status dot + interactive completion ring
+        // Priority-colored checkbox + glowing status dot
+        val priorityStrokeColor = taskPriorityColor(item.priority, palette.checkboxUncheckedBorder)
         Surface(
           onClick = {
             playCardHapticSound(context, localView)
             onToggleComplete()
           },
-          shape = CircleShape,
-          color = palette.checkboxUncheckedFill,
-          border = BorderStroke(1.5.dp, palette.checkboxUncheckedBorder),
+          shape = RoundedCornerShape(8.dp),
+          color = if (item.priority > 0) priorityStrokeColor.copy(alpha = 0.12f) else palette.checkboxUncheckedFill,
+          border = BorderStroke(1.8.dp, priorityStrokeColor),
           modifier = Modifier
-            .size(32.dp)
+            .size(30.dp)
             .minimumInteractiveComponentSize()
         ) {
           Box(contentAlignment = Alignment.Center) {
             Box(
               modifier = Modifier
-                .size(9.dp)
-                .shadow(4.dp, CircleShape, spotColor = LiquidCyanGlow)
+                .size(8.dp)
+                .shadow(4.dp, CircleShape, spotColor = if (item.priority > 0) priorityStrokeColor else LiquidCyanGlow)
                 .clip(CircleShape)
-                .background(brush = LiquidCyanVioletGradient)
+                .background(
+                  color = if (item.priority > 0) priorityStrokeColor else LiquidCyanGlow
+                )
             )
           }
         }
@@ -11610,77 +12676,91 @@ fun ExtrasScreen(
                 )
               }
 
-              Surface(
-                shape = CircleShape,
-                color = Color(0xFF6366F1).copy(alpha = 0.16f),
-                border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f))
-              ) {
-                Text(
-                  text = "Multi-Batch",
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.Bold,
-                  color = palette.accentIndigo,
-                  maxLines = 1,
-                  softWrap = false,
-                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-              }
-            }
-          }
-
-          Text(
-            text = "Smart Flashcards",
-            style = MaterialTheme.typography.headlineSmall.copy(
-              fontSize = metrics.scaledSp(21),
-              fontWeight = FontWeight.ExtraBold
-            ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
             Surface(
               shape = CircleShape,
-              color = palette.nestedCardFill,
-              border = palette.nestedBorder,
-              modifier = Modifier
-                .weight(1f, fill = false)
-                .padding(end = 8.dp)
+              color = Color(0xFF0EA5E9).copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.38f))
             ) {
               Text(
-                text = "$deckCount ${if (deckCount == 1) "Deck" else "Decks"} • $totalCardCount Cards",
-                style = MaterialTheme.typography.labelMedium.copy(
-                  fontFamily = JetBrainsMonoFamily,
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary,
+                text = "Multi-Batch",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = palette.accentIndigo,
                 maxLines = 1,
                 softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
               )
             }
+          }
+        }
 
-            Button(
-              onClick = {
+        Text(
+          text = "Smart Flashcards",
+          style = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = metrics.scaledSp(21),
+            fontWeight = FontWeight.ExtraBold
+          ),
+          color = palette.textPrimary,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Surface(
+            shape = CircleShape,
+            color = palette.nestedCardFill,
+            border = palette.nestedBorder,
+            modifier = Modifier
+              .weight(1f, fill = false)
+              .padding(end = 8.dp)
+          ) {
+            Text(
+              text = "$deckCount ${if (deckCount == 1) "Deck" else "Decks"} • $totalCardCount Cards",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              softWrap = false,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+          }
+
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(18.dp))
+              .background(
+                brush = Brush.horizontalGradient(
+                  colors = listOf(
+                    Color(0xFF38BDF8),
+                    Color(0xFF2563EB)
+                  )
+                ),
+                shape = RoundedCornerShape(18.dp)
+              )
+              .border(
+                BorderStroke(1.dp, Color.White.copy(alpha = 0.55f)),
+                RoundedCornerShape(18.dp)
+              )
+              .clickable {
                 playCardHapticSound(context, localView)
                 isFlashcardsOpen = true
-              },
-              shape = RoundedCornerShape(18.dp),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF4F46E5),
-                contentColor = Color.White
-              ),
-              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-              modifier = Modifier
-                .wrapContentWidth()
-                .testTag("launch_flashcards_hero_button")
+              }
+              .padding(horizontal = 14.dp, vertical = 9.dp)
+              .wrapContentWidth()
+              .testTag("launch_flashcards_hero_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
               Text(
                 text = "Launch Flashcards",
@@ -11690,7 +12770,6 @@ fun ExtrasScreen(
                 fontWeight = FontWeight.Bold,
                 color = Color.White
               )
-              Spacer(modifier = Modifier.width(6.dp))
               Icon(
                 imageVector = Icons.Filled.ArrowForward,
                 contentDescription = null,
@@ -11701,6 +12780,7 @@ fun ExtrasScreen(
           }
         }
       }
+    }
 
       // 2. Active Companion Module: CE Formula Vault
       ExtraToolPlaceholderCard(
@@ -25006,13 +26086,46 @@ fun ClassTimetableScheduleScreen(
   var focusedClass by remember { mutableStateOf<ClassSchedule?>(null) }
 
   val allSchedules = viewModel.classSchedules.toList()
+  val allTasks = viewModel.tasks.toList()
+
   // Actively filters AND chronologically sorts classes by Start Time via ViewModel, memoized for low-end devices
   val filteredSchedules = remember(allSchedules, selectedWeekDay) {
     viewModel.getSchedulesForDay(selectedWeekDay)
   }
-  val dayCountsMap = remember(allSchedules) {
+
+  // Filter tasks that have a dueDateIso falling on the selected weekday
+  val tasksForSelectedWeekDay = remember(allTasks, selectedWeekDay) {
+    allTasks.filter { task ->
+      if (task.title.isBlank()) return@filter false
+      val iso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+      if (iso.isBlank()) return@filter false
+      try {
+        val parsedDate = LocalDate.parse(iso.trim())
+        parsedDate.dayOfWeek.name.equals(selectedWeekDay.name, ignoreCase = true)
+      } catch (_: Throwable) {
+        false
+      }
+    }.sortedWith(
+      compareBy<Task> { it.isCompleted }
+        .thenBy { it.dueDateIso }
+        .thenByDescending { it.priority }
+    )
+  }
+
+  val dayCountsMap = remember(allSchedules, allTasks) {
     ScheduleWeekDay.entries.associateWith { day ->
-      viewModel.getSchedulesForDay(day).size
+      val classCount = viewModel.getSchedulesForDay(day).size
+      val taskCount = allTasks.count { task ->
+        if (task.title.isBlank() || task.isCompleted) return@count false
+        val iso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+        if (iso.isBlank()) return@count false
+        try {
+          LocalDate.parse(iso.trim()).dayOfWeek.name.equals(day.name, ignoreCase = true)
+        } catch (_: Throwable) {
+          false
+        }
+      }
+      classCount + taskCount
     }
   }
 
@@ -25068,8 +26181,8 @@ fun ClassTimetableScheduleScreen(
             )
           }
 
-          val toggleFillColor = if (palette.isDark) Color(0xFF1E293B) else Color(0xFFEEF2FF)
-          val toggleContentColor = if (palette.isDark) Color(0xFFA5B4FC) else Color(0xFF4F46E5)
+          val toggleFillColor = palette.nestedCardFill
+          val toggleContentColor = palette.accentIndigo
           Box(
             modifier = Modifier
               .height(42.dp)
@@ -25078,7 +26191,7 @@ fun ClassTimetableScheduleScreen(
               .border(
                 BorderStroke(
                   width = 1.2.dp,
-                  color = Color(0xFF6366F1).copy(alpha = 0.5f)
+                  color = palette.accentIndigo.copy(alpha = 0.45f)
                 ),
                 shape = RoundedCornerShape(50)
               )
@@ -25155,23 +26268,27 @@ fun ClassTimetableScheduleScreen(
               val dayPillShape = RoundedCornerShape(20.dp)
               val dayPillBrush = if (isSelected) {
                 Brush.verticalGradient(
-                  listOf(Color(0xFF6366F1), Color(0xFF4F46E5))
+                  listOf(Color(0xFF38BDF8), Color(0xFF2563EB))
                 )
               } else if (palette.isDark) {
                 Brush.verticalGradient(
-                  listOf(Color(0xFF1E293B), Color(0xFF0F172A))
+                  listOf(
+                    Color(0xFF1E293B).copy(alpha = 0.58f),
+                    Color(0xFF0F172A).copy(alpha = 0.74f)
+                  )
                 )
               } else {
                 Brush.verticalGradient(
-                  listOf(Color(0xFFFFFFFF), Color(0xFFF1F5F9))
+                  listOf(
+                    Color.White.copy(alpha = 0.76f),
+                    Color(0xFFF8FAFC).copy(alpha = 0.56f)
+                  )
                 )
               }
               val dayPillBorder = if (isSelected) {
-                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.45f))
-              } else if (palette.isDark) {
-                BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))
+                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f))
               } else {
-                BorderStroke(1.dp, Color(0xFFCBD5E1))
+                palette.glassBorder
               }
 
               Box(
@@ -25212,11 +26329,9 @@ fun ClassTimetableScheduleScreen(
                       .clip(CircleShape)
                       .background(
                         color = if (isSelected) {
-                          Color.White.copy(alpha = 0.22f)
-                        } else if (palette.isDark) {
-                          Color(0xFF334155)
+                          Color.White.copy(alpha = 0.24f)
                         } else {
-                          Color(0xFFEEF2FF)
+                          Color(0xFF0EA5E9).copy(alpha = 0.16f)
                         },
                         shape = CircleShape
                       ),
@@ -25231,7 +26346,7 @@ fun ClassTimetableScheduleScreen(
                       color = if (isSelected) {
                         Color.White
                       } else {
-                        palette.textSecondary
+                        palette.accentIndigo
                       },
                       maxLines = 1
                     )
@@ -25274,7 +26389,7 @@ fun ClassTimetableScheduleScreen(
         }
 
         // 3. Visual Timetable Cards for the Selected Day (chronologically sorted)
-        if (filteredSchedules.isEmpty()) {
+        if (filteredSchedules.isEmpty() && tasksForSelectedWeekDay.isEmpty()) {
           item {
             LiquidGlassCard(
               modifier = Modifier
@@ -25339,6 +26454,146 @@ fun ClassTimetableScheduleScreen(
               onEdit = { onEditSchedule(scheduleItem) },
               onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
             )
+          }
+        }
+
+        // 4. Task Deadlines Due on Selected Weekday (Synced with Tasks Screen)
+        if (tasksForSelectedWeekDay.isNotEmpty()) {
+          item {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = "${selectedWeekDay.fullLabel} Task Deadlines",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = metrics.scaledSp(16),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.textPrimary
+              )
+              Text(
+                text = "${tasksForSelectedWeekDay.count { !it.isCompleted }} pending",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontSize = metrics.scaledSp(12),
+                  fontWeight = FontWeight.Bold
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+
+          items(
+            items = tasksForSelectedWeekDay,
+            key = { "sched_task_${selectedWeekDay.dayCode}_${it.id}" }
+          ) { task ->
+            val pColor = taskPriorityColor(task.priority, palette.accentIndigo)
+            val resolvedIso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+            val smartDateLabel = formatIsoDateSmartDisplay(resolvedIso, task.dueDate)
+            LiquidGlassCard(
+              onClick = { viewModel.toggleTaskCompletion(task.id) },
+              shape = RoundedCornerShape(20.dp),
+              elevation = 6.dp,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("schedule_task_deadline_card_${task.id}")
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = metrics.scaledDp(16), vertical = metrics.scaledDp(13)),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(
+                      if (task.isCompleted) pColor else pColor.copy(alpha = 0.12f)
+                    )
+                    .border(1.8.dp, pColor, RoundedCornerShape(7.dp))
+                    .clickable { viewModel.toggleTaskCompletion(task.id) }
+                    .testTag("schedule_task_checkbox_${task.id}"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  if (task.isCompleted) {
+                    Icon(
+                      imageVector = Icons.Default.Check,
+                      contentDescription = "Completed",
+                      tint = Color.White,
+                      modifier = Modifier.size(15.dp)
+                    )
+                  }
+                }
+
+                Column(
+                  modifier = Modifier.weight(1f),
+                  verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Surface(
+                      shape = CircleShape,
+                      color = pColor.copy(alpha = 0.16f),
+                      border = BorderStroke(1.dp, pColor.copy(alpha = 0.45f))
+                    ) {
+                      Text(
+                        text = "TASK DEADLINE",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 9.sp,
+                          fontWeight = FontWeight.ExtraBold,
+                          letterSpacing = 0.5.sp
+                        ),
+                        color = pColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                      )
+                    }
+
+                    Surface(
+                      shape = CircleShape,
+                      color = palette.accentIndigo.copy(alpha = 0.14f)
+                    ) {
+                      Text(
+                        text = task.categoryTag.ifBlank { task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY } },
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 10.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = palette.accentIndigo,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                      )
+                    }
+                  }
+
+                  Text(
+                    text = task.title,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                      fontSize = metrics.scaledSp(15),
+                      fontWeight = FontWeight.SemiBold,
+                      textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+                    ),
+                    color = if (task.isCompleted) palette.textSecondary else palette.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+
+                Text(
+                  text = smartDateLabel,
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = metrics.scaledSp(12),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = if (task.isCompleted) palette.textSecondary else pColor
+                )
+              }
+            }
           }
         }
       }
@@ -26716,28 +27971,15 @@ private fun ProfileAndSettingsDialog(
     getInstalledVersionName(context).removePrefix("v").removePrefix("V")
   }
 
-  // Lightweight solid tints with low alpha instead of heavy multi-pass blur shaders
-  val modalBackgroundColor = if (palette.isDark) Color(0xFF0B1120) else Color(0xFFF4F7FB)
-  val consolidatedContainerColor = palette.cardSurface.copy(alpha = 0.85f)
-  val rowTileSurfaceColor = palette.cardSurface.copy(alpha = 0.85f)
-  val slimSpecularBorder = remember(palette.isDark) {
-    BorderStroke(
-      width = 1.dp,
-      brush = Brush.linearGradient(
-        colors = if (palette.isDark) {
-          listOf(
-            Color.White.copy(alpha = 0.32f),
-            Color.White.copy(alpha = 0.08f)
-          )
-        } else {
-          listOf(
-            Color.White.copy(alpha = 0.85f),
-            Color(0xFFCBD5E1).copy(alpha = 0.55f)
-          )
-        }
-      )
-    )
+  // Translucent Liquid Glass modal tints and specular border
+  val modalBackgroundColor = if (palette.isDark) {
+    Color(0xFF0A1120).copy(alpha = 0.90f)
+  } else {
+    Color(0xFFF4F7FB).copy(alpha = 0.92f)
   }
+  val consolidatedContainerColor = palette.cardSurface
+  val rowTileSurfaceColor = palette.cardSurface
+  val slimSpecularBorder = palette.glassBorder
 
   // Inline Edit Profile state
   var isEditingProfile by rememberSaveable { mutableStateOf(false) }
@@ -27769,84 +29011,476 @@ private fun ProfileAndSettingsDialog(
 }
 
 /**
- * Coursework & Task Manager Screen connected to the shared `TaskViewModel`:
- * 1. Top horizontal scrollable row (`LazyRow`) of selectable Subject "Folder" chips:
- *    - Starts with a permanent `"General"` folder, followed by unique `subjectName`s extracted
- *      directly from the `ViewModel`'s `ClassSchedule` list.
- *    - Highlights the currently selected folder using `LiquidVioletChipGradient`, while
- *      unselected folders use the adaptive `GlassPalette` chip styling.
- * 2. Main `LazyColumn` below the folders displaying ONLY tasks that match the currently selected
- *    folder's `subjectCategory`.
- * 3. Task cards styled with `LiquidGlassCard` and high-contrast Light/Dark `GlassPalette` tokens.
+ * Alias for `CourseworkTaskManagerScreen` so callers referencing `TasksScreen` or
+ * `CourseworkTaskManagerScreen` both invoke the TickTick-style Tasks & Note workspace.
+ */
+@Composable
+fun TasksScreen(
+  viewModel: TaskViewModel,
+  onOpenQuickAdd: (String) -> Unit = {},
+  modifier: Modifier = Modifier
+) {
+  CourseworkTaskManagerScreen(
+    viewModel = viewModel,
+    onOpenQuickAdd = onOpenQuickAdd,
+    modifier = modifier
+  )
+}
+
+private const val RICH_NOTE_PREFIX = "RICH_V1:"
+private const val RICH_STYLE_BOLD = 1
+private const val RICH_STYLE_ITALIC = 2
+private const val RICH_STYLE_UNDERLINE = 4
+
+private data class RichTextStyleSpan(
+  val start: Int,
+  val end: Int,
+  val isBold: Boolean,
+  val isItalic: Boolean,
+  val isUnderline: Boolean
+)
+
+private data class DecodedRichNote(
+  val plainText: String,
+  val charStyles: List<Int>
+)
+
+/**
+ * Compresses per-character style bitmasks (`RICH_STYLE_BOLD`, `RICH_STYLE_ITALIC`, `RICH_STYLE_UNDERLINE`)
+ * into contiguous [RichTextStyleSpan] ranges.
+ */
+private fun buildRichStyleSpans(textLength: Int, charStyles: List<Int>): List<RichTextStyleSpan> {
+  if (textLength <= 0 || charStyles.isEmpty()) return emptyList()
+  val spans = mutableListOf<RichTextStyleSpan>()
+  val limit = minOf(textLength, charStyles.size)
+  var i = 0
+  while (i < limit) {
+    val mask = charStyles[i] and 7
+    if (mask == 0) {
+      i++
+      continue
+    }
+    var j = i + 1
+    while (j < limit && (charStyles[j] and 7) == mask) {
+      j++
+    }
+    spans.add(
+      RichTextStyleSpan(
+        start = i,
+        end = j,
+        isBold = (mask and RICH_STYLE_BOLD) != 0,
+        isItalic = (mask and RICH_STYLE_ITALIC) != 0,
+        isUnderline = (mask and RICH_STYLE_UNDERLINE) != 0
+      )
+    )
+    i = j
+  }
+  return spans
+}
+
+/**
+ * Encodes plain text + per-character style masks into `RICH_V1:{"text":"...","spans":[...]}`
+ * when formatting spans exist, or plain text when unformatted. Never inserts `*` or `_` markers.
+ */
+private fun encodeRichNoteDocument(plainText: String, charStyles: List<Int>): String {
+  if (plainText.isEmpty()) return ""
+  val spans = buildRichStyleSpans(plainText.length, charStyles)
+  if (spans.isEmpty()) return plainText
+  return try {
+    val root = JSONObject()
+    root.put("text", plainText)
+    val spanArray = JSONArray()
+    for (span in spans) {
+      val item = JSONObject()
+      item.put("start", span.start)
+      item.put("end", span.end)
+      item.put("b", span.isBold)
+      item.put("i", span.isItalic)
+      item.put("u", span.isUnderline)
+      spanArray.put(item)
+    }
+    root.put("spans", spanArray)
+    RICH_NOTE_PREFIX + root.toString()
+  } catch (_: Throwable) {
+    plainText
+  }
+}
+
+/**
+ * Decodes `task.description` from `RICH_V1:{"text":"...","spans":[...]}` or plain text.
+ * Also automatically migrates any legacy `**bold**`, `__underline__`, or `*italic*` markers
+ * into real style spans and strips the markers so zero `*` or `_` syntax characters ever appear.
+ */
+private fun decodeRichNoteDocument(rawDescription: String): DecodedRichNote {
+  if (rawDescription.isEmpty()) {
+    return DecodedRichNote("", emptyList())
+  }
+  if (rawDescription.startsWith(RICH_NOTE_PREFIX)) {
+    val jsonPart = rawDescription.removePrefix(RICH_NOTE_PREFIX)
+    try {
+      val obj = JSONObject(jsonPart)
+      val text = obj.optString("text", "")
+      val styles = MutableList(text.length) { 0 }
+      val spansArray = obj.optJSONArray("spans")
+      if (spansArray != null) {
+        for (idx in 0 until spansArray.length()) {
+          val sObj = spansArray.optJSONObject(idx) ?: continue
+          val start = sObj.optInt("start", 0).coerceIn(0, text.length)
+          val end = sObj.optInt("end", 0).coerceIn(0, text.length)
+          var mask = 0
+          if (sObj.optBoolean("b", false)) mask = mask or RICH_STYLE_BOLD
+          if (sObj.optBoolean("i", false)) mask = mask or RICH_STYLE_ITALIC
+          if (sObj.optBoolean("u", false)) mask = mask or RICH_STYLE_UNDERLINE
+          if (mask != 0 && start < end) {
+            for (pos in start until end) {
+              styles[pos] = styles[pos] or mask
+            }
+          }
+        }
+      }
+      return DecodedRichNote(text, styles)
+    } catch (_: Throwable) {
+      // Fall back to plain text below
+    }
+  }
+
+  // Legacy migration: strip any **, __, or * markers and convert them to style masks
+  val outChars = StringBuilder()
+  val outStyles = mutableListOf<Int>()
+  var idx = 0
+  var activeMask = 0
+  while (idx < rawDescription.length) {
+    if (idx + 1 < rawDescription.length &&
+      rawDescription[idx] == '*' &&
+      rawDescription[idx + 1] == '*'
+    ) {
+      activeMask = activeMask xor RICH_STYLE_BOLD
+      idx += 2
+      continue
+    }
+    if (idx + 1 < rawDescription.length &&
+      rawDescription[idx] == '_' &&
+      rawDescription[idx + 1] == '_'
+    ) {
+      activeMask = activeMask xor RICH_STYLE_UNDERLINE
+      idx += 2
+      continue
+    }
+    if (rawDescription[idx] == '*') {
+      activeMask = activeMask xor RICH_STYLE_ITALIC
+      idx += 1
+      continue
+    }
+    outChars.append(rawDescription[idx])
+    outStyles.add(activeMask)
+    idx++
+  }
+  return DecodedRichNote(outChars.toString(), outStyles)
+}
+
+/**
+ * True WYSIWYG Span-Based VisualTransformation for the Task Note Detail Workspace description editor.
+ * Applies FontWeight.Bold, FontStyle.Italic, and TextDecoration.Underline directly to character ranges
+ * with 1:1 OffsetMapping.Identity and zero `*` or `_` characters.
+ */
+private class SpanBasedRichNoteVisualTransformation(
+  private val spans: List<RichTextStyleSpan>,
+  private val accentBoldColor: Color
+) : VisualTransformation {
+  override fun filter(text: AnnotatedString): TransformedText {
+    val raw = text.text
+    val annotated = buildAnnotatedString {
+      append(raw)
+      for (span in spans) {
+        val s = span.start.coerceIn(0, raw.length)
+        val e = span.end.coerceIn(0, raw.length)
+        if (s < e) {
+          addStyle(
+            SpanStyle(
+              fontWeight = if (span.isBold) FontWeight.Bold else null,
+              fontStyle = if (span.isItalic) FontStyle.Italic else null,
+              textDecoration = if (span.isUnderline) TextDecoration.Underline else null,
+              color = if (span.isBold) accentBoldColor else Color.Unspecified
+            ),
+            s,
+            e
+          )
+        }
+      }
+    }
+    return TransformedText(annotated, OffsetMapping.Identity)
+  }
+}
+
+/**
+ * TickTick-Style Inbox, Grouped Active/Completed List, & Note-Centric Task Workspace (`TasksScreen` /
+ * `CourseworkTaskManagerScreen`) connected to `TaskViewModel` and live Firestore persistence.
  */
 @Composable
 fun CourseworkTaskManagerScreen(
   viewModel: TaskViewModel,
+  onOpenQuickAdd: (String) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
   val allTasksSnapshot = viewModel.tasks.toList()
-  val schedulesSnapshot = viewModel.classSchedules.toList()
-  val completedTasksCount = allTasksSnapshot.count { it.isCompleted }
 
-  // Dynamically generate Subject Folders: permanent "General" + unique subjectNames from ClassSchedule & Tasks
-  val subjectFolders = remember(schedulesSnapshot, allTasksSnapshot) {
-    buildList {
-      add(DEFAULT_TASK_CATEGORY)
-      (schedulesSnapshot.map { it.subjectName.trim() } + allTasksSnapshot.map { it.subjectCategory.trim() })
-        .filter { it.isNotEmpty() && !it.equals(DEFAULT_TASK_CATEGORY, ignoreCase = true) }
-        .distinctBy { it.lowercase(Locale.US) }
-        .forEach { add(it) }
+  // Smart filters ONLY: All, Today, Upcoming, Overdue (all category tags removed)
+  val smartFilters = remember { listOf("All", "Today", "Upcoming", "Overdue") }
+
+  var selectedFilterChip by rememberSaveable { mutableStateOf("All") }
+  var isCompletedExpanded by rememberSaveable { mutableStateOf(true) }
+  var isDetailFullScreen by rememberSaveable { mutableStateOf(false) }
+
+  LaunchedEffect(smartFilters, selectedFilterChip) {
+    if (selectedFilterChip !in smartFilters) {
+      selectedFilterChip = "All"
     }
   }
 
-  val activeFolder = remember(subjectFolders, viewModel.selectedTaskFolder) {
-    subjectFolders.firstOrNull {
-      it.equals(viewModel.selectedTaskFolder, ignoreCase = true)
-    } ?: DEFAULT_TASK_CATEGORY
+  val selectedDetailTaskId = viewModel.selectedTaskIdForDetail
+  val selectedDetailTask = remember(allTasksSnapshot, selectedDetailTaskId) {
+    allTasksSnapshot.firstOrNull { it.id == selectedDetailTaskId }
   }
 
-  // Ensure ViewModel's selected folder stays valid if a schedule subject was removed
-  LaunchedEffect(activeFolder) {
-    if (!viewModel.selectedTaskFolder.equals(activeFolder, ignoreCase = true)) {
-      viewModel.selectTaskFolder(activeFolder)
-    }
-  }
+  val todayIso = remember { LocalDate.now().toString() }
 
-  // Filter tasks to only those matching the currently selected folder's subjectCategory
-  val filteredTasks = remember(allTasksSnapshot, activeFolder) {
+  // Filter tasks according to selected smart filter (All, Today, Upcoming, Overdue)
+  val filteredTasks = remember(allTasksSnapshot, selectedFilterChip, todayIso) {
     allTasksSnapshot.filter { task ->
-      val taskCategory = task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
-      taskCategory.equals(activeFolder, ignoreCase = true)
-    }
-  }
-
-  val folderCountsMap = remember(allTasksSnapshot, subjectFolders) {
-    subjectFolders.associateWith { folder ->
-      allTasksSnapshot.count { task ->
-        val taskCategory = task.subjectCategory.trim().ifEmpty { DEFAULT_TASK_CATEGORY }
-        taskCategory.equals(folder, ignoreCase = true) && !task.isCompleted
+      if (task.title.isBlank()) return@filter false
+      val resolvedIso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+      when (selectedFilterChip.lowercase(Locale.US)) {
+        "all" -> true
+        "today" -> resolvedIso == todayIso || task.dueDate.equals("Today", ignoreCase = true)
+        "upcoming" -> {
+          (resolvedIso.isNotBlank() && resolvedIso >= todayIso) ||
+            (resolvedIso.isBlank() && !task.dueDate.equals("Overdue", ignoreCase = true) && !task.dueDate.equals("No Date", ignoreCase = true))
+        }
+        "overdue" -> {
+          (resolvedIso.isNotBlank() && resolvedIso < todayIso) ||
+            task.dueDate.equals("Overdue", ignoreCase = true)
+        }
+        else -> true
       }
     }
   }
 
-  val remainingInFolderCount = remember(filteredTasks) {
-    filteredTasks.count { !it.isCompleted }
+  val activeTasksList = remember(filteredTasks) {
+    filteredTasks
+      .filter { !it.isCompleted }
+      .sortedWith(
+        compareByDescending<Task> { it.priority }
+          .thenBy {
+            val iso = it.dueDateIso.ifBlank { inferIsoDateFromLegacyText(it.dueDate) }
+            if (iso.isNotBlank()) iso else "9999-12-31"
+          }
+          .thenByDescending { it.createdAtMillis }
+      )
   }
 
+  val completedTasksList = remember(filteredTasks) {
+    filteredTasks
+      .filter { it.isCompleted }
+      .sortedByDescending { it.completedAtMillis ?: it.createdAtMillis }
+  }
+
+  val chipCountsMap = remember(allTasksSnapshot, smartFilters, todayIso) {
+    val uncompleted = allTasksSnapshot.filter { !it.isCompleted && it.title.isNotBlank() }
+    buildMap {
+      put("All", uncompleted.size)
+      put(
+        "Today",
+        uncompleted.count { t ->
+          val iso = t.dueDateIso.ifBlank { inferIsoDateFromLegacyText(t.dueDate) }
+          iso == todayIso || t.dueDate.equals("Today", ignoreCase = true)
+        }
+      )
+      put(
+        "Upcoming",
+        uncompleted.count { t ->
+          val iso = t.dueDateIso.ifBlank { inferIsoDateFromLegacyText(t.dueDate) }
+          (iso.isNotBlank() && iso >= todayIso) ||
+            (iso.isBlank() && !t.dueDate.equals("Overdue", ignoreCase = true) && !t.dueDate.equals("No Date", ignoreCase = true))
+        }
+      )
+      put(
+        "Overdue",
+        uncompleted.count { t ->
+          val iso = t.dueDateIso.ifBlank { inferIsoDateFromLegacyText(t.dueDate) }
+          (iso.isNotBlank() && iso < todayIso) || t.dueDate.equals("Overdue", ignoreCase = true)
+        }
+      )
+    }
+  }
+
+  BoxWithConstraints(
+    modifier = modifier.fillMaxSize()
+  ) {
+    val isSplitPaneCapable = maxWidth >= 680.dp
+
+    if (selectedDetailTask != null && (!isSplitPaneCapable || isDetailFullScreen)) {
+      BackHandler {
+        if (isDetailFullScreen && isSplitPaneCapable) {
+          isDetailFullScreen = false
+        } else {
+          viewModel.openTaskDetail(null)
+        }
+      }
+    }
+
+    if (isSplitPaneCapable && selectedDetailTask != null && !isDetailFullScreen) {
+      Row(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(horizontal = metrics.scaledDp(16)),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .weight(0.48f)
+            .fillMaxHeight()
+        ) {
+          TasksInboxListPane(
+            viewModel = viewModel,
+            smartFilters = smartFilters,
+            selectedFilterChip = selectedFilterChip,
+            onSelectFilterChip = { chip ->
+              selectedFilterChip = chip
+            },
+            chipCountsMap = chipCountsMap,
+            activeTasksList = activeTasksList,
+            completedTasksList = completedTasksList,
+            isCompletedExpanded = isCompletedExpanded,
+            onToggleCompletedExpanded = { isCompletedExpanded = !isCompletedExpanded },
+            selectedTaskId = selectedDetailTask.id,
+            onOpenTaskDetail = { taskId -> viewModel.openTaskDetail(taskId) },
+            onResetProgress = {
+              viewModel.resetTaskProgress()
+              Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
+            },
+            metrics = metrics,
+            palette = palette
+          )
+        }
+
+        Box(
+          modifier = Modifier
+            .weight(0.52f)
+            .fillMaxHeight()
+            .padding(top = metrics.scaledDp(20), bottom = metrics.scaledDp(96))
+        ) {
+          TaskNoteDetailWorkspace(
+            task = selectedDetailTask,
+            isFullScreen = isDetailFullScreen,
+            showExpandToggle = true,
+            onToggleFullScreen = { isDetailFullScreen = !isDetailFullScreen },
+            onClose = { viewModel.openTaskDetail(null) },
+            onUpdateTask = { updated -> viewModel.updateTask(updated) },
+            onToggleComplete = { viewModel.toggleTaskCompletion(selectedDetailTask.id) },
+            onDeleteTask = { viewModel.deleteTask(selectedDetailTask.id) },
+            metrics = metrics,
+            palette = palette
+          )
+        }
+      }
+    } else {
+      Box(modifier = Modifier.fillMaxSize()) {
+        TasksInboxListPane(
+          viewModel = viewModel,
+          smartFilters = smartFilters,
+          selectedFilterChip = selectedFilterChip,
+          onSelectFilterChip = { chip ->
+            selectedFilterChip = chip
+          },
+          chipCountsMap = chipCountsMap,
+          activeTasksList = activeTasksList,
+          completedTasksList = completedTasksList,
+          isCompletedExpanded = isCompletedExpanded,
+          onToggleCompletedExpanded = { isCompletedExpanded = !isCompletedExpanded },
+          selectedTaskId = selectedDetailTask?.id,
+          onOpenTaskDetail = { taskId -> viewModel.openTaskDetail(taskId) },
+          onResetProgress = {
+            viewModel.resetTaskProgress()
+            Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
+          },
+          metrics = metrics,
+          palette = palette
+        )
+
+        if (selectedDetailTask != null) {
+          // Non-Dialog full-screen Box overlay so Activity window SOFT_INPUT_ADJUST_RESIZE
+          // and Modifier.imePadding() work directly without Dialog window clipping.
+          LiquidGlassAppBackground(
+            isDarkMode = palette.isDark,
+            modifier = Modifier
+              .fillMaxSize()
+              .imePadding()
+              .padding(horizontal = metrics.scaledDp(14), vertical = metrics.scaledDp(10))
+              .testTag("task_note_detail_dialog")
+          ) {
+            TaskNoteDetailWorkspace(
+              task = selectedDetailTask,
+              isFullScreen = true,
+              showExpandToggle = isSplitPaneCapable,
+              onToggleFullScreen = { isDetailFullScreen = !isDetailFullScreen },
+              onClose = {
+                isDetailFullScreen = false
+                viewModel.openTaskDetail(null)
+              },
+              onUpdateTask = { updated -> viewModel.updateTask(updated) },
+              onToggleComplete = { viewModel.toggleTaskCompletion(selectedDetailTask.id) },
+              onDeleteTask = {
+                isDetailFullScreen = false
+                viewModel.deleteTask(selectedDetailTask.id)
+              },
+              metrics = metrics,
+              palette = palette
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun TasksInboxListPane(
+  viewModel: TaskViewModel,
+  smartFilters: List<String>,
+  selectedFilterChip: String,
+  onSelectFilterChip: (String) -> Unit,
+  chipCountsMap: Map<String, Int>,
+  activeTasksList: List<Task>,
+  completedTasksList: List<Task>,
+  isCompletedExpanded: Boolean,
+  onToggleCompletedExpanded: () -> Unit,
+  selectedTaskId: Int?,
+  onOpenTaskDetail: (Int) -> Unit,
+  onResetProgress: () -> Unit,
+  metrics: ResponsiveMetrics,
+  palette: GlassPalette
+) {
+  // High-contrast colors so the Inbox header, active pill, and empty state card never appear dim or washed out
+  val highContrastHeaderColor = palette.textPrimary
+  val highContrastSubtitleColor = palette.textSecondary
+  val highContrastAccentColor = palette.accentIndigo
+
   LazyColumn(
-    modifier = modifier.testTag("tasks_lazy_column"),
+    modifier = Modifier
+      .fillMaxSize()
+      .testTag("tasks_lazy_column"),
     contentPadding = PaddingValues(
-      start = metrics.scaledDp(20),
-      end = metrics.scaledDp(20),
-      top = metrics.scaledDp(24),
-      bottom = metrics.scaledDp(104)
+      start = metrics.scaledDp(18),
+      end = metrics.scaledDp(18),
+      top = metrics.scaledDp(22),
+      bottom = metrics.scaledDp(108)
     ),
     verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
   ) {
-    // 1. Screen Header
+    // 1. Top Inbox Header & Counter Badge (High-Contrast Text & Pill)
     item {
       Row(
         modifier = Modifier
@@ -27855,19 +29489,29 @@ fun CourseworkTaskManagerScreen(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
-        Text(
-          text = stringResource(R.string.tasks_screen_title),
-          style = MaterialTheme.typography.headlineLarge.copy(
-            fontSize = metrics.scaledSp(26),
-            fontWeight = FontWeight.Bold
-          ),
-          color = palette.textPrimary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier
-            .weight(1f)
-            .testTag("tasks_screen_title")
-        )
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = if (selectedFilterChip.equals("All", ignoreCase = true)) "Inbox" else selectedFilterChip,
+            style = MaterialTheme.typography.headlineLarge.copy(
+              fontSize = metrics.scaledSp(26),
+              fontWeight = FontWeight.ExtraBold
+            ),
+            color = highContrastHeaderColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("tasks_screen_title")
+          )
+          Text(
+            text = "Study Tasks • Tap any task to open study notes",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontSize = metrics.scaledSp(11),
+              fontWeight = FontWeight.SemiBold
+            ),
+            color = highContrastSubtitleColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
 
         if (viewModel.isSyncingTasks) {
           CircularProgressIndicator(
@@ -27879,15 +29523,12 @@ fun CourseworkTaskManagerScreen(
           )
         }
 
-        if (completedTasksCount > 0) {
+        if (completedTasksList.isNotEmpty()) {
           Surface(
-            onClick = {
-              viewModel.resetTaskProgress()
-              Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
-            },
+            onClick = onResetProgress,
             color = palette.cardFill,
             shape = CircleShape,
-            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f)),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.55f)),
             modifier = Modifier.testTag("tasks_reset_progress_button")
           ) {
             Row(
@@ -27901,16 +29542,16 @@ fun CourseworkTaskManagerScreen(
               Icon(
                 imageVector = Icons.Default.Refresh,
                 contentDescription = "Reset Progress",
-                tint = palette.accentIndigo,
+                tint = highContrastAccentColor,
                 modifier = Modifier.size(14.dp)
               )
               Text(
-                text = "Reset Progress",
+                text = "Reset",
                 style = MaterialTheme.typography.labelMedium.copy(
                   fontSize = metrics.scaledSp(11),
                   fontWeight = FontWeight.Bold
                 ),
-                color = palette.accentIndigo,
+                color = highContrastAccentColor,
                 maxLines = 1,
                 softWrap = false
               )
@@ -27919,21 +29560,21 @@ fun CourseworkTaskManagerScreen(
         }
 
         Surface(
-          color = palette.accentIndigo.copy(alpha = 0.16f),
+          color = Color(0xFF0EA5E9).copy(alpha = 0.16f),
           shape = CircleShape,
-          border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.35f))
+          border = BorderStroke(1.2.dp, Color(0xFF38BDF8).copy(alpha = 0.45f))
         ) {
           Text(
-            text = "$remainingInFolderCount Active",
+            text = "${activeTasksList.size} Active",
             style = MaterialTheme.typography.labelMedium.copy(
               fontSize = metrics.scaledSp(12),
-              fontWeight = FontWeight.Bold
+              fontWeight = FontWeight.ExtraBold
             ),
-            color = palette.accentIndigo,
+            color = highContrastAccentColor,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(
-              horizontal = metrics.scaledDp(14),
+              horizontal = metrics.scaledDp(13),
               vertical = metrics.scaledDp(6)
             )
           )
@@ -27941,46 +29582,36 @@ fun CourseworkTaskManagerScreen(
       }
     }
 
-    // 2. Dynamic Subject Folders Horizontal Scrollable Row (Floating Glass Chips -> Vibrant Violet when selected)
+    // 2. Filter Bar (ONLY All, Today, Upcoming, Overdue — category tags removed)
     item {
       LazyRow(
         modifier = Modifier
           .fillMaxWidth()
           .padding(vertical = 2.dp)
           .testTag("task_subject_folders_row"),
-        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10)),
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
         verticalAlignment = Alignment.CenterVertically
       ) {
         items(
-          items = subjectFolders,
+          items = smartFilters,
           key = { it.lowercase(Locale.US) }
-        ) { folderName ->
-          val isSelected = folderName.equals(activeFolder, ignoreCase = true)
-          val activeCount = folderCountsMap[folderName] ?: 0
-          val chipTextColor = if (isSelected) {
-            Color.White
-          } else {
-            palette.textPrimary
-          }
+        ) { chipName ->
+          val isSelected = chipName.equals(selectedFilterChip, ignoreCase = true)
+          val activeCount = chipCountsMap[chipName] ?: 0
+          val chipTextColor = if (isSelected) Color.White else highContrastHeaderColor
 
           Box(
             modifier = Modifier
-              .height(metrics.scaledDp(44))
-              .shadow(
-                elevation = if (isSelected) 10.dp else 4.dp,
-                shape = RoundedCornerShape(20.dp),
-                ambientColor = if (isSelected) LiquidDeepIndigo.copy(alpha = 0.35f) else palette.cardAmbientShadow,
-                spotColor = if (isSelected) LiquidElectricViolet.copy(alpha = 0.35f) else palette.cardSpotShadow
-              )
-              .clip(RoundedCornerShape(20.dp))
+              .height(metrics.scaledDp(40))
+              .clip(RoundedCornerShape(18.dp))
               .background(
                 brush = if (isSelected) {
                   LiquidVioletChipGradient
                 } else {
-                  Brush.linearGradient(
+                  Brush.verticalGradient(
                     listOf(
-                      palette.chipUnselectedFill,
-                      palette.nestedCardFill
+                      palette.cardTopSheen,
+                      palette.cardBottomSheen
                     )
                   )
                 }
@@ -27989,44 +29620,40 @@ fun CourseworkTaskManagerScreen(
                 border = if (isSelected) {
                   BorderStroke(1.2.dp, Color.White.copy(alpha = 0.70f))
                 } else {
-                  BorderStroke(1.1.dp, palette.chipUnselectedBorder)
+                  palette.glassBorder
                 },
-                shape = RoundedCornerShape(20.dp)
+                shape = RoundedCornerShape(18.dp)
               )
-              .clickable { viewModel.selectTaskFolder(folderName) }
-              .testTag("task_folder_chip_${folderName.lowercase(Locale.US).replace(" ", "_")}")
+              .clickable { onSelectFilterChip(chipName) }
+              .testTag("task_folder_chip_${chipName.lowercase(Locale.US).replace(" ", "_")}")
           ) {
             Row(
               modifier = Modifier
                 .fillMaxHeight()
-                .padding(
-                  horizontal = metrics.scaledDp(14),
-                  vertical = metrics.scaledDp(8)
-                ),
+                .padding(horizontal = metrics.scaledDp(13), vertical = metrics.scaledDp(6)),
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
               Icon(
-                imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
-                contentDescription = null,
-                tint = if (isSelected) {
-                  Color.White
-                } else {
-                  palette.accentIndigo
+                imageVector = when {
+                  chipName.equals("Today", ignoreCase = true) -> Icons.Outlined.CalendarToday
+                  chipName.equals("Overdue", ignoreCase = true) -> Icons.Outlined.Flag
+                  else -> Icons.Outlined.Checklist
                 },
-                modifier = Modifier.size(18.dp)
+                contentDescription = null,
+                tint = if (isSelected) Color.White else highContrastAccentColor,
+                modifier = Modifier.size(16.dp)
               )
 
               Text(
-                text = folderName,
+                text = chipName,
                 style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(14),
-                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                  fontSize = metrics.scaledSp(13),
+                  fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
                 ),
                 color = chipTextColor,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 180.dp)
+                overflow = TextOverflow.Ellipsis
               )
 
               if (activeCount > 0) {
@@ -28034,23 +29661,19 @@ fun CourseworkTaskManagerScreen(
                   color = if (isSelected) {
                     Color.White.copy(alpha = 0.24f)
                   } else {
-                    palette.accentIndigo.copy(alpha = 0.16f)
+                    Color(0xFF0EA5E9).copy(alpha = 0.16f)
                   },
                   shape = CircleShape
                 ) {
                   Text(
                     text = activeCount.toString(),
                     style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = metrics.scaledSp(11),
+                      fontSize = metrics.scaledSp(10),
                       fontWeight = FontWeight.Bold
                     ),
-                    color = if (isSelected) {
-                      Color.White
-                    } else {
-                      palette.accentIndigo
-                    },
+                    color = if (isSelected) Color.White else highContrastAccentColor,
                     maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                   )
                 }
               }
@@ -28060,263 +29683,1627 @@ fun CourseworkTaskManagerScreen(
       }
     }
 
-    // 3. Filtered Task Cards List for Selected Subject Folder
-    if (filteredTasks.isEmpty()) {
+    // 3. Active Tasks Unified Card Container or Translucent Liquid Glass Empty State Card
+    if (activeTasksList.isEmpty() && completedTasksList.isEmpty()) {
       item {
         LiquidGlassCard(
+          shape = RoundedCornerShape(22.dp),
+          elevation = 4.dp,
           modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp)
-            .testTag("empty_tasks_card"),
-          shape = RoundedCornerShape(26.dp),
-          elevation = 8.dp
+            .padding(top = 6.dp)
+            .testTag("empty_tasks_card")
         ) {
           Column(
             modifier = Modifier
               .fillMaxWidth()
               .padding(metrics.scaledDp(28)),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            Icon(
-              imageVector = Icons.Outlined.Folder,
-              contentDescription = null,
-              tint = palette.accentIndigo,
-              modifier = Modifier.size(36.dp)
-            )
+            Surface(
+              shape = CircleShape,
+              color = Color(0xFF0EA5E9).copy(alpha = 0.16f),
+              border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.42f)),
+              modifier = Modifier.size(54.dp)
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Outlined.Checklist,
+                  contentDescription = null,
+                  tint = highContrastAccentColor,
+                  modifier = Modifier.size(28.dp)
+                )
+              }
+            }
             Text(
-              text = "No tasks in \"$activeFolder\"",
+              text = "No tasks in \"$selectedFilterChip\"",
               style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(19),
-                fontWeight = FontWeight.Bold
+                fontSize = metrics.scaledSp(18),
+                fontWeight = FontWeight.ExtraBold
               ),
-              color = palette.textPrimary,
-              textAlign = TextAlign.Center,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
+              color = highContrastHeaderColor,
+              textAlign = TextAlign.Center
             )
             Text(
-              text = "Tap the + button in the bottom corner to add a task to this subject folder.",
-              style = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = metrics.scaledSp(15)
+              text = "Tap the + button in the bottom corner to capture a new task, deadline, or study note.",
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = metrics.scaledSp(14)
               ),
-              color = palette.textSecondary,
-              textAlign = TextAlign.Center,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis
+              color = highContrastSubtitleColor,
+              textAlign = TextAlign.Center
             )
           }
         }
       }
     } else {
-      items(
-        items = filteredTasks,
-        key = { it.id }
-      ) { task ->
-        TaskItemRowCard(
-          task = task,
-          metrics = metrics,
-          onToggle = { viewModel.toggleTaskCompletion(task.id) },
-          onDelete = { viewModel.deleteTask(task.id) }
-        )
+      if (activeTasksList.isNotEmpty()) {
+        item {
+          LiquidGlassCard(
+            shape = RoundedCornerShape(22.dp),
+            elevation = 8.dp,
+            fillAlpha = if (palette.isDark) 0.80f else 0.92f,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("active_tasks_group_card")
+          ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+              activeTasksList.forEachIndexed { index, task ->
+                TickTickTaskRowItem(
+                  task = task,
+                  isSelectedInSplit = selectedTaskId == task.id,
+                  metrics = metrics,
+                  palette = palette,
+                  onToggleComplete = { viewModel.toggleTaskCompletion(task.id) },
+                  onClickRow = { onOpenTaskDetail(task.id) },
+                  onDelete = { viewModel.deleteTask(task.id) }
+                )
+                if (index < activeTasksList.lastIndex) {
+                  HorizontalDivider(
+                    thickness = 0.8.dp,
+                    color = if (palette.isDark) {
+                      Color.White.copy(alpha = 0.07f)
+                    } else {
+                      palette.dividerColor.copy(alpha = 0.55f)
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 4. Collapsible "Completed" Card Container (`LiquidGlassCard`)
+      if (completedTasksList.isNotEmpty()) {
+        item {
+          LiquidGlassCard(
+            shape = RoundedCornerShape(22.dp),
+            elevation = 6.dp,
+            fillAlpha = if (palette.isDark) 0.66f else 0.84f,
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("completed_tasks_group_card")
+          ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+              // Header Row: "Completed" on left, count + chevron on right
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clickable { onToggleCompletedExpanded() }
+                  .padding(horizontal = 16.dp, vertical = 14.dp)
+                  .testTag("completed_tasks_group_header"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Text(
+                  text = "Completed",
+                  style = MaterialTheme.typography.titleSmall.copy(
+                    fontSize = metrics.scaledSp(14),
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = highContrastHeaderColor
+                )
+
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                  Text(
+                    text = "${completedTasksList.size}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontFamily = FontFamily.Monospace,
+                      fontSize = metrics.scaledSp(12),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = highContrastSubtitleColor
+                  )
+                  Icon(
+                    imageVector = if (isCompletedExpanded) {
+                      Icons.Default.KeyboardArrowUp
+                    } else {
+                      Icons.Default.KeyboardArrowDown
+                    },
+                    contentDescription = if (isCompletedExpanded) "Collapse completed" else "Expand completed",
+                    tint = highContrastSubtitleColor,
+                    modifier = Modifier.size(18.dp)
+                  )
+                }
+              }
+
+              AnimatedVisibility(visible = isCompletedExpanded) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                  HorizontalDivider(
+                    thickness = 0.8.dp,
+                    color = if (palette.isDark) {
+                      Color.White.copy(alpha = 0.06f)
+                    } else {
+                      palette.dividerColor.copy(alpha = 0.45f)
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                  )
+                  completedTasksList.forEachIndexed { index, task ->
+                    TickTickTaskRowItem(
+                      task = task,
+                      isSelectedInSplit = selectedTaskId == task.id,
+                      metrics = metrics,
+                      palette = palette,
+                      onToggleComplete = { viewModel.toggleTaskCompletion(task.id) },
+                      onClickRow = { onOpenTaskDetail(task.id) },
+                      onDelete = { viewModel.deleteTask(task.id) }
+                    )
+                    if (index < completedTasksList.lastIndex) {
+                      HorizontalDivider(
+                        thickness = 0.8.dp,
+                        color = if (palette.isDark) {
+                          Color.White.copy(alpha = 0.05f)
+                        } else {
+                          palette.dividerColor.copy(alpha = 0.40f)
+                        },
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
 }
 
 /**
- * Frosted Glass Task row card (`LiquidGlassCard`) with custom rounded gradient checkbox,
- * specular highlight border, and high-contrast typography bound to `GlassPalette`.
+ * TickTick-style Task Row Item inside the Active or Completed unified `LiquidGlassCard`.
+ * Category tags have been completely removed for a clean, distraction-free layout.
  */
 @Composable
-private fun TaskItemRowCard(
+private fun TickTickTaskRowItem(
   task: Task,
+  isSelectedInSplit: Boolean = false,
   metrics: ResponsiveMetrics,
-  onToggle: () -> Unit,
+  palette: GlassPalette,
+  onToggleComplete: () -> Unit,
+  onClickRow: () -> Unit,
   onDelete: () -> Unit
 ) {
-  val palette = currentGlassPalette()
-  val titleTextColor = if (task.isCompleted) {
-    palette.textSecondary
-  } else {
-    palette.textPrimary
+  val todayIso = remember { LocalDate.now().toString() }
+  val resolvedIso = remember(task.dueDateIso, task.dueDate) {
+    task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
   }
-  val calendarAccentColor = if (task.isCompleted) {
-    palette.textSecondary
+  val smartDueLabel = remember(resolvedIso, task.dueDate) {
+    formatIsoDateSmartDisplay(resolvedIso, task.dueDate)
+  }
+
+  val dueLabelColor = when {
+    task.isCompleted -> palette.textSecondary.copy(alpha = 0.55f)
+    resolvedIso.isNotBlank() && resolvedIso == todayIso -> Color(0xFF38BDF8)
+    resolvedIso.isNotBlank() && resolvedIso < todayIso -> Color(0xFFF87171)
+    resolvedIso.isNotBlank() && resolvedIso > todayIso -> Color(0xFF60A5FA)
+    task.dueDate.equals("Today", ignoreCase = true) -> Color(0xFF38BDF8)
+    task.dueDate.equals("Overdue", ignoreCase = true) -> Color(0xFFF87171)
+    else -> Color(0xFF60A5FA)
+  }
+
+  val defaultUncheckedBorder = if (palette.isDark) {
+    Color.White.copy(alpha = 0.45f)
   } else {
-    palette.accentIndigo
+    palette.checkboxUncheckedBorder
+  }
+  val priorityCheckboxColor = taskPriorityColor(task.priority, defaultUncheckedBorder)
+  val hasNoteOrSubtasks = task.description.isNotBlank() || task.subtasks.isNotEmpty()
+
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(
+        if (isSelectedInSplit) palette.accentIndigo.copy(alpha = 0.12f) else Color.Transparent
+      )
+      .clickable(onClick = onClickRow)
+      .padding(horizontal = metrics.scaledDp(14), vertical = metrics.scaledDp(12))
+      .testTag("task_item_card_${task.id}"),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    // 1. Left: Interactive Priority-Colored Rounded-Square Checkbox (22.dp, RoundedCornerShape(6.dp))
+    Box(
+      modifier = Modifier
+        .size(36.dp)
+        .minimumInteractiveComponentSize()
+        .clip(RoundedCornerShape(8.dp))
+        .clickable(onClick = onToggleComplete)
+        .testTag("task_checkbox_${task.id}"),
+      contentAlignment = Alignment.Center
+    ) {
+      Box(
+        modifier = Modifier
+          .size(22.dp)
+          .clip(RoundedCornerShape(6.dp))
+          .background(
+            color = when {
+              task.isCompleted -> Color(0xFF64748B)
+              task.priority > 0 -> priorityCheckboxColor.copy(alpha = 0.14f)
+              else -> Color.Transparent
+            }
+          )
+          .border(
+            width = 1.8.dp,
+            color = if (task.isCompleted) Color(0xFF64748B) else priorityCheckboxColor,
+            shape = RoundedCornerShape(6.dp)
+          ),
+        contentAlignment = Alignment.Center
+      ) {
+        if (task.isCompleted) {
+          Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = "Completed",
+            tint = Color.White,
+            modifier = Modifier.size(14.dp)
+          )
+        }
+      }
+    }
+
+    // 2. Center: Task Title + Subtask Progress (Category tag badge removed)
+    Column(
+      modifier = Modifier.weight(1f),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      Text(
+        text = task.title,
+        style = MaterialTheme.typography.bodyLarge.copy(
+          fontSize = 15.sp,
+          fontWeight = FontWeight.Medium,
+          textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+        ),
+        color = if (task.isCompleted) {
+          if (palette.isDark) Color.White.copy(alpha = 0.42f) else palette.textSecondary.copy(alpha = 0.6f)
+        } else {
+          palette.textPrimary
+        },
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("task_title_${task.id}")
+      )
+
+      if (task.subtasks.isNotEmpty()) {
+        val doneSubtasks = task.subtasks.count { it.isDone }
+        Text(
+          text = "☑ $doneSubtasks/${task.subtasks.size}",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = palette.textSecondary
+        )
+      }
+    }
+
+    // 3. Right Metadata Column: Smart Due Date + Note Indicator Icon + Delete Action
+    Column(
+      horizontalAlignment = Alignment.End,
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      if (smartDueLabel.isNotBlank()) {
+        Text(
+          text = smartDueLabel,
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = dueLabelColor,
+          maxLines = 1
+        )
+      }
+
+      if (hasNoteOrSubtasks) {
+        Icon(
+          imageVector = Icons.Outlined.Description,
+          contentDescription = "Contains study notes",
+          tint = palette.textSecondary.copy(alpha = 0.78f),
+          modifier = Modifier
+            .size(13.dp)
+            .testTag("task_note_indicator_${task.id}")
+        )
+      }
+    }
+
+    IconButton(
+      onClick = onDelete,
+      modifier = Modifier
+        .size(36.dp)
+        .minimumInteractiveComponentSize()
+        .testTag("delete_task_button_${task.id}")
+    ) {
+      Icon(
+        imageVector = Icons.Outlined.DeleteOutline,
+        contentDescription = "Delete ${task.title}",
+        tint = palette.textSecondary.copy(alpha = 0.65f),
+        modifier = Modifier.size(18.dp)
+      )
+    }
+  }
+}
+
+/**
+ * Full Note-Style Task Detail Workspace (Responsive Split Pane / Slide-Over Sheet).
+ * Features:
+ * - Rich-Text Formatting Toolbar (`B`, `I`, `U`, `• List`, `☑️ Subtask`, `↶ Undo`) docked as a
+ *   sleek sticky bar DIRECTLY BELOW the Task Title and ABOVE the Description editor so the soft
+ *   keyboard can never cover or clip the formatting buttons on any phone or tablet.
+ * - True WYSIWYG Span-Based Rich Text Editor (`SpanBasedRichNoteVisualTransformation`) with zero
+ *   `*` or `_` syntax characters, supporting both Selection Formatting and Live Typing Formatting.
+ * - Comprehensive Month & Year Calendar Deadline Picker (`InlineMiniDatePickerCard`).
+ * - Clean Subtasks checklist with single `+` icon and `"Add subtask"` placeholder.
+ */
+@Composable
+private fun TaskNoteDetailWorkspace(
+  task: Task,
+  isFullScreen: Boolean,
+  showExpandToggle: Boolean,
+  onToggleFullScreen: () -> Unit,
+  onClose: () -> Unit,
+  onUpdateTask: (Task) -> Unit,
+  onToggleComplete: () -> Unit,
+  onDeleteTask: () -> Unit,
+  metrics: ResponsiveMetrics,
+  palette: GlassPalette
+) {
+  var titleText by remember(task.id) { mutableStateOf(task.title) }
+
+  val initialDecoded = remember(task.id) { decodeRichNoteDocument(task.description) }
+  var descriptionField by remember(task.id) {
+    mutableStateOf(
+      TextFieldValue(
+        text = initialDecoded.plainText,
+        selection = TextRange(initialDecoded.plainText.length)
+      )
+    )
+  }
+  var charStyles by remember(task.id) {
+    mutableStateOf(initialDecoded.charStyles)
+  }
+  var lastSavedEncodedDescription by remember(task.id) {
+    mutableStateOf(task.description)
+  }
+
+  var isBoldActive by remember(task.id) { mutableStateOf(false) }
+  var isItalicActive by remember(task.id) { mutableStateOf(false) }
+  var isUnderlineActive by remember(task.id) { mutableStateOf(false) }
+
+  val undoHistory = remember(task.id) { mutableStateListOf<DecodedRichNote>() }
+  var newSubtaskInput by remember(task.id) { mutableStateOf("") }
+  var showInlineDatePicker by rememberSaveable(task.id) { mutableStateOf(false) }
+  val subtaskFocusRequester = remember { FocusRequester() }
+
+  // Keep local text synced if updated externally (e.g. cloud snapshot)
+  LaunchedEffect(task.title) {
+    if (titleText != task.title) titleText = task.title
+  }
+  LaunchedEffect(task.description) {
+    if (task.description != lastSavedEncodedDescription) {
+      val decoded = decodeRichNoteDocument(task.description)
+      lastSavedEncodedDescription = task.description
+      val safeStart = descriptionField.selection.start.coerceIn(0, decoded.plainText.length)
+      val safeEnd = descriptionField.selection.end.coerceIn(0, decoded.plainText.length)
+      descriptionField = TextFieldValue(
+        text = decoded.plainText,
+        selection = TextRange(safeStart, safeEnd)
+      )
+      charStyles = decoded.charStyles
+    }
+  }
+
+  val resolvedIso = remember(task.dueDateIso, task.dueDate) {
+    task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+  }
+
+  val (relativeStatusText, relativeStatusColor) = remember(resolvedIso, task.dueDate, task.isCompleted) {
+    if (resolvedIso.isNotBlank()) {
+      try {
+        val due = LocalDate.parse(resolvedIso.trim())
+        val today = LocalDate.now()
+        val daysDiff = ChronoUnit.DAYS.between(today, due).toInt()
+        val shortDate = due.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH))
+        when {
+          daysDiff == 0 -> "Due Today, $shortDate" to Color(0xFF38BDF8)
+          daysDiff == 1 -> "Tomorrow, $shortDate" to Color(0xFF60A5FA)
+          daysDiff > 1 -> "In $daysDiff days, $shortDate" to Color(0xFF60A5FA)
+          daysDiff == -1 -> "1 day overdue, $shortDate" to Color(0xFFF87171)
+          else -> "${-daysDiff} days overdue, $shortDate" to Color(0xFFF87171)
+        }
+      } catch (_: Throwable) {
+        (task.dueDate.ifBlank { "Set due date" }) to Color(0xFF60A5FA)
+      }
+    } else {
+      (task.dueDate.ifBlank { "Set due date" }) to Color(0xFF60A5FA)
+    }
+  }
+
+  val defaultBorder = if (palette.isDark) Color.White.copy(alpha = 0.45f) else palette.checkboxUncheckedBorder
+  val priorityColor = taskPriorityColor(task.priority, defaultBorder)
+
+  val styleSpans = remember(descriptionField.text, charStyles) {
+    buildRichStyleSpans(descriptionField.text.length, charStyles)
+  }
+
+  val richVisualTransformation = remember(styleSpans, palette.textPrimary) {
+    SpanBasedRichNoteVisualTransformation(
+      spans = styleSpans,
+      accentBoldColor = palette.textPrimary
+    )
+  }
+
+  val pushUndoSnapshot: () -> Unit = {
+    val currentSnap = DecodedRichNote(descriptionField.text, charStyles.toList())
+    if (undoHistory.lastOrNull() != currentSnap) {
+      undoHistory.add(currentSnap)
+      if (undoHistory.size > 30) {
+        undoHistory.removeAt(0)
+      }
+    }
+  }
+
+  val persistRichDescription: (String, List<Int>) -> Unit = { plain, styles ->
+    val encoded = encodeRichNoteDocument(plain, styles)
+    lastSavedEncodedDescription = encoded
+    onUpdateTask(task.copy(description = encoded))
+  }
+
+  // Toggle helper for Behavior 1 (Selection Formatting) & Behavior 2 (Live Typing Formatting)
+  val toggleStyleFlag: (Int) -> Unit = { flag ->
+    val textLen = descriptionField.text.length
+    val minSel = minOf(descriptionField.selection.start, descriptionField.selection.end).coerceIn(0, textLen)
+    val maxSel = maxOf(descriptionField.selection.start, descriptionField.selection.end).coerceIn(0, textLen)
+
+    if (minSel < maxSel) {
+      // Behavior 1: Selection Formatting on [minSel, maxSel)
+      pushUndoSnapshot()
+      val currentStyles = MutableList(textLen) { idx -> charStyles.getOrElse(idx) { 0 } }
+      val allHaveFlag = (minSel until maxSel).all { (currentStyles[it] and flag) != 0 }
+      val enableFlag = !allHaveFlag
+      for (i in minSel until maxSel) {
+        currentStyles[i] = if (enableFlag) {
+          currentStyles[i] or flag
+        } else {
+          currentStyles[i] and flag.inv()
+        }
+      }
+      charStyles = currentStyles
+      when (flag) {
+        RICH_STYLE_BOLD -> isBoldActive = enableFlag
+        RICH_STYLE_ITALIC -> isItalicActive = enableFlag
+        RICH_STYLE_UNDERLINE -> isUnderlineActive = enableFlag
+      }
+      persistRichDescription(descriptionField.text, currentStyles)
+    } else {
+      // Behavior 2: Live Typing Formatting toggle
+      when (flag) {
+        RICH_STYLE_BOLD -> isBoldActive = !isBoldActive
+        RICH_STYLE_ITALIC -> isItalicActive = !isItalicActive
+        RICH_STYLE_UNDERLINE -> isUnderlineActive = !isUnderlineActive
+      }
+    }
+  }
+
+  val onDescriptionValueChange: (TextFieldValue) -> Unit = { updatedField ->
+    val oldText = descriptionField.text
+    val newText = updatedField.text
+    if (newText != oldText) {
+      pushUndoSnapshot()
+      var prefixLen = 0
+      val minLen = minOf(oldText.length, newText.length)
+      while (prefixLen < minLen && oldText[prefixLen] == newText[prefixLen]) {
+        prefixLen++
+      }
+      var oldSuffixIdx = oldText.length
+      var newSuffixIdx = newText.length
+      while (
+        oldSuffixIdx > prefixLen &&
+        newSuffixIdx > prefixLen &&
+        oldText[oldSuffixIdx - 1] == newText[newSuffixIdx - 1]
+      ) {
+        oldSuffixIdx--
+        newSuffixIdx--
+      }
+
+      val activeMask = (if (isBoldActive) RICH_STYLE_BOLD else 0) or
+        (if (isItalicActive) RICH_STYLE_ITALIC else 0) or
+        (if (isUnderlineActive) RICH_STYLE_UNDERLINE else 0)
+
+      val updatedStyles = MutableList(newText.length) { 0 }
+      for (i in 0 until prefixLen) {
+        updatedStyles[i] = charStyles.getOrElse(i) { 0 }
+      }
+      for (i in prefixLen until newSuffixIdx) {
+        updatedStyles[i] = activeMask
+      }
+      val suffixLen = oldText.length - oldSuffixIdx
+      for (i in 0 until suffixLen) {
+        updatedStyles[newSuffixIdx + i] = charStyles.getOrElse(oldSuffixIdx + i) { 0 }
+      }
+
+      descriptionField = updatedField
+      charStyles = updatedStyles
+      persistRichDescription(newText, updatedStyles)
+    } else {
+      descriptionField = updatedField
+      // If the user highlighted a range of text, reflect that selection's active styles in the toolbar
+      val minSel = minOf(updatedField.selection.start, updatedField.selection.end).coerceIn(0, newText.length)
+      val maxSel = maxOf(updatedField.selection.start, updatedField.selection.end).coerceIn(0, newText.length)
+      if (minSel < maxSel) {
+        isBoldActive = (minSel until maxSel).all { (charStyles.getOrElse(it) { 0 } and RICH_STYLE_BOLD) != 0 }
+        isItalicActive = (minSel until maxSel).all { (charStyles.getOrElse(it) { 0 } and RICH_STYLE_ITALIC) != 0 }
+        isUnderlineActive = (minSel until maxSel).all { (charStyles.getOrElse(it) { 0 } and RICH_STYLE_UNDERLINE) != 0 }
+      }
+    }
   }
 
   LiquidGlassCard(
-    onClick = onToggle,
     shape = RoundedCornerShape(24.dp),
-    elevation = 8.dp,
-    fillAlpha = if (palette.isDark) 0.78f else 0.90f,
+    elevation = 12.dp,
+    fillAlpha = if (palette.isDark) 0.88f else 0.96f,
     modifier = Modifier
-      .fillMaxWidth()
-      .testTag("task_item_card_${task.id}")
+      .fillMaxSize()
+      .testTag("task_note_detail_workspace")
   ) {
-    Row(
+    Column(
       modifier = Modifier
-        .fillMaxWidth()
-        .padding(
-          horizontal = metrics.scaledDp(16),
-          vertical = metrics.scaledDp(14)
-        ),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        .fillMaxSize()
+        .imePadding()
+        .padding(horizontal = metrics.scaledDp(18), vertical = metrics.scaledDp(14)),
+      verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-      // Custom Rounded Checkbox: 1.5.dp border of #818CF8 (Dark) / #4F46E5 (Light) and translucent fill when unchecked,
-      // filling with a vibrant indigo/violet gradient when checked.
-      Box(
+      // 1. Top Bar: Back/Close button on Left; Priority Flag, Expand toggle, and Delete on Right
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        IconButton(
+          onClick = onClose,
+          modifier = Modifier
+            .size(40.dp)
+            .minimumInteractiveComponentSize()
+            .testTag("task_detail_close_button")
+        ) {
+          Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Back to Inbox",
+            tint = palette.textPrimary
+          )
+        }
+
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          // Interactive Priority Flag Button (cycles 0 -> 1 -> 2 -> 3 -> 0)
+          Surface(
+            onClick = {
+              val nextPriority = (task.priority + 1) % 4
+              onUpdateTask(task.copy(priority = nextPriority))
+            },
+            shape = RoundedCornerShape(12.dp),
+            color = if (task.priority > 0) priorityColor.copy(alpha = 0.16f) else palette.nestedCardFill,
+            border = BorderStroke(1.dp, priorityColor.copy(alpha = 0.55f)),
+            modifier = Modifier
+              .minimumInteractiveComponentSize()
+              .testTag("task_detail_priority_button")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Icon(
+                imageVector = if (task.priority > 0) Icons.Filled.Flag else Icons.Outlined.Flag,
+                contentDescription = "Task Priority",
+                tint = if (task.priority > 0) priorityColor else palette.textSecondary,
+                modifier = Modifier.size(16.dp)
+              )
+              Text(
+                text = taskPriorityLabel(task.priority),
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = if (task.priority > 0) priorityColor else palette.textSecondary
+              )
+            }
+          }
+
+          if (showExpandToggle) {
+            IconButton(
+              onClick = onToggleFullScreen,
+              modifier = Modifier
+                .size(40.dp)
+                .minimumInteractiveComponentSize()
+                .testTag("task_detail_expand_button")
+            ) {
+              Icon(
+                imageVector = if (isFullScreen) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                contentDescription = "Toggle Fullscreen",
+                tint = palette.textSecondary,
+                modifier = Modifier.size(18.dp)
+              )
+            }
+          }
+
+          IconButton(
+            onClick = onDeleteTask,
+            modifier = Modifier
+              .size(40.dp)
+              .minimumInteractiveComponentSize()
+              .testTag("task_detail_delete_button")
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.Delete,
+              contentDescription = "Delete Task",
+              tint = palette.accentRed,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+        }
+      }
+
+      // 2. Deadline & Status Ribbon (Interactive priority checkbox + clickable relative date status)
+      Row(
         modifier = Modifier
-          .size(34.dp)
-          .minimumInteractiveComponentSize()
-          .clip(RoundedCornerShape(10.dp))
-          .clickable(onClick = onToggle)
-          .testTag("task_checkbox_${task.id}"),
-        contentAlignment = Alignment.Center
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(14.dp))
+          .background(palette.nestedCardFill.copy(alpha = 0.72f))
+          .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
       ) {
         Box(
           modifier = Modifier
-            .size(25.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .size(24.dp)
+            .clip(RoundedCornerShape(6.dp))
             .background(
-              brush = if (task.isCompleted) {
-                LiquidVioletChipGradient
-              } else {
-                Brush.linearGradient(
-                  listOf(
-                    palette.checkboxUncheckedFill,
-                    palette.checkboxUncheckedFill
-                  )
-                )
+              when {
+                task.isCompleted -> Color(0xFF64748B)
+                task.priority > 0 -> priorityColor.copy(alpha = 0.14f)
+                else -> Color.Transparent
               }
             )
             .border(
-              border = if (task.isCompleted) {
-                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.70f))
-              } else {
-                BorderStroke(1.5.dp, palette.checkboxUncheckedBorder)
-              },
-              shape = RoundedCornerShape(8.dp)
-            ),
+              width = 1.8.dp,
+              color = if (task.isCompleted) Color(0xFF64748B) else priorityColor,
+              shape = RoundedCornerShape(6.dp)
+            )
+            .clickable(onClick = onToggleComplete)
+            .testTag("task_detail_checkbox"),
           contentAlignment = Alignment.Center
         ) {
           if (task.isCompleted) {
             Icon(
-              imageVector = Icons.Filled.CheckCircle,
+              imageVector = Icons.Default.Check,
               contentDescription = "Completed",
               tint = Color.White,
+              modifier = Modifier.size(15.dp)
+            )
+          }
+        }
+
+        Row(
+          modifier = Modifier
+            .weight(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { showInlineDatePicker = !showInlineDatePicker }
+            .padding(vertical = 2.dp)
+            .testTag("task_detail_deadline_ribbon"),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Outlined.CalendarToday,
+            contentDescription = "Change Deadline",
+            tint = relativeStatusColor,
+            modifier = Modifier.size(15.dp)
+          )
+          Text(
+            text = relativeStatusText,
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = relativeStatusColor
+          )
+          Icon(
+            imageVector = if (showInlineDatePicker) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = "Toggle Calendar Picker",
+            tint = relativeStatusColor,
+            modifier = Modifier.size(16.dp)
+          )
+        }
+      }
+
+      // 3. Large Editable Task Title (`BasicTextField`)
+      Box(modifier = Modifier.fillMaxWidth()) {
+        if (titleText.isEmpty()) {
+          Text(
+            text = "Task title...",
+            style = MaterialTheme.typography.headlineSmall.copy(
+              fontSize = 22.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textMuted
+          )
+        }
+        BasicTextField(
+          value = titleText,
+          onValueChange = { updatedTitle ->
+            titleText = updatedTitle
+            onUpdateTask(task.copy(title = updatedTitle))
+          },
+          textStyle = MaterialTheme.typography.headlineSmall.copy(
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = palette.textPrimary,
+            textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+          ),
+          cursorBrush = SolidColor(palette.accentIndigo),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("task_detail_title_editor")
+        )
+      }
+
+      // 4. Sticky Rich-Text Formatting Toolbar docked DIRECTLY BELOW Task Title and ABOVE Description editor
+      // Guarantees 100% that the soft keyboard can NEVER cover or clip B, I, U, • List, ☑️ Subtask, or ↶ Undo.
+      val activeFormatFill = Color(0xFF0284C7)
+      val activeFormatBorder = Color(0xFF38BDF8)
+      Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = palette.nestedCardFill.copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.30f)),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("task_detail_formatting_toolbar")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            // B (Bold toggle button)
+            Surface(
+              onClick = { toggleStyleFlag(RICH_STYLE_BOLD) },
+              shape = RoundedCornerShape(9.dp),
+              color = if (isBoldActive) activeFormatFill else palette.cardFill,
+              border = BorderStroke(
+                1.dp,
+                if (isBoldActive) activeFormatBorder else palette.chipUnselectedBorder
+              ),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("note_toolbar_bold_button")
+            ) {
+              Box(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "B",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = if (isBoldActive) Color.White else palette.textPrimary
+                )
+              }
+            }
+
+            // I (Italic toggle button)
+            Surface(
+              onClick = { toggleStyleFlag(RICH_STYLE_ITALIC) },
+              shape = RoundedCornerShape(9.dp),
+              color = if (isItalicActive) activeFormatFill else palette.cardFill,
+              border = BorderStroke(
+                1.dp,
+                if (isItalicActive) activeFormatBorder else palette.chipUnselectedBorder
+              ),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("note_toolbar_italic_button")
+            ) {
+              Box(
+                modifier = Modifier.padding(horizontal = 11.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "I",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = 14.sp,
+                    fontStyle = FontStyle.Italic,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Serif
+                  ),
+                  color = if (isItalicActive) Color.White else palette.textPrimary
+                )
+              }
+            }
+
+            // U (Underline toggle button)
+            Surface(
+              onClick = { toggleStyleFlag(RICH_STYLE_UNDERLINE) },
+              shape = RoundedCornerShape(9.dp),
+              color = if (isUnderlineActive) activeFormatFill else palette.cardFill,
+              border = BorderStroke(
+                1.dp,
+                if (isUnderlineActive) activeFormatBorder else palette.chipUnselectedBorder
+              ),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("note_toolbar_underline_button")
+            ) {
+              Box(
+                modifier = Modifier.padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "U",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    textDecoration = TextDecoration.Underline
+                  ),
+                  color = if (isUnderlineActive) Color.White else palette.textPrimary
+                )
+              }
+            }
+
+            // • List (Bullet point insertion)
+            Surface(
+              onClick = {
+                pushUndoSnapshot()
+                val cur = descriptionField.text
+                val prefix = if (cur.isEmpty() || cur.endsWith("\n")) "• " else "\n• "
+                val nextText = cur + prefix
+                val updatedStyles = MutableList(nextText.length) { idx ->
+                  charStyles.getOrElse(idx) { 0 }
+                }
+                descriptionField = TextFieldValue(
+                  text = nextText,
+                  selection = TextRange(nextText.length)
+                )
+                charStyles = updatedStyles
+                persistRichDescription(nextText, updatedStyles)
+              },
+              shape = RoundedCornerShape(9.dp),
+              color = palette.cardFill,
+              border = BorderStroke(1.dp, palette.chipUnselectedBorder),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("note_toolbar_bullet_button")
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+              ) {
+                Text(
+                  text = "• List",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary
+                )
+              }
+            }
+
+            // ☑️ Subtask (Focus or add subtask item)
+            Surface(
+              onClick = {
+                val clean = newSubtaskInput.trim()
+                if (clean.isNotEmpty()) {
+                  val updated = task.subtasks + SubtaskItem(text = clean, isDone = false)
+                  onUpdateTask(task.copy(subtasks = updated))
+                  newSubtaskInput = ""
+                } else {
+                  try {
+                    subtaskFocusRequester.requestFocus()
+                  } catch (_: Throwable) {
+                  }
+                }
+              },
+              shape = RoundedCornerShape(9.dp),
+              color = palette.cardFill,
+              border = BorderStroke(1.dp, palette.chipUnselectedBorder),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("note_toolbar_checklist_button")
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Outlined.Checklist,
+                  contentDescription = "Add Subtask",
+                  tint = Color(0xFF2DD4BF),
+                  modifier = Modifier.size(15.dp)
+                )
+                Text(
+                  text = "Subtask",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                  ),
+                  color = palette.textPrimary
+                )
+              }
+            }
+          }
+
+          // ↶ Undo (Revert last description or formatting edit)
+          IconButton(
+            onClick = {
+              if (undoHistory.isNotEmpty()) {
+                val restored = undoHistory.removeAt(undoHistory.lastIndex)
+                descriptionField = TextFieldValue(
+                  text = restored.plainText,
+                  selection = TextRange(restored.plainText.length)
+                )
+                charStyles = restored.charStyles
+                persistRichDescription(restored.plainText, restored.charStyles)
+              }
+            },
+            enabled = undoHistory.isNotEmpty(),
+            modifier = Modifier
+              .size(34.dp)
+              .testTag("note_toolbar_undo_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.Undo,
+              contentDescription = "Undo Description Edit",
+              tint = if (undoHistory.isNotEmpty()) palette.textPrimary else palette.textMuted.copy(alpha = 0.4f),
+              modifier = Modifier.size(18.dp)
+            )
+          }
+        }
+      }
+
+      // 5. Scrollable Note Editor & Subtasks Area with weight(1f) + verticalScroll + imePadding
+      Column(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .imePadding(),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        // Comprehensive Full Month & Year Calendar Deadline Picker Popover
+        AnimatedVisibility(visible = showInlineDatePicker) {
+          InlineMiniDatePickerCard(
+            currentIsoDate = resolvedIso,
+            palette = palette,
+            onSelectIsoDate = { chosenIso ->
+              val smartDisplay = if (chosenIso.isBlank()) {
+                ""
+              } else {
+                formatIsoDateSmartDisplay(chosenIso, "Upcoming")
+              }
+              onUpdateTask(
+                task.copy(
+                  dueDateIso = chosenIso,
+                  dueDate = smartDisplay
+                )
+              )
+              showInlineDatePicker = false
+            }
+          )
+        }
+
+        // True Span-Based WYSIWYG Rich Study Note Area (`BasicTextField` with zero * or _ symbols)
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 150.dp)
+        ) {
+          if (descriptionField.text.isEmpty()) {
+            Text(
+              text = "Write detailed study notes, derivations, or problem set steps... Tap B, I, U above to format.",
+              style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = 15.sp,
+                lineHeight = 22.sp
+              ),
+              color = palette.textMuted
+            )
+          }
+          BasicTextField(
+            value = descriptionField,
+            onValueChange = onDescriptionValueChange,
+            visualTransformation = richVisualTransformation,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+              fontSize = 15.sp,
+              lineHeight = 22.sp,
+              color = palette.textPrimary
+            ),
+            cursorBrush = SolidColor(palette.accentIndigo),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 150.dp)
+              .testTag("task_detail_note_editor")
+          )
+        }
+
+        HorizontalDivider(
+          thickness = 0.8.dp,
+          color = palette.dividerColor.copy(alpha = 0.5f)
+        )
+
+        // Subtask Checklist Section
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Text(
+            text = "Subtasks (${task.subtasks.count { it.isDone }}/${task.subtasks.size})",
+            style = MaterialTheme.typography.labelLarge.copy(
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textSecondary
+          )
+
+          task.subtasks.forEach { subtask ->
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(palette.nestedCardFill.copy(alpha = 0.55f))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(18.dp)
+                  .clip(RoundedCornerShape(5.dp))
+                  .background(
+                    if (subtask.isDone) palette.accentIndigo else Color.Transparent
+                  )
+                  .border(
+                    1.5.dp,
+                    if (subtask.isDone) palette.accentIndigo else palette.checkboxUncheckedBorder,
+                    RoundedCornerShape(5.dp)
+                  )
+                  .clickable {
+                    val updatedList = task.subtasks.map {
+                      if (it.id == subtask.id) it.copy(isDone = !it.isDone) else it
+                    }
+                    onUpdateTask(task.copy(subtasks = updatedList))
+                  },
+                contentAlignment = Alignment.Center
+              ) {
+                if (subtask.isDone) {
+                  Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Done",
+                    tint = Color.White,
+                    modifier = Modifier.size(12.dp)
+                  )
+                }
+              }
+
+              Text(
+                text = subtask.text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 14.sp,
+                  textDecoration = if (subtask.isDone) TextDecoration.LineThrough else TextDecoration.None
+                ),
+                color = if (subtask.isDone) palette.textSecondary else palette.textPrimary,
+                modifier = Modifier.weight(1f)
+              )
+
+              IconButton(
+                onClick = {
+                  val updatedList = task.subtasks.filterNot { it.id == subtask.id }
+                  onUpdateTask(task.copy(subtasks = updatedList))
+                },
+                modifier = Modifier.size(26.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Remove subtask",
+                  tint = palette.textSecondary,
+                  modifier = Modifier.size(14.dp)
+                )
+              }
+            }
+          }
+
+          // "Add subtask" input row (single + icon + "Add subtask" label)
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(10.dp))
+              .background(palette.nestedCardFill.copy(alpha = 0.45f))
+              .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.Add,
+              contentDescription = null,
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+            Box(modifier = Modifier.weight(1f)) {
+              if (newSubtaskInput.isEmpty()) {
+                Text(
+                  text = "Add subtask",
+                  style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                  color = palette.textMuted
+                )
+              }
+              BasicTextField(
+                value = newSubtaskInput,
+                onValueChange = { newSubtaskInput = it },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 14.sp,
+                  color = palette.textPrimary
+                ),
+                cursorBrush = SolidColor(palette.accentIndigo),
+                keyboardOptions = KeyboardOptions(
+                  capitalization = KeyboardCapitalization.Sentences,
+                  imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                  onDone = {
+                    val clean = newSubtaskInput.trim()
+                    if (clean.isNotEmpty()) {
+                      val updated = task.subtasks + SubtaskItem(text = clean, isDone = false)
+                      onUpdateTask(task.copy(subtasks = updated))
+                      newSubtaskInput = ""
+                    }
+                  }
+                ),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .focusRequester(subtaskFocusRequester)
+                  .testTag("task_detail_add_subtask_input")
+              )
+            }
+            if (newSubtaskInput.isNotBlank()) {
+              TextButton(
+                onClick = {
+                  val clean = newSubtaskInput.trim()
+                  if (clean.isNotEmpty()) {
+                    val updated = task.subtasks + SubtaskItem(text = clean, isDone = false)
+                    onUpdateTask(task.copy(subtasks = updated))
+                    newSubtaskInput = ""
+                  }
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.height(28.dp)
+              ) {
+                Text(
+                  text = "Add",
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.accentIndigo
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Comprehensive Full Month & Year Calendar Deadline Picker Card for Quick-Add and Task Note Detail Workspace.
+ * Features:
+ * 1. Top Quick Shortcuts Row: `Today`, `Tomorrow`, `Next Week`, and `No Date / Clear` (`""`).
+ * 2. Month & Year Navigation Header: Left chevron (`<`), bold clickable `"November 2026"` header
+ *    (with expandable inline Year & Month jump grid for 2026, 2027+), and Right chevron (`>`)
+ *    using `java.time.YearMonth`.
+ * 3. Full 7-Column Calendar Grid (`S M T W T F S`): Displays all dates of the viewed month with
+ *    proper weekday alignment, highlighting `LocalDate.now()` with a subtle border and the selected
+ *    `dueDateIso` with a solid indigo/cyan circle.
+ */
+@Composable
+private fun InlineMiniDatePickerCard(
+  currentIsoDate: String,
+  palette: GlassPalette,
+  onSelectIsoDate: (String) -> Unit
+) {
+  val today = remember { LocalDate.now() }
+  val initialYearMonth = remember(currentIsoDate, today) {
+    if (currentIsoDate.isNotBlank()) {
+      try {
+        YearMonth.from(LocalDate.parse(currentIsoDate.trim()))
+      } catch (_: Throwable) {
+        YearMonth.from(today)
+      }
+    } else {
+      YearMonth.from(today)
+    }
+  }
+
+  var displayedYearMonth by remember(initialYearMonth) { mutableStateOf(initialYearMonth) }
+  var showMonthYearJumpPicker by remember { mutableStateOf(false) }
+
+  val presets = remember(today) {
+    listOf(
+      "Today" to today.toString(),
+      "Tomorrow" to today.plusDays(1).toString(),
+      "Next Week" to today.plusDays(7).toString(),
+      "No Date" to ""
+    )
+  }
+
+  val monthYearTitle = remember(displayedYearMonth) {
+    displayedYearMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH))
+  }
+
+  // Build 7-column calendar weeks (Sunday = 0 .. Saturday = 6)
+  val calendarWeeks = remember(displayedYearMonth) {
+    val firstOfMonth = displayedYearMonth.atDay(1)
+    val leadingBlanks = firstOfMonth.dayOfWeek.value % 7
+    val daysInMonth = displayedYearMonth.lengthOfMonth()
+    val slots = mutableListOf<LocalDate?>()
+    repeat(leadingBlanks) { slots.add(null) }
+    for (day in 1..daysInMonth) {
+      slots.add(displayedYearMonth.atDay(day))
+    }
+    while (slots.size % 7 != 0) {
+      slots.add(null)
+    }
+    slots.chunked(7)
+  }
+
+  Surface(
+    shape = RoundedCornerShape(18.dp),
+    color = palette.nestedCardFill,
+    border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f)),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("inline_mini_date_picker")
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+      // 1. Top Quick Shortcuts Row: Today, Tomorrow, Next Week, No Date / Clear
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        presets.forEach { (label, iso) ->
+          val isSelected = currentIsoDate == iso
+          Surface(
+            onClick = {
+              if (iso.isNotBlank()) {
+                try {
+                  displayedYearMonth = YearMonth.from(LocalDate.parse(iso))
+                } catch (_: Throwable) {
+                }
+              }
+              onSelectIsoDate(iso)
+            },
+            shape = RoundedCornerShape(10.dp),
+            color = if (isSelected) palette.accentIndigo else palette.cardFill,
+            border = BorderStroke(
+              1.dp,
+              if (isSelected) palette.accentIndigo else palette.accentIndigo.copy(alpha = 0.35f)
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("quick_date_option_${label.lowercase(Locale.US).replace(" ", "_")}")
+          ) {
+            Text(
+              text = label,
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = if (isSelected) Color.White else palette.textPrimary,
+              textAlign = TextAlign.Center,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(vertical = 7.dp, horizontal = 3.dp)
+            )
+          }
+        }
+      }
+
+      // 2. Month & Year Navigation Header: Left chevron (<), bold clickable "November 2026" header, Right chevron (>)
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Surface(
+          onClick = { displayedYearMonth = displayedYearMonth.minusMonths(1) },
+          shape = CircleShape,
+          color = palette.cardFill,
+          border = BorderStroke(1.dp, palette.chipUnselectedBorder),
+          modifier = Modifier
+            .size(32.dp)
+            .testTag("calendar_prev_month_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+              contentDescription = "Previous Month",
+              tint = palette.textPrimary,
+              modifier = Modifier.size(18.dp)
+            )
+          }
+        }
+
+        Surface(
+          onClick = { showMonthYearJumpPicker = !showMonthYearJumpPicker },
+          shape = RoundedCornerShape(10.dp),
+          color = if (showMonthYearJumpPicker) {
+            palette.accentIndigo.copy(alpha = 0.16f)
+          } else {
+            Color.Transparent
+          },
+          modifier = Modifier.testTag("calendar_month_year_header_button")
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            Text(
+              text = monthYearTitle,
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold
+              ),
+              color = palette.textPrimary
+            )
+            Icon(
+              imageVector = if (showMonthYearJumpPicker) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+              contentDescription = "Select Month or Year",
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+        }
+
+        Surface(
+          onClick = { displayedYearMonth = displayedYearMonth.plusMonths(1) },
+          shape = CircleShape,
+          color = palette.cardFill,
+          border = BorderStroke(1.dp, palette.chipUnselectedBorder),
+          modifier = Modifier
+            .size(32.dp)
+            .testTag("calendar_next_month_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+              contentDescription = "Next Month",
+              tint = palette.textPrimary,
               modifier = Modifier.size(16.dp)
             )
           }
         }
       }
 
-      Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-      ) {
-        Text(
-          text = task.title,
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(16),
-            fontWeight = FontWeight.Bold
-          ),
-          color = titleTextColor,
-          textDecoration = if (task.isCompleted) {
-            TextDecoration.LineThrough
-          } else {
-            TextDecoration.None
-          },
-          maxLines = 2,
-          overflow = TextOverflow.Ellipsis,
+      // Optional Expandable Year & Month Jump Grid when tapping the "November 2026" header
+      AnimatedVisibility(visible = showMonthYearJumpPicker) {
+        Column(
           modifier = Modifier
             .fillMaxWidth()
-            .testTag("task_title_${task.id}")
-        )
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(palette.cardFill.copy(alpha = 0.65f))
+            .padding(8.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
           Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
           ) {
-            Icon(
-              imageVector = Icons.Outlined.CalendarToday,
-              contentDescription = null,
-              tint = calendarAccentColor,
-              modifier = Modifier.size(15.dp)
-            )
+            TextButton(
+              onClick = { displayedYearMonth = displayedYearMonth.minusYears(1) },
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+              modifier = Modifier.height(28.dp)
+            ) {
+              Text(
+                text = "« ${displayedYearMonth.year - 1}",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = palette.accentIndigo
+              )
+            }
             Text(
-              text = "Due: ${task.dueDate}",
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = palette.textSecondary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.weight(1f)
+              text = displayedYearMonth.year.toString(),
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+              color = palette.textPrimary
             )
+            TextButton(
+              onClick = { displayedYearMonth = displayedYearMonth.plusYears(1) },
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+              modifier = Modifier.height(28.dp)
+            ) {
+              Text(
+                text = "${displayedYearMonth.year + 1} »",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = palette.accentIndigo
+              )
+            }
           }
 
-          Surface(
-            color = if (task.isCompleted) {
-              palette.nestedCardFill
-            } else {
-              palette.accentIndigo.copy(alpha = 0.15f)
-            },
-            shape = CircleShape,
-            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.30f))
+          val shortMonths = remember {
+            listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+          }
+          shortMonths.chunked(4).forEachIndexed { rowIdx, rowMonths ->
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              rowMonths.forEachIndexed { colIdx, mName ->
+                val monthNumber = rowIdx * 4 + colIdx + 1
+                val isCurrentMonth = displayedYearMonth.monthValue == monthNumber
+                Surface(
+                  onClick = {
+                    displayedYearMonth = YearMonth.of(displayedYearMonth.year, monthNumber)
+                    showMonthYearJumpPicker = false
+                  },
+                  shape = RoundedCornerShape(8.dp),
+                  color = if (isCurrentMonth) palette.accentIndigo else Color.Transparent,
+                  border = BorderStroke(
+                    1.dp,
+                    if (isCurrentMonth) palette.accentIndigo else palette.chipUnselectedBorder
+                  ),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Text(
+                    text = mName,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (isCurrentMonth) Color.White else palette.textPrimary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 5.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Full 7-Column Weekday Header (S M T W T F S)
+      val weekdayHeaders = remember { listOf("S", "M", "T", "W", "T", "F", "S") }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly
+      ) {
+        weekdayHeaders.forEach { dLabel ->
+          Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.Center
           ) {
             Text(
-              text = task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+              text = dLabel,
               style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = metrics.scaledSp(11),
-                fontWeight = FontWeight.Bold
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold
               ),
-              color = if (task.isCompleted) palette.textSecondary else palette.accentIndigo,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier
-                .widthIn(max = 120.dp)
-                .padding(horizontal = 9.dp, vertical = 3.dp)
-                .testTag("task_category_badge_${task.id}")
+              color = palette.textSecondary
             )
           }
         }
       }
 
-      IconButton(
-        onClick = onDelete,
-        modifier = Modifier
-          .size(48.dp)
-          .minimumInteractiveComponentSize()
-          .testTag("delete_task_button_${task.id}")
+      // 4. Full 7-Column Calendar Grid of Dates
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
       ) {
-        Icon(
-          imageVector = Icons.Outlined.DeleteOutline,
-          contentDescription = "Delete ${task.title}",
-          tint = palette.accentRed,
-          modifier = Modifier.size(24.dp)
-        )
+        calendarWeeks.forEach { week ->
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            week.forEach { dateCell ->
+              if (dateCell == null) {
+                Spacer(
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                )
+              } else {
+                val iso = dateCell.toString()
+                val isSelected = currentIsoDate == iso
+                val isTodayDate = dateCell == today
+                Surface(
+                  onClick = { onSelectIsoDate(iso) },
+                  shape = CircleShape,
+                  color = when {
+                    isSelected -> palette.accentIndigo
+                    isTodayDate -> Color(0xFF38BDF8).copy(alpha = 0.16f)
+                    else -> Color.Transparent
+                  },
+                  border = when {
+                    isSelected -> BorderStroke(1.5.dp, Color.White.copy(alpha = 0.5f))
+                    isTodayDate -> BorderStroke(1.2.dp, Color(0xFF38BDF8))
+                    else -> null
+                  },
+                  modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .testTag("calendar_day_cell_$iso")
+                ) {
+                  Box(contentAlignment = Alignment.Center) {
+                    Text(
+                      text = dateCell.dayOfMonth.toString(),
+                      style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected || isTodayDate) FontWeight.ExtraBold else FontWeight.Medium
+                      ),
+                      color = when {
+                        isSelected -> Color.White
+                        isTodayDate -> Color(0xFF38BDF8)
+                        else -> palette.textPrimary
+                      }
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
 }
 
 /**
- * Glass-styled Dialog for adding a new coursework task:
- * 1. Task Title (`OutlinedTextField`)
- * 2. Due Date (`OutlinedTextField`)
- * 3. Subject Category horizontal scrollable row of chips (`LazyRow`) showing `"General"` +
- *    extracted schedule subjects, pre-selected based on the folder currently viewed.
+ * Backward-compatible 3-arg overload for `AddTaskDialog`.
  */
 @Composable
 private fun AddTaskDialog(
@@ -28325,260 +31312,413 @@ private fun AddTaskDialog(
   onDismiss: () -> Unit,
   onAddTask: (String, String, String) -> Unit
 ) {
-  val metrics = rememberResponsiveMetrics()
+  AddTaskDialog(
+    availableCategories = availableCategories,
+    initialCategory = initialCategory,
+    initialDueDateIso = "",
+    onDismiss = onDismiss,
+    onAddTask = { title, dueDate, category, _, _, _ ->
+      onAddTask(title, dueDate, category)
+    }
+  )
+}
+
+/**
+ * TickTick-Style Floating Quick-Add Composer anchored above the soft keyboard:
+ * - Configured with `DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)`
+ *   and `.imePadding().navigationBarsPadding()` so the entire composer card—including the bottom
+ *   action row (`Today`, `Priority`, `Cancel`, `Add`)—always floats cleanly above the keyboard.
+ * - Hardcoded category tags row (`MSTE`, `HPGE`, `PSAD`, `General`) completely removed.
+ * - Uses the comprehensive Month & Year Calendar Deadline Picker (`InlineMiniDatePickerCard`).
+ */
+@Composable
+private fun AddTaskDialog(
+  availableCategories: List<String> = CE_CORE_SUBJECT_TAGS,
+  initialCategory: String = DEFAULT_TASK_CATEGORY,
+  initialDueDateIso: String = "",
+  onDismiss: () -> Unit,
+  onAddTask: (
+    title: String,
+    dueDate: String,
+    categoryTag: String,
+    description: String,
+    dueDateIso: String,
+    priority: Int
+  ) -> Unit
+) {
   val palette = currentGlassPalette()
+  val titleFocusRequester = remember { FocusRequester() }
+
   var taskTitle by rememberSaveable { mutableStateOf("") }
-  var taskDueDate by rememberSaveable { mutableStateOf("") }
-  val categories = remember(availableCategories) {
-    if (availableCategories.isEmpty()) listOf(DEFAULT_TASK_CATEGORY) else availableCategories
+  var taskDescription by rememberSaveable { mutableStateOf("") }
+  var dueDateIso by rememberSaveable(initialDueDateIso) {
+    mutableStateOf(initialDueDateIso.ifBlank { LocalDate.now().toString() })
   }
-  var selectedCategory by rememberSaveable(initialCategory) {
+  var taskDueDate by rememberSaveable(initialDueDateIso) {
     mutableStateOf(
-      categories.firstOrNull { it.equals(initialCategory, ignoreCase = true) }
-        ?: DEFAULT_TASK_CATEGORY
+      if (initialDueDateIso.isNotBlank()) formatIsoDateSmartDisplay(initialDueDateIso, "Today") else "Today"
     )
   }
+  var selectedPriority by rememberSaveable { mutableStateOf(0) }
+  var showDatePickerRow by rememberSaveable { mutableStateOf(false) }
+  var showPriorityRow by rememberSaveable { mutableStateOf(false) }
 
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    modifier = Modifier.testTag("add_task_dialog"),
-    shape = RoundedCornerShape(24.dp),
-    containerColor = palette.dialogSurface,
-    title = {
-      Text(
-        text = stringResource(R.string.add_task_dialog_title),
-        style = MaterialTheme.typography.headlineMedium.copy(
-          fontSize = metrics.scaledSp(21),
-          fontWeight = FontWeight.Bold
-        ),
-        color = palette.textPrimary,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
+  LaunchedEffect(Unit) {
+    try {
+      titleFocusRequester.requestFocus()
+    } catch (_: Throwable) {
+    }
+  }
+
+  val submitQuickTask = {
+    if (taskTitle.trim().isNotBlank()) {
+      val resolvedIso = if (taskDueDate.equals("No Date", ignoreCase = true)) {
+        ""
+      } else {
+        dueDateIso.ifBlank { inferIsoDateFromLegacyText(taskDueDate) }
+      }
+      val resolvedDisplay = if (resolvedIso.isNotBlank()) {
+        formatIsoDateSmartDisplay(resolvedIso, taskDueDate.ifBlank { "Today" })
+      } else if (taskDueDate.equals("No Date", ignoreCase = true)) {
+        ""
+      } else {
+        taskDueDate.ifBlank { "Today" }
+      }
+      onAddTask(
+        taskTitle.trim(),
+        resolvedDisplay,
+        initialCategory.ifBlank { DEFAULT_TASK_CATEGORY },
+        taskDescription.trim(),
+        resolvedIso,
+        selectedPriority
       )
-    },
-    text = {
-      Column(
+    }
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(
+      usePlatformDefaultWidth = false,
+      decorFitsSystemWindows = false
+    )
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black.copy(alpha = 0.48f))
+        .clickable(
+          interactionSource = remember { MutableInteractionSource() },
+          indication = null,
+          onClick = onDismiss
+        ),
+      contentAlignment = Alignment.BottomCenter
+    ) {
+      Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = palette.dialogSurface,
+        border = BorderStroke(
+          width = 1.2.dp,
+          brush = Brush.verticalGradient(
+            listOf(
+              Color.White.copy(alpha = if (palette.isDark) 0.32f else 0.85f),
+              palette.accentIndigo.copy(alpha = 0.35f)
+            )
+          )
+        ),
+        shadowElevation = 20.dp,
         modifier = Modifier
           .fillMaxWidth()
-          .padding(top = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+          .widthIn(max = 560.dp)
+          .imePadding()
+          .navigationBarsPadding()
+          .padding(horizontal = 14.dp, vertical = 12.dp)
+          .pointerInput(Unit) {
+            detectTapGestures(onTap = { /* consume tap inside card */ })
+          }
+          .testTag("add_task_dialog")
       ) {
-        OutlinedTextField(
-          value = taskTitle,
-          onValueChange = { taskTitle = it },
-          label = {
-            Text(
-              text = stringResource(R.string.task_title_label),
-              style = MaterialTheme.typography.bodyMedium,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          placeholder = {
-            Text(
-              text = stringResource(R.string.add_task_input_placeholder),
-              style = MaterialTheme.typography.bodyMedium,
-              color = palette.textMuted,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = metrics.scaledSp(15),
-            color = palette.textPrimary
-          ),
-          singleLine = true,
-          shape = RoundedCornerShape(16.dp),
-          colors = sibilOutlinedTextFieldColors(),
-          keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.Sentences,
-            imeAction = ImeAction.Next
-          ),
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("new_task_input")
-        )
-
-        OutlinedTextField(
-          value = taskDueDate,
-          onValueChange = { taskDueDate = it },
-          label = {
-            Text(
-              text = stringResource(R.string.due_date_label),
-              style = MaterialTheme.typography.bodyMedium,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          placeholder = {
-            Text(
-              text = stringResource(R.string.due_date_placeholder),
-              style = MaterialTheme.typography.bodyMedium,
-              color = palette.textMuted,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          },
-          leadingIcon = {
-            Icon(
-              imageVector = Icons.Outlined.CalendarToday,
-              contentDescription = null,
-              tint = palette.accentIndigo,
-              modifier = Modifier.size(22.dp)
-            )
-          },
-          textStyle = MaterialTheme.typography.bodyLarge.copy(
-            fontSize = metrics.scaledSp(15),
-            color = palette.textPrimary
-          ),
-          singleLine = true,
-          shape = RoundedCornerShape(16.dp),
-          colors = sibilOutlinedTextFieldColors(),
-          keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.Words,
-            imeAction = ImeAction.Done
-          ),
-          keyboardActions = KeyboardActions(
-            onDone = {
-              if (taskTitle.isNotBlank()) {
-                onAddTask(taskTitle, taskDueDate, selectedCategory)
-              }
-            }
-          ),
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("new_task_due_date_input")
-        )
-
-        // Subject Category Selector ("General" + extracted schedule subjects)
         Column(
-          modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8))
+          modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-          Text(
-            text = stringResource(R.string.task_subject_category_label),
-            style = MaterialTheme.typography.titleMedium.copy(
-              fontSize = metrics.scaledSp(14),
-              fontWeight = FontWeight.Bold
+          // Line 1: Auto-focused borderless TextField ("What would you like to do?")
+          TextField(
+            value = taskTitle,
+            onValueChange = { taskTitle = it },
+            placeholder = {
+              Text(
+                text = "What would you like to do?",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontSize = 17.sp,
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = palette.textMuted
+              )
+            },
+            textStyle = MaterialTheme.typography.titleMedium.copy(
+              fontSize = 17.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = palette.textPrimary
             ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-
-          LazyRow(
+            singleLine = true,
+            colors = TextFieldDefaults.colors(
+              focusedContainerColor = Color.Transparent,
+              unfocusedContainerColor = Color.Transparent,
+              disabledContainerColor = Color.Transparent,
+              focusedIndicatorColor = Color.Transparent,
+              unfocusedIndicatorColor = Color.Transparent
+            ),
+            keyboardOptions = KeyboardOptions(
+              capitalization = KeyboardCapitalization.Sentences,
+              imeAction = ImeAction.Next
+            ),
             modifier = Modifier
               .fillMaxWidth()
-              .testTag("add_task_category_chips_row"),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            items(
-              items = categories,
-              key = { it.lowercase(Locale.US) }
-            ) { categoryName ->
-              val isSelected = categoryName.equals(selectedCategory, ignoreCase = true)
-              Surface(
-                onClick = { selectedCategory = categoryName },
-                shape = RoundedCornerShape(14.dp),
-                color = if (isSelected) {
-                  MaterialTheme.colorScheme.primary
+              .focusRequester(titleFocusRequester)
+              .testTag("new_task_input")
+          )
+
+          // Line 2: Secondary borderless TextField ("Description / quick note...")
+          TextField(
+            value = taskDescription,
+            onValueChange = { taskDescription = it },
+            placeholder = {
+              Text(
+                text = "Description / quick note...",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                  fontSize = 14.sp
+                ),
+                color = palette.textMuted
+              )
+            },
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+              fontSize = 14.sp,
+              color = palette.textSecondary
+            ),
+            maxLines = 3,
+            colors = TextFieldDefaults.colors(
+              focusedContainerColor = Color.Transparent,
+              unfocusedContainerColor = Color.Transparent,
+              disabledContainerColor = Color.Transparent,
+              focusedIndicatorColor = Color.Transparent,
+              unfocusedIndicatorColor = Color.Transparent
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("new_task_description_input")
+          )
+
+          // Expandable Full Month & Year Calendar Deadline Picker
+          AnimatedVisibility(visible = showDatePickerRow) {
+            InlineMiniDatePickerCard(
+              currentIsoDate = dueDateIso,
+              palette = palette,
+              onSelectIsoDate = { chosenIso ->
+                dueDateIso = chosenIso
+                taskDueDate = if (chosenIso.isBlank()) {
+                  "No Date"
                 } else {
-                  palette.chipUnselectedFill
-                },
-                border = if (isSelected) {
-                  null
-                } else {
-                  BorderStroke(1.dp, palette.chipUnselectedBorder)
-                },
-                shadowElevation = if (isSelected) 4.dp else 1.dp,
-                modifier = Modifier.testTag(
-                  "add_task_category_chip_${categoryName.lowercase(Locale.US).replace(" ", "_")}"
-                )
-              ) {
-                Row(
-                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  formatIsoDateSmartDisplay(chosenIso, "Today")
+                }
+                showDatePickerRow = false
+              }
+            )
+          }
+
+          // Expandable Priority Selector Row
+          AnimatedVisibility(visible = showPriorityRow) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              listOf(
+                3 to "High",
+                2 to "Medium",
+                1 to "Low",
+                0 to "None"
+              ).forEach { (level, label) ->
+                val pColor = taskPriorityColor(level, palette.textSecondary)
+                val isSelected = selectedPriority == level
+                Surface(
+                  onClick = {
+                    selectedPriority = level
+                    showPriorityRow = false
+                  },
+                  shape = RoundedCornerShape(12.dp),
+                  color = if (isSelected) pColor.copy(alpha = 0.22f) else palette.nestedCardFill,
+                  border = BorderStroke(1.2.dp, if (isSelected) pColor else pColor.copy(alpha = 0.35f)),
+                  modifier = Modifier.weight(1f)
                 ) {
-                  Icon(
-                    imageVector = if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder,
-                    contentDescription = null,
-                    tint = if (isSelected) {
-                      Color.White
-                    } else {
-                      palette.accentIndigo
-                    },
-                    modifier = Modifier.size(16.dp)
-                  )
-                  Text(
-                    text = categoryName,
-                    style = MaterialTheme.typography.labelMedium.copy(
-                      fontSize = metrics.scaledSp(13),
-                      fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
-                    ),
-                    color = if (isSelected) {
-                      Color.White
-                    } else {
-                      palette.textPrimary
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 170.dp)
-                  )
+                  Row(
+                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.Flag,
+                      contentDescription = label,
+                      tint = pColor,
+                      modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                      text = label,
+                      style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = if (isSelected) pColor else palette.textPrimary
+                    )
+                  }
                 }
               }
             }
           }
+
+          HorizontalDivider(
+            thickness = 0.8.dp,
+            color = palette.dividerColor.copy(alpha = 0.5f)
+          )
+
+          // Bottom Action Toolbar Row: Calendar Date Picker, Priority Flag, Cancel, and Glowing Send Button
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              // Calendar Date Picker Chip/Button
+              val smartDueBadge = if (dueDateIso.isBlank()) {
+                "No Date"
+              } else {
+                formatIsoDateSmartDisplay(dueDateIso, taskDueDate.ifBlank { "Today" })
+              }
+              Surface(
+                onClick = {
+                  showDatePickerRow = !showDatePickerRow
+                  showPriorityRow = false
+                },
+                shape = RoundedCornerShape(12.dp),
+                color = palette.accentIndigo.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.40f)),
+                modifier = Modifier.testTag("quick_add_date_picker_button")
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.Outlined.CalendarToday,
+                    contentDescription = "Select Due Date",
+                    tint = palette.accentIndigo,
+                    modifier = Modifier.size(15.dp)
+                  )
+                  Text(
+                    text = smartDueBadge,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontSize = 12.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.accentIndigo
+                  )
+                }
+              }
+
+              // Priority Flag Button
+              val activePriorityColor = taskPriorityColor(selectedPriority, palette.textSecondary)
+              Surface(
+                onClick = {
+                  showPriorityRow = !showPriorityRow
+                  showDatePickerRow = false
+                },
+                shape = RoundedCornerShape(12.dp),
+                color = if (selectedPriority > 0) activePriorityColor.copy(alpha = 0.16f) else palette.nestedCardFill,
+                border = BorderStroke(
+                  1.dp,
+                  if (selectedPriority > 0) activePriorityColor.copy(alpha = 0.55f) else palette.chipUnselectedBorder
+                ),
+                modifier = Modifier.testTag("quick_add_priority_button")
+              ) {
+                Row(
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                  Icon(
+                    imageVector = if (selectedPriority > 0) Icons.Filled.Flag else Icons.Outlined.Flag,
+                    contentDescription = "Priority",
+                    tint = activePriorityColor,
+                    modifier = Modifier.size(15.dp)
+                  )
+                  Text(
+                    text = taskPriorityLabel(selectedPriority),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = activePriorityColor
+                  )
+                }
+              }
+
+              // Cancel Text Button
+              TextButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                  .height(34.dp)
+                  .testTag("cancel_add_task_button")
+              ) {
+                Text(
+                  text = stringResource(R.string.cancel_button),
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                  ),
+                  color = palette.textSecondary
+                )
+              }
+            }
+
+            // Right-Aligned Glowing Send/Add Button
+            Button(
+              onClick = submitQuickTask,
+              enabled = taskTitle.trim().isNotBlank(),
+              shape = RoundedCornerShape(14.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = palette.accentIndigo,
+                contentColor = Color.White
+              ),
+              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+              modifier = Modifier
+                .height(40.dp)
+                .testTag("confirm_add_task_button")
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Send,
+                contentDescription = stringResource(R.string.add_button),
+                modifier = Modifier.size(17.dp)
+              )
+              Spacer(modifier = Modifier.width(5.dp))
+              Text(
+                text = stringResource(R.string.add_button),
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
+                )
+              )
+            }
+          }
         }
       }
-    },
-    confirmButton = {
-      Button(
-        onClick = { onAddTask(taskTitle, taskDueDate, selectedCategory) },
-        enabled = taskTitle.isNotBlank(),
-        shape = CircleShape,
-        colors = ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.primary,
-          contentColor = MaterialTheme.colorScheme.onPrimary
-        ),
-        modifier = Modifier
-          .height(48.dp)
-          .testTag("confirm_add_task_button")
-      ) {
-        Text(
-          text = stringResource(R.string.add_button),
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(15),
-            fontWeight = FontWeight.Bold
-          ),
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.padding(horizontal = 10.dp)
-        )
-      }
-    },
-    dismissButton = {
-      TextButton(
-        onClick = onDismiss,
-        shape = CircleShape,
-        modifier = Modifier
-          .height(48.dp)
-          .testTag("cancel_add_task_button")
-      ) {
-        Text(
-          text = stringResource(R.string.cancel_button),
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontSize = metrics.scaledSp(15),
-            fontWeight = FontWeight.SemiBold
-          ),
-          color = palette.textSecondary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
-        )
-      }
     }
-  )
+  }
 }
 
 /**
