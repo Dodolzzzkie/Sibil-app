@@ -1736,6 +1736,9 @@ data class FlashcardDeck(
   val cards: List<FlashcardItem> = emptyList(),
   val masteredCardIds: List<Int> = cards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) }.map { it.id }
 ) {
+  val subject: String
+    get() = subjectTag
+
   fun toFirestoreMap(): HashMap<String, Any?> = hashMapOf(
     "id" to id,
     "title" to title,
@@ -1750,8 +1753,8 @@ fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
 
   // 1. Check if the document stores a compressed SIBIL_DECK payload string ("payload", "deckJson", "shareCode")
   val embeddedPayload = (getString("payload") ?: getString("deckJson") ?: getString("shareCode")).orEmpty().trim()
-  if (embeddedPayload.isNotEmpty() && !embeddedPayload.startsWith("SIBIL_CLOUD_DECK:", ignoreCase = true)) {
-    val decodedFromPayload = parseImportedDeckCode(embeddedPayload)
+  if (embeddedPayload.isNotEmpty()) {
+    val decodedFromPayload = importDeckFromOfflineCode(embeddedPayload)
     if (decodedFromPayload != null && decodedFromPayload.cards.isNotEmpty()) {
       val resolvedId = getLong("id")?.toInt() ?: id.toIntOrNull() ?: decodedFromPayload.id
       val resolvedTitle = (getString("title") ?: getString("t") ?: decodedFromPayload.title)
@@ -1887,259 +1890,119 @@ fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
 }
 
 /**
- * Ultra-Compact Full-Deck GZIP Serializer (Zero Card Limit — Exports All 78+ Cards):
- * - Serializes the deck into a minified JSON object using 1-letter keys:
- *   `{"t": deck.title, "s": deck.subjectTag, "cards": [{"q": card.question, "a": card.answer}]}`
- * - Compresses the UTF-8 bytes using `GZIPOutputStream` at maximum compression (`Deflater.BEST_COMPRESSION`)
- *   and encodes with `android.util.Base64.NO_WRAP`.
- * - Prefixes with `"SIBIL_DECK:"` so a 78+ card deck shrinks to ~1.5 KB and transfers 100% offline.
+ * Unified Ultra-Compact Offline Encoder (`exportDeckToOfflineCode`):
+ * Encodes 100% of `deck.cards` (zero card limits) into a minified JSON object with 1-letter keys
+ * (`"t"`, `"s"`, `"c":[{"q","a"}]`), compresses with GZIPOutputStream, and returns `"SIBIL_DECK:<base64>"`.
  */
-fun exportDeckToShareableCode(deck: FlashcardDeck): String {
+fun exportDeckToOfflineCode(deck: FlashcardDeck): String {
   return try {
-    val safeTitle = deck.title.trim().ifEmpty { "Shared Study Deck" }
-    val safeSubject = deck.subjectTag.trim().ifEmpty { "General" }
-    val cardsArray = JSONArray()
-    // Export 100% of deck.cards (all 78+ cards, NEVER truncated with .take()) using compact 1-letter keys
-    deck.cards.forEach { card ->
+    val root = org.json.JSONObject()
+    root.put("t", deck.title.trim().ifEmpty { "Shared Study Deck" })
+    root.put("s", deck.subject.trim().ifEmpty { "General" })
+    val arr = org.json.JSONArray()
+    for (card in deck.cards) {
       val q = card.question.trim()
       val a = card.answer.trim()
-      if (q.isNotEmpty() && a.isNotEmpty()) {
-        val cat = card.category.trim().ifEmpty { safeSubject }
-        cardsArray.put(
-          JSONObject().apply {
-            put("q", q)
-            put("a", a)
-            if (!cat.equals(safeSubject, ignoreCase = true)) {
-              put("c", cat)
-            }
-          }
-        )
+      if (q.isNotEmpty() || a.isNotEmpty()) {
+        val obj = org.json.JSONObject()
+        obj.put("q", q)
+        obj.put("a", a)
+        arr.put(obj)
       }
     }
-    val root = JSONObject().apply {
-      put("t", safeTitle)
-      put("s", safeSubject)
-      put("cards", cardsArray)
-    }
-    val jsonString = root.toString()
-    val byteStream = ByteArrayOutputStream()
-    object : GZIPOutputStream(byteStream) {
-      init {
-        def.setLevel(java.util.zip.Deflater.BEST_COMPRESSION)
-      }
-    }.use { gzip ->
-      gzip.write(jsonString.toByteArray(Charsets.UTF_8))
-      gzip.finish()
-      gzip.flush()
-    }
-    val compressedBytes = byteStream.toByteArray()
-    val encodedBase64 = android.util.Base64.encodeToString(compressedBytes, android.util.Base64.NO_WRAP)
-    "SIBIL_DECK:$encodedBase64"
+    root.put("c", arr)
+    val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
+    val baos = java.io.ByteArrayOutputStream()
+    java.util.zip.GZIPOutputStream(baos).use { it.write(jsonBytes) }
+    val base64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+    "SIBIL_DECK:$base64"
   } catch (e: Exception) {
     Log.e("SibilExport", "Export failed: ${e.message}")
     ""
   }
 }
 
+fun exportDeckToShareableCode(deck: FlashcardDeck): String = exportDeckToOfflineCode(deck)
+
 /**
- * Lenient JSON-to-FlashcardDeck parser supporting BOTH compact 1-letter JSON format
- * (`"t"`, `"s"`, `"cards":[{"q","a","h","c"}]`) AND legacy full-key JSON format
- * (`"title"`, `"subject"`, `"subjectTag"`, `"cards":[{"question","answer"}]`) plus raw card arrays.
- * Preserves 100% of cards with zero card-count limits.
+ * Bulletproof 100% Offline Decoder (`importDeckFromOfflineCode`):
+ * Accepts pasted or scanned `SIBIL_DECK:...` codes (supporting both `"c"` and `"cards"` arrays,
+ * 1-letter and full keys) and reconstructs the complete `FlashcardDeck` offline.
  */
-private fun parseJsonStringToFlashcardDeck(rawJsonString: String): FlashcardDeck? {
-  val trimmed = rawJsonString.trim().removePrefix("\uFEFF").trim()
-  if (trimmed.isEmpty()) return null
-
+fun importDeckFromOfflineCode(rawInput: String): FlashcardDeck? {
   return try {
-    val jsonCandidate = when {
-      trimmed.startsWith("{") && trimmed.endsWith("}") -> trimmed
-      trimmed.startsWith("[") && trimmed.endsWith("]") -> trimmed
-      trimmed.contains("{") && trimmed.contains("}") -> {
-        val start = trimmed.indexOf('{')
-        val end = trimmed.lastIndexOf('}')
-        if (start in 0 until end) trimmed.substring(start, end + 1) else return null
+    val trimmed = rawInput.trim()
+    if (trimmed.isEmpty()) return null
+    val withoutPrefix = if (trimmed.startsWith("SIBIL_DECK:", ignoreCase = true)) {
+      trimmed.substringAfter(":")
+    } else {
+      trimmed
+    }
+    val cleaned = withoutPrefix.replace("\\s+".toRegex(), "")
+    if (cleaned.isEmpty()) return null
+
+    val compressedBytes = try {
+      android.util.Base64.decode(cleaned, android.util.Base64.NO_WRAP)
+    } catch (_: Exception) {
+      try {
+        android.util.Base64.decode(cleaned, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
+      } catch (_: Exception) {
+        android.util.Base64.decode(cleaned, android.util.Base64.DEFAULT)
       }
-      else -> return null
+    }
+    val jsonString = try {
+      java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(compressedBytes))
+        .bufferedReader(Charsets.UTF_8)
+        .use { it.readText() }
+    } catch (_: Exception) {
+      String(compressedBytes, Charsets.UTF_8)
     }
 
-    if (jsonCandidate.startsWith("[")) {
-      val cardsArray = JSONArray(jsonCandidate)
-      val decodedCards = mutableListOf<FlashcardItem>()
-      for (i in 0 until cardsArray.length()) {
-        val cardObj = cardsArray.optJSONObject(i) ?: continue
-        val q = cardObj.optString("question", "")
-          .ifBlank { cardObj.optString("q", "") }
-          .ifBlank { cardObj.optString("front", "") }
-          .trim()
-        val a = cardObj.optString("answer", "")
-          .ifBlank { cardObj.optString("a", "") }
-          .ifBlank { cardObj.optString("back", "") }
-          .trim()
-        val c = cardObj.optString("category", "")
-          .ifBlank { cardObj.optString("c", "General") }
-          .trim()
-          .ifEmpty { "General" }
-        if (q.isNotEmpty() && a.isNotEmpty()) {
-          decodedCards.add(
-            FlashcardItem(
-              id = i + 1,
-              question = q,
-              answer = a,
-              category = c,
-              masteryLevel = "New",
-              isMastered = false
-            )
-          )
-        }
-      }
-      if (decodedCards.isEmpty()) return null
-      return FlashcardDeck(
-        id = 0,
-        title = "Shared Study Deck",
-        subjectTag = decodedCards.first().category.ifEmpty { "General" },
-        cards = decodedCards,
-        masteredCardIds = emptyList()
-      )
-    }
-
-    val root = JSONObject(jsonCandidate)
-    val title = root.optString("t", "")
-      .ifBlank { root.optString("title", "") }
-      .ifBlank { root.optString("name", "") }
-      .ifBlank { root.optString("deckTitle", "Shared Study Deck") }
-      .trim()
-      .ifEmpty { "Shared Study Deck" }
-    val domain = root.optString("s", "")
+    val root = org.json.JSONObject(jsonString)
+    val title = root.optString("t").ifBlank { root.optString("title", "Imported Deck") }.trim().ifEmpty { "Imported Deck" }
+    val subject = root.optString("s")
       .ifBlank { root.optString("subject", "") }
-      .ifBlank { root.optString("subjectTag", "") }
-      .ifBlank { root.optString("domain", "") }
-      .ifBlank { root.optString("category", "General") }
+      .ifBlank { root.optString("subjectTag", "General") }
       .trim()
       .ifEmpty { "General" }
-    val cardsArray = root.optJSONArray("cards")
-      ?: root.optJSONArray("c")
-      ?: root.optJSONArray("items")
-      ?: root.optJSONArray("flashcards")
-      ?: return null
-
-    val decodedCards = mutableListOf<FlashcardItem>()
+    val cardsArray = root.optJSONArray("c") ?: root.optJSONArray("cards") ?: org.json.JSONArray()
+    val parsedCards = mutableListOf<FlashcardItem>()
     for (i in 0 until cardsArray.length()) {
-      val cardObj = cardsArray.optJSONObject(i) ?: continue
-      val q = cardObj.optString("q", "")
-        .ifBlank { cardObj.optString("question", "") }
-        .ifBlank { cardObj.optString("front", "") }
-        .ifBlank { cardObj.optString("term", "") }
-        .trim()
-      val a = cardObj.optString("a", "")
-        .ifBlank { cardObj.optString("answer", "") }
-        .ifBlank { cardObj.optString("back", "") }
-        .ifBlank { cardObj.optString("definition", "") }
-        .trim()
-      val c = cardObj.optString("c", "")
-        .ifBlank { cardObj.optString("category", "") }
-        .ifBlank { cardObj.optString("subjectTag", domain) }
-        .trim()
-        .ifEmpty { domain }
-      if (q.isNotEmpty() && a.isNotEmpty()) {
-        decodedCards.add(
+      val item = cardsArray.optJSONObject(i) ?: continue
+      val q = item.optString("q").ifBlank { item.optString("question", "") }.trim()
+      val a = item.optString("a").ifBlank { item.optString("answer", "") }.trim()
+      if (q.isNotBlank() || a.isNotBlank()) {
+        val cardId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1)
+        parsedCards.add(
           FlashcardItem(
-            id = i + 1,
+            id = cardId,
             question = q,
             answer = a,
-            category = c,
+            category = subject,
             masteryLevel = "New",
             isMastered = false
           )
         )
       }
     }
-    if (decodedCards.isEmpty()) return null
-    FlashcardDeck(
-      id = root.optInt("id", 0),
-      title = title,
-      subjectTag = domain,
-      cards = decodedCards,
-      masteredCardIds = emptyList()
-    )
+    if (parsedCards.isEmpty()) {
+      null
+    } else {
+      val deckId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+      FlashcardDeck(
+        id = deckId,
+        title = title,
+        subjectTag = subject,
+        cards = parsedCards,
+        masteredCardIds = emptyList()
+      )
+    }
   } catch (_: Exception) {
     null
   }
 }
 
-/**
- * Resilient Multi-Tier Deck Decoder (imports 100% of cards with zero card-count limits):
- * - Sanitizes input by stripping optional "SIBIL_DECK:" prefix, removing whitespace/newlines/tabs/CRs,
- *   and decoding Base64 (DEFAULT / NO_WRAP / URL_SAFE) -> GZIPInputStream -> JSON.
- * - Tier 2: Uncompressed Base64 -> UTF-8 JSON.
- * - Tier 3: Direct Raw JSON string parsing.
- */
-fun parseImportedDeckCode(rawInput: String): FlashcardDeck? {
-  val trimmedRaw = rawInput.trim()
-  if (trimmedRaw.isEmpty() || trimmedRaw.startsWith("SIBIL_CLOUD_DECK:", ignoreCase = true)) return null
-
-  val strippedInput = if (trimmedRaw.startsWith("SIBIL_DECK:", ignoreCase = true)) {
-    trimmedRaw.substringAfter(":").trim()
-  } else {
-    trimmedRaw
-  }
-  if (strippedInput.isEmpty() || strippedInput.startsWith("SIBIL_CLOUD_DECK:", ignoreCase = true)) return null
-
-  val cleanInput = strippedInput.replace("\\s+".toRegex(), "")
-  if (cleanInput.isEmpty()) return null
-
-  // TIER 1: GZIP + Base64 (Standard & Compact Export)
-  val candidateStrings = listOf(cleanInput, strippedInput.replace("\n", "").replace("\r", "").replace("\t", "").replace(" ", "+")).distinct()
-  for (candidate in candidateStrings) {
-    try {
-      val decodedBytes = try {
-        android.util.Base64.decode(candidate, android.util.Base64.DEFAULT)
-      } catch (_: Exception) {
-        try {
-          android.util.Base64.decode(candidate, android.util.Base64.NO_WRAP)
-        } catch (_: Exception) {
-          android.util.Base64.decode(candidate, android.util.Base64.URL_SAFE)
-        }
-      }
-      val decompressedJson = GZIPInputStream(ByteArrayInputStream(decodedBytes))
-        .bufferedReader(Charsets.UTF_8)
-        .use { it.readText() }
-      val parsedDeck = parseJsonStringToFlashcardDeck(decompressedJson)
-      if (parsedDeck != null && parsedDeck.cards.isNotEmpty()) return parsedDeck
-    } catch (_: Exception) {
-      // Try next candidate or fall through to Tier 2
-    }
-  }
-
-  // TIER 2: Uncompressed Base64 Fallback
-  for (candidate in candidateStrings) {
-    try {
-      val decodedBytes = try {
-        android.util.Base64.decode(candidate, android.util.Base64.DEFAULT)
-      } catch (_: Exception) {
-        try {
-          android.util.Base64.decode(candidate, android.util.Base64.NO_WRAP)
-        } catch (_: Exception) {
-          android.util.Base64.decode(candidate, android.util.Base64.URL_SAFE)
-        }
-      }
-      val rawJson = String(decodedBytes, Charsets.UTF_8)
-      val parsedDeck = parseJsonStringToFlashcardDeck(rawJson)
-      if (parsedDeck != null && parsedDeck.cards.isNotEmpty()) return parsedDeck
-    } catch (_: Exception) {
-      // Fall through to Tier 3
-    }
-  }
-
-  // TIER 3: Raw JSON Fallback
-  return try {
-    parseJsonStringToFlashcardDeck(strippedInput)
-      ?: parseJsonStringToFlashcardDeck(cleanInput)
-  } catch (e: Exception) {
-    Log.e("SibilImport", "All import tiers failed: ${e.message}")
-    null
-  }
-}
+fun parseImportedDeckCode(rawInput: String): FlashcardDeck? = importDeckFromOfflineCode(rawInput)
 
 /**
  * User Settings Data Model with no-argument default constructor for Firestore deserialization.
@@ -5772,40 +5635,80 @@ class TaskViewModel(
   }
 
   /**
-   * Imports a shared `FlashcardDeck` decoded via `parseImportedDeckCode`, assigning a fresh
-   * collision-free UUID-backed ID, adding it to the local reactive deck state, and immediately
-   * persisting it to Firestore under `users/{uid}/flashcards/{finalDeck.id}`.
+   * Imports a shared `FlashcardDeck` decoded via `importDeckFromOfflineCode`:
+   * - If a deck with the same title already exists in `_flashcardDecks`, appends any new
+   *   non-duplicate cards to that existing deck (so multi-part QR codes merge seamlessly).
+   * - Otherwise adds it as a new deck, saves to local storage, and syncs to the user's Firestore collection.
    */
   fun importSharedFlashcardDeck(importedDeck: FlashcardDeck): FlashcardDeck {
-    val cleanTitle = importedDeck.title.trim().ifEmpty { "Shared Study Deck" }
-    val cleanTag = importedDeck.subjectTag.trim().ifEmpty { "General CE" }
-    val existingIds = _flashcardDecks.map { it.id }.toSet()
-    var uniqueDeckId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
-    while (existingIds.contains(uniqueDeckId)) {
-      uniqueDeckId = ((uniqueDeckId + 1) and 0x7FFFFFFF).coerceAtLeast(1000)
+    val cleanTitle = importedDeck.title.trim().ifEmpty { "Imported Deck" }
+    val cleanTag = importedDeck.subjectTag.trim().ifEmpty { "General" }
+
+    val existingIndex = _flashcardDecks.indexOfFirst {
+      it.title.trim().equals(cleanTitle, ignoreCase = true)
     }
-    if (uniqueDeckId >= nextDeckId) {
-      nextDeckId = uniqueDeckId + 1
-    }
-    val normalizedCards = importedDeck.cards.mapIndexed { index, card ->
-      val assignedCardId = nextCardId++
-      card.copy(
-        id = if (assignedCardId > 0) assignedCardId else (index + 1),
-        question = card.question.trim(),
-        answer = card.answer.trim(),
-        category = card.category.trim().ifEmpty { cleanTag },
-        masteryLevel = "New",
-        isMastered = false
+
+    val finalDeck: FlashcardDeck
+    if (existingIndex != -1) {
+      val existingDeck = _flashcardDecks[existingIndex]
+      val existingKeys = existingDeck.cards.map {
+        "${it.question.trim().lowercase(Locale.US)}||${it.answer.trim().lowercase(Locale.US)}"
+      }.toMutableSet()
+      val appendedCards = mutableListOf<FlashcardItem>()
+      importedDeck.cards.forEachIndexed { index, card ->
+        val q = card.question.trim()
+        val a = card.answer.trim()
+        val key = "${q.lowercase(Locale.US)}||${a.lowercase(Locale.US)}"
+        if ((q.isNotEmpty() || a.isNotEmpty()) && existingKeys.add(key)) {
+          val assignedCardId = nextCardId++
+          appendedCards.add(
+            card.copy(
+              id = if (assignedCardId > 0) assignedCardId else (existingDeck.cards.size + index + 1),
+              question = q,
+              answer = a,
+              category = card.category.trim().ifEmpty { existingDeck.subjectTag.ifEmpty { cleanTag } },
+              masteryLevel = "New",
+              isMastered = false
+            )
+          )
+        }
+      }
+      val mergedCards = existingDeck.cards + appendedCards
+      finalDeck = existingDeck.copy(
+        cards = mergedCards,
+        masteredCardIds = mergedCards.filter { it.isMastered || it.masteryLevel.equals("Good", ignoreCase = true) }.map { it.id }
       )
+      _flashcardDecks[existingIndex] = finalDeck
+    } else {
+      val existingIds = _flashcardDecks.map { it.id }.toSet()
+      var uniqueDeckId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+      while (existingIds.contains(uniqueDeckId)) {
+        uniqueDeckId = ((uniqueDeckId + 1) and 0x7FFFFFFF).coerceAtLeast(1000)
+      }
+      if (uniqueDeckId >= nextDeckId) {
+        nextDeckId = uniqueDeckId + 1
+      }
+      val normalizedCards = importedDeck.cards.mapIndexed { index, card ->
+        val assignedCardId = nextCardId++
+        card.copy(
+          id = if (assignedCardId > 0) assignedCardId else (index + 1),
+          question = card.question.trim(),
+          answer = card.answer.trim(),
+          category = card.category.trim().ifEmpty { cleanTag },
+          masteryLevel = "New",
+          isMastered = false
+        )
+      }
+      finalDeck = importedDeck.copy(
+        id = uniqueDeckId,
+        title = cleanTitle,
+        subjectTag = cleanTag,
+        cards = normalizedCards,
+        masteredCardIds = emptyList()
+      )
+      _flashcardDecks.add(0, finalDeck)
     }
-    val finalDeck = importedDeck.copy(
-      id = uniqueDeckId,
-      title = cleanTitle,
-      subjectTag = cleanTag,
-      cards = normalizedCards,
-      masteredCardIds = emptyList()
-    )
-    _flashcardDecks.add(0, finalDeck)
+
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
     try {
       val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "offline_fallback"
@@ -25701,29 +25604,28 @@ fun FlashcardMainView(
     )
   }
 
-  // "🔗 Import Code" Zero-Quota Shared Deck Dialog (handles both SIBIL_DECK: and SIBIL_CLOUD_DECK:)
+  // "🔗 Import Code" 100% Offline Shared Deck Dialog
   if (isImportDeckCodeDialogOpen) {
     ImportSharedDeckCodeDialog(
       metrics = metrics,
-      localDecks = decks,
       onDismiss = { isImportDeckCodeDialogOpen = false },
       onImportDeck = { importedDeck ->
-        val savedDeck = viewModel.importSharedFlashcardDeck(importedDeck)
+        viewModel.importSharedFlashcardDeck(importedDeck)
         isImportDeckCodeDialogOpen = false
         Toast.makeText(
           context,
-          "Successfully imported ${savedDeck.cards.size} flashcards!",
+          "Imported ${importedDeck.cards.size} flashcards!",
           Toast.LENGTH_SHORT
         ).show()
       }
     )
   }
 
-  // QR Code Share Dialog (exports 100% of cards + publishes full deck to shared_decks collection)
+  // 100% Offline QR Code Share Dialog (exports all 78+ cards with automatic multi-part QR chunking if > 1800 chars)
   val targetDeckForQr = decks.firstOrNull { it.id == shareQrTargetDeckId }
   if (targetDeckForQr != null) {
     val shareCode = remember(targetDeckForQr.id, targetDeckForQr.cards.size, targetDeckForQr.title) {
-      exportDeckToShareableCode(targetDeckForQr)
+      exportDeckToOfflineCode(targetDeckForQr)
     }
     ShareDeckQrDialog(
       deckId = shareCode,
@@ -25735,11 +25637,8 @@ fun FlashcardMainView(
 }
 
 /**
- * 1. QR Code Generator Helper using ZXing `ErrorCorrectionLevel.L` + `MARGIN = 1` for maximum
- * QR Version 40 capacity. NEVER slices or truncates `sourceDeck.cards` with `.take(15)`!
- * Encodes the full `"SIBIL_DECK:<compact_gzip>"` payload directly whenever `payload.length <= 2600`
- * (or up to QR Version 40 capacity) so scanning works 100% offline with all 78+ cards!
- * Only falls back to `"SIBIL_CLOUD_DECK:<id>:<uid>"` if the compressed payload exceeds QR capacity.
+ * 1. 100% Offline QR Code Generator Helper using ZXing `QRCodeWriter` with `ErrorCorrectionLevel.L`
+ * and `MARGIN = 1`. Encodes the exact `SIBIL_DECK:<base64_gzip>` string into a QR Code bitmap.
  */
 fun generateDeckQrBitmap(
   deckCode: String,
@@ -25751,54 +25650,17 @@ fun generateDeckQrBitmap(
     com.google.zxing.EncodeHintType.MARGIN to 1
   )
   val rawClean = deckCode.replace("\n", "").replace("\r", "").trim()
-  val normalizedCode = if (rawClean.isNotEmpty() && !rawClean.startsWith("SIBIL_DECK:") && !rawClean.startsWith("SIBIL_CLOUD_DECK:")) {
-    "SIBIL_DECK:$rawClean"
-  } else {
-    rawClean
+  val normalizedCode = when {
+    rawClean.isNotEmpty() && rawClean.startsWith("SIBIL_DECK:") -> rawClean
+    rawClean.isNotEmpty() -> "SIBIL_DECK:$rawClean"
+    sourceDeck != null -> exportDeckToOfflineCode(sourceDeck)
+    else -> ""
   }
+  if (normalizedCode.isEmpty()) return null
 
-  // Offline-first QR generation for compact full-deck payloads (<= 2600 chars, or up to QR Version 40 capacity)
-  if (normalizedCode.isNotEmpty()) {
-    try {
-      val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
-        normalizedCode,
-        BarcodeFormat.QR_CODE,
-        size,
-        size,
-        qrHints
-      )
-      return BarcodeEncoder().createBitmap(bitMatrix)
-    } catch (_: Exception) {
-      // Deck exceeds single QR Version 40 byte limit (> 2600 chars): encode full-deck cloud relay token (never .take(15))
-      if (sourceDeck != null) {
-        val uid = try {
-          FirebaseAuth.getInstance().currentUser?.uid ?: "offline_fallback"
-        } catch (_: Throwable) {
-          "offline_fallback"
-        }
-        val cloudRelayPayload = "SIBIL_CLOUD_DECK:${sourceDeck.id}:$uid"
-        try {
-          val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
-            cloudRelayPayload,
-            BarcodeFormat.QR_CODE,
-            size,
-            size,
-            qrHints
-          )
-          return BarcodeEncoder().createBitmap(bitMatrix)
-        } catch (_: Exception) {
-        }
-      }
-    }
-  }
   return try {
-    val fallbackPayload = if (sourceDeck != null) {
-      "SIBIL_CLOUD_DECK:${sourceDeck.id}:offline_fallback"
-    } else {
-      "SIBIL_CLOUD_DECK:0:offline_fallback"
-    }
-    val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
-      fallbackPayload,
+    val bitMatrix = com.google.zxing.qrcode.QRCodeWriter().encode(
+      normalizedCode,
       BarcodeFormat.QR_CODE,
       size,
       size,
@@ -25812,8 +25674,6 @@ fun generateDeckQrBitmap(
 
 /**
  * 2. Camera QR Scanner using Google Play Services GmsBarcodeScanning (zero manifest camera permissions).
- * Preserves the exact prefix (`SIBIL_DECK:` or `SIBIL_CLOUD_DECK:`) so the universal importer
- * routes offline GZIP codes and cloud relay tokens accurately.
  */
 fun launchDeckQrScanner(
   context: Context,
@@ -25841,11 +25701,12 @@ fun launchDeckQrScanner(
 }
 
 /**
- * 3. Liquid Glass Modal QR Share Dialog
- * - Generates offline-first QR code directly from `"SIBIL_DECK:<compact_gzip>"` when `<= 2600` chars.
- * - Publishes both raw fields AND `"payload": fullSibilDeckCode` to Firestore `shared_decks`
- *   (under `deck.id.toString()`, `uid`, and `"${deck.id}_$uid"`) so `SIBIL_CLOUD_DECK:` tokens
- *   decode 100% of cards seamlessly.
+ * 3. 100% Offline Liquid Glass Modal QR Share Dialog:
+ * - If `fullCode.length <= 1800`: encodes the entire `SIBIL_DECK:...` string directly into a single QR code.
+ * - If `fullCode.length > 1800` (huge 78+ card decks with long paragraphs): splits `deck.cards.chunked(25)`
+ *   into valid `exportDeckToOfflineCode(chunkDeck)` (`SIBIL_DECK:...`) parts with `< Part 1 of N >` navigation,
+ *   while the `"Copy Full Deck Code (All ${deck.cards.size} Cards)"` button copies the single combined 100%-card
+ *   `SIBIL_DECK:...` string!
  */
 @Composable
 fun ShareDeckQrDialog(
@@ -25857,54 +25718,40 @@ fun ShareDeckQrDialog(
   val context = LocalContext.current
   val palette = currentGlassPalette()
   val isDarkMode = palette.isDark
-  val nonWrappedShareCode = remember(deckId, deck) {
+
+  val fullCode = remember(deckId, deck) {
     val raw = if (deck != null) {
-      exportDeckToShareableCode(deck)
+      exportDeckToOfflineCode(deck)
     } else {
       deckId.replace("\n", "").replace("\r", "").trim()
     }
-    if (raw.isNotEmpty() && !raw.startsWith("SIBIL_DECK:") && !raw.startsWith("SIBIL_CLOUD_DECK:")) {
+    if (raw.isNotEmpty() && !raw.startsWith("SIBIL_DECK:")) {
       "SIBIL_DECK:$raw"
     } else {
       raw
     }
   }
-  var qrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
-  LaunchedEffect(nonWrappedShareCode, deck) {
-    // Publish full unmodified deck (all 78+ cards) + compressed payload to shared_decks collection
-    if (deck != null) {
-      try {
-        val db = FirebaseFirestore.getInstance()
-        val uid = try {
-          FirebaseAuth.getInstance().currentUser?.uid ?: "offline_fallback"
-        } catch (_: Throwable) {
-          "offline_fallback"
-        }
-        val payloadMap = deck.toFirestoreMap().apply {
-          put("payload", nonWrappedShareCode)
-          put("deckJson", nonWrappedShareCode)
-          put("senderUid", uid)
-          put("updatedAt", System.currentTimeMillis())
-        }
-        db.collection("shared_decks")
-          .document(deck.id.toString())
-          .set(payloadMap)
-        if (uid.isNotBlank() && uid != "offline_fallback") {
-          db.collection("shared_decks")
-            .document(uid)
-            .set(payloadMap)
-          db.collection("shared_decks")
-            .document("${deck.id}_$uid")
-            .set(payloadMap)
-        }
-      } catch (_: Throwable) {
+  val qrParts = remember(fullCode, deck) {
+    if (fullCode.length <= 1800 || deck == null || deck.cards.isEmpty()) {
+      listOf(fullCode)
+    } else {
+      val chunks = deck.cards.chunked(25)
+      chunks.map { chunkCards ->
+        exportDeckToOfflineCode(deck.copy(cards = chunkCards))
       }
     }
+  }
+
+  var currentPartIndex by remember(qrParts.size) { mutableIntStateOf(0) }
+  val activeQrPayload = qrParts.getOrElse(currentPartIndex.coerceIn(0, (qrParts.size - 1).coerceAtLeast(0))) { fullCode }
+  var qrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+
+  LaunchedEffect(activeQrPayload) {
     qrBitmap = null
     val encodedBitmap = withContext(Dispatchers.IO) {
       generateDeckQrBitmap(
-        deckCode = nonWrappedShareCode,
+        deckCode = activeQrPayload,
         size = 512,
         sourceDeck = deck
       )
@@ -25996,13 +25843,49 @@ fun ShareDeckQrDialog(
             }
           }
 
+          if (qrParts.size > 1) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+              OutlinedButton(
+                onClick = {
+                  if (currentPartIndex > 0) currentPartIndex -= 1
+                },
+                enabled = currentPartIndex > 0,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+              ) {
+                Text("< Prev", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+              }
+
+              Text(
+                text = "Part ${currentPartIndex + 1} of ${qrParts.size}",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                color = palette.accentIndigo
+              )
+
+              OutlinedButton(
+                onClick = {
+                  if (currentPartIndex < qrParts.lastIndex) currentPartIndex += 1
+                },
+                enabled = currentPartIndex < qrParts.lastIndex,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+              ) {
+                Text("Next >", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+              }
+            }
+          }
+
           Spacer(modifier = Modifier.height(14.dp))
 
           Text(
-            text = if (nonWrappedShareCode.length <= 2600) {
-              "Offline QR Ready: Classmates can scan this QR code or paste the full Deck Code to import all $cardCount cards 100% offline with zero AI quota."
+            text = if (qrParts.size > 1) {
+              "Large $cardCount-card deck split into ${qrParts.size} offline QR parts (25 cards/part) for instant camera focus, or tap below to copy the single full $cardCount-card offline code!"
             } else {
-              "Classmates can scan this QR code or tap below to copy the full offline Deck Code for all $cardCount cards."
+              "100% Offline QR: Classmates can scan this QR code or paste the full Deck Code to import all $cardCount cards offline with zero AI quota."
             },
             style = MaterialTheme.typography.bodySmall,
             color = palette.textSecondary,
@@ -26014,7 +25897,7 @@ fun ShareDeckQrDialog(
           Button(
             onClick = {
               val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-              clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", nonWrappedShareCode))
+              clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", fullCode))
               Toast.makeText(
                 context,
                 "Full deck code ($cardCount cards) copied!",
@@ -26039,7 +25922,7 @@ fun ShareDeckQrDialog(
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-              text = if (cardCount > 0) "📋 Copy Full Deck Code (All $cardCount Cards)" else "📋 Copy Full Deck Code",
+              text = if (cardCount > 0) "Copy Full Deck Code (All $cardCount Cards)" else "Copy Full Deck Code",
               fontWeight = FontWeight.Bold,
               fontSize = 13.sp,
               maxLines = 1,
@@ -26062,140 +25945,9 @@ fun ShareDeckQrDialog(
   }
 }
 
-/**
- * Universal Async Cloud Deck Resolver for `SIBIL_CLOUD_DECK:` tokens:
- * - Parses `val parts = cleaned.removePrefix("SIBIL_CLOUD_DECK:").split(":")`
- * - Extracts `docId = parts.last()` as well as `deckIdPart = parts.first()`.
- * - Queries `FirebaseFirestore.getInstance().collection("shared_decks").document(docId).get()`
- *   with automatic cascade fallback to `shared_decks/{deckIdPart}`, `shared_decks/{deckIdPart}_{docId}`,
- *   and `users/{docId}/flashcards/{deckIdPart}` (plus local deck fallback if on the same device).
- * - Supports deserializing whether stored as a nested `"payload"` / `"deckJson"` compressed `SIBIL_DECK:` string,
- *   a `"cards"` List of Maps (`question`/`q`, `answer`/`a`), or a `FlashcardDeck` object.
- */
-private fun resolveCloudDeckById(
-  rawToken: String,
-  localDecks: List<FlashcardDeck> = emptyList(),
-  onFound: (FlashcardDeck) -> Unit,
-  onNotFound: () -> Unit
-) {
-  val cleaned = rawToken.trim().replace("\\s+".toRegex(), "")
-  val body = when {
-    cleaned.startsWith("SIBIL_CLOUD_DECK:", ignoreCase = true) ->
-      cleaned.substringAfter(":")
-    cleaned.startsWith("SIBIL_DECK:", ignoreCase = true) ->
-      cleaned.substringAfter(":")
-    else -> cleaned
-  }
-  val parts = body.split(":").map { it.trim() }.filter { it.isNotEmpty() }
-  if (parts.isEmpty()) {
-    onNotFound()
-    return
-  }
-
-  val docId = parts.last()
-  val firstPart = parts.first()
-  val candidateSharedDocIds = listOf(
-    docId,
-    firstPart,
-    "${firstPart}_$docId"
-  ).filter { it.isNotEmpty() }.distinct()
-
-  // Local same-device fallback if offline or testing on same phone
-  val localFallbackDeck = firstPart.toIntOrNull()?.let { targetId ->
-    localDecks.firstOrNull { it.id == targetId && it.cards.isNotEmpty() }
-  }
-
-  try {
-    val db = FirebaseFirestore.getInstance()
-
-    fun checkUserFlashcardsFallback() {
-      val targetUid = if (docId.isNotEmpty() && docId != "offline_fallback") {
-        docId
-      } else {
-        try {
-          FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
-        } catch (_: Throwable) {
-          ""
-        }
-      }
-      if (targetUid.isEmpty()) {
-        if (localFallbackDeck != null) onFound(localFallbackDeck) else onNotFound()
-        return
-      }
-      if (firstPart.isNotEmpty()) {
-        db.collection("users")
-          .document(targetUid)
-          .collection("flashcards")
-          .document(firstPart)
-          .get()
-          .addOnSuccessListener { userDoc ->
-            val userDeck = userDoc.toFlashcardDeckOrNull()
-            if (userDeck != null && userDeck.cards.isNotEmpty()) {
-              onFound(userDeck)
-            } else {
-              db.collection("users")
-                .document(targetUid)
-                .collection("flashcards")
-                .limit(5)
-                .get()
-                .addOnSuccessListener { querySnap ->
-                  val matched = querySnap.documents
-                    .mapNotNull { it.toFlashcardDeckOrNull() }
-                    .firstOrNull { it.cards.isNotEmpty() && (it.id.toString() == firstPart || querySnap.size() == 1) }
-                    ?: querySnap.documents.mapNotNull { it.toFlashcardDeckOrNull() }.firstOrNull { it.cards.isNotEmpty() }
-                  if (matched != null) {
-                    onFound(matched)
-                  } else if (localFallbackDeck != null) {
-                    onFound(localFallbackDeck)
-                  } else {
-                    onNotFound()
-                  }
-                }
-                .addOnFailureListener {
-                  if (localFallbackDeck != null) onFound(localFallbackDeck) else onNotFound()
-                }
-            }
-          }
-          .addOnFailureListener {
-            if (localFallbackDeck != null) onFound(localFallbackDeck) else onNotFound()
-          }
-      } else {
-        if (localFallbackDeck != null) onFound(localFallbackDeck) else onNotFound()
-      }
-    }
-
-    fun trySharedDocIndex(index: Int) {
-      if (index >= candidateSharedDocIds.size) {
-        checkUserFlashcardsFallback()
-        return
-      }
-      val candidateId = candidateSharedDocIds[index]
-      db.collection("shared_decks")
-        .document(candidateId)
-        .get()
-        .addOnSuccessListener { snapshot ->
-          val deck = snapshot.toFlashcardDeckOrNull()
-          if (deck != null && deck.cards.isNotEmpty()) {
-            onFound(deck)
-          } else {
-            trySharedDocIndex(index + 1)
-          }
-        }
-        .addOnFailureListener {
-          trySharedDocIndex(index + 1)
-        }
-    }
-
-    trySharedDocIndex(0)
-  } catch (_: Throwable) {
-    if (localFallbackDeck != null) onFound(localFallbackDeck) else onNotFound()
-  }
-}
-
 @Composable
 private fun ImportSharedDeckCodeDialog(
   metrics: ResponsiveMetrics,
-  localDecks: List<FlashcardDeck> = emptyList(),
   onDismiss: () -> Unit,
   onImportDeck: (FlashcardDeck) -> Unit
 ) {
@@ -26204,65 +25956,24 @@ private fun ImportSharedDeckCodeDialog(
   val isDarkMode = palette.isDark
   var deckCodeInput by rememberSaveable { mutableStateOf("") }
   var decodeError by rememberSaveable { mutableStateOf<String?>(null) }
-  var isImporting by remember { mutableStateOf(false) }
 
-  fun executeUniversalDeckImport(rawInput: String) {
-    val cleaned = rawInput.trim().replace("\\s+".toRegex(), "")
-    if (cleaned.isEmpty()) {
+  fun executeOfflineDeckImport(rawInput: String) {
+    val trimmed = rawInput.trim()
+    if (trimmed.isEmpty()) {
       decodeError = "Please paste a deck code or scan a classmate's QR code first."
       return
     }
-
-    // CASE 1: SIBIL_CLOUD_DECK:<deckId>:<docId/uid>
-    if (cleaned.startsWith("SIBIL_CLOUD_DECK:", ignoreCase = true)) {
-      isImporting = true
-      decodeError = null
-      resolveCloudDeckById(
-        rawToken = cleaned,
-        localDecks = localDecks,
-        onFound = { remoteDeck ->
-          isImporting = false
-          decodeError = null
-          onImportDeck(remoteDeck)
-        },
-        onNotFound = {
-          isImporting = false
-          decodeError =
-            "Cloud deck not found or expired. Ask your classmate to tap 'Copy Full Deck Code' and paste it here."
-        }
-      )
-      return
-    }
-
-    // CASE 2: SIBIL_DECK:<gzip_base64> or Raw Base64 / JSON
-    val importedDeck = parseImportedDeckCode(cleaned) ?: parseImportedDeckCode(rawInput)
+    val importedDeck = importDeckFromOfflineCode(trimmed)
     if (importedDeck != null && importedDeck.cards.isNotEmpty()) {
-      isImporting = false
       decodeError = null
       onImportDeck(importedDeck)
     } else {
-      // Fallback: check if it's a bare cloud doc ID
-      isImporting = true
-      decodeError = null
-      resolveCloudDeckById(
-        rawToken = cleaned,
-        localDecks = localDecks,
-        onFound = { remoteDeck ->
-          isImporting = false
-          decodeError = null
-          onImportDeck(remoteDeck)
-        },
-        onNotFound = {
-          isImporting = false
-          decodeError =
-            "Invalid deck code. Ask your classmate to tap 'Copy Full Deck Code' and paste the complete code here."
-        }
-      )
+      decodeError = "Invalid deck code. Please copy the full SIBIL_DECK:... code shared by your classmate."
     }
   }
 
   Dialog(
-    onDismissRequest = { if (!isImporting) onDismiss() },
+    onDismissRequest = onDismiss,
     properties = DialogProperties(usePlatformDefaultWidth = false)
   ) {
     // Full-screen dark scrim overlay so background "No Decks Available" text never bleeds through
@@ -26273,7 +25984,7 @@ private fun ImportSharedDeckCodeDialog(
         .clickable(
           interactionSource = remember { MutableInteractionSource() },
           indication = null,
-          onClick = { if (!isImporting) onDismiss() }
+          onClick = onDismiss
         ),
       contentAlignment = Alignment.Center
     ) {
@@ -26319,7 +26030,7 @@ private fun ImportSharedDeckCodeDialog(
           }
 
           Text(
-            text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Scan their QR code or paste their deck code below to load all 100% of their cards instantly with zero AI quota usage.",
+            text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Scan their QR code or paste their SIBIL_DECK:... code below to load all 100% of their cards offline.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12)
             ),
@@ -26329,20 +26040,17 @@ private fun ImportSharedDeckCodeDialog(
           // Native Google Play Services QR Scanner Button with opaque-backed container
           Button(
             onClick = {
-              if (!isImporting) {
-                launchDeckQrScanner(
-                  context = context,
-                  onSuccess = { scannedString ->
-                    deckCodeInput = scannedString.trim()
-                    executeUniversalDeckImport(scannedString)
-                  },
-                  onError = { err ->
-                    decodeError = err
-                  }
-                )
-              }
+              launchDeckQrScanner(
+                context = context,
+                onSuccess = { scannedString ->
+                  deckCodeInput = scannedString.trim()
+                  executeOfflineDeckImport(scannedString)
+                },
+                onError = { err ->
+                  decodeError = err
+                }
+              )
             },
-            enabled = !isImporting,
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
               containerColor = if (isDarkMode) Color(0xFF16243D) else Color(0xFFE0F2FE),
@@ -26369,7 +26077,6 @@ private fun ImportSharedDeckCodeDialog(
               deckCodeInput = it
               decodeError = null
             },
-            enabled = !isImporting,
             label = { Text("Paste Deck Code from Classmate") },
             placeholder = { Text("SIBIL_DECK:H4sIAAAAAAAA/...") },
             isError = decodeError != null,
@@ -26398,7 +26105,6 @@ private fun ImportSharedDeckCodeDialog(
                   Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
                 }
               },
-              enabled = !isImporting,
               contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
               Icon(
@@ -26422,30 +26128,10 @@ private fun ImportSharedDeckCodeDialog(
                   deckCodeInput = ""
                   decodeError = null
                 },
-                enabled = !isImporting,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
               ) {
                 Text("Clear", fontSize = 12.sp, color = palette.textSecondary)
               }
-            }
-          }
-
-          if (isImporting) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-              modifier = Modifier.padding(vertical = 4.dp)
-            ) {
-              CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                strokeWidth = 2.dp,
-                color = palette.accentIndigo
-              )
-              Text(
-                text = "Fetching shared deck...",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.textSecondary
-              )
             }
           }
 
@@ -26462,16 +26148,12 @@ private fun ImportSharedDeckCodeDialog(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
           ) {
-            TextButton(
-              onClick = { if (!isImporting) onDismiss() },
-              enabled = !isImporting
-            ) {
+            TextButton(onClick = onDismiss) {
               Text("Cancel", color = palette.textSecondary)
             }
             Spacer(modifier = Modifier.width(8.dp))
             Button(
-              onClick = { executeUniversalDeckImport(deckCodeInput) },
-              enabled = !isImporting,
+              onClick = { executeOfflineDeckImport(deckCodeInput) },
               shape = RoundedCornerShape(18.dp),
               colors = ButtonDefaults.buttonColors(
                 containerColor = palette.accentIndigo,
@@ -26480,7 +26162,7 @@ private fun ImportSharedDeckCodeDialog(
               modifier = Modifier.testTag("confirm_import_deck_code_button")
             ) {
               Text(
-                text = if (isImporting) "Importing..." else "Import Deck",
+                text = "Import Deck",
                 fontWeight = FontWeight.Bold
               )
             }
