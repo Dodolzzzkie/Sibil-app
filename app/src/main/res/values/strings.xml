@@ -64,4 +64,8 @@
     <string name="app_version">Sibil v1.0.1 (Build 2)</string>
     <string name="developed_by_text">Developed by: Group 6</string>
     <string name="switch_account_button">Switch Account / Log Out</string>
+    <string name="widget_tasks_label">Sibil Tasks</string>
+    <string name="widget_tasks_description">Live upcoming Civil Engineering coursework &amp; board exam tasks</string>
+    <string name="widget_schedule_label">Sibil Class Schedule</string>
+    <string name="widget_schedule_description">Live daily class timetable with real-time ongoing &amp; upcoming class highlights</string>
 </resources>

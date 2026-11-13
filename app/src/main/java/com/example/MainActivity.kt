@@ -1227,6 +1227,9 @@ fun LiquidGlassContainer(
   )
 }
 
+var pendingWidgetTargetTab by mutableStateOf<CeNavTab?>(null)
+var pendingWidgetOpenAddTask by mutableStateOf(false)
+
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -1235,6 +1238,7 @@ class MainActivity : ComponentActivity() {
     androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
     enableEdgeToEdge()
     createClockNotificationChannel(this)
+    handleWidgetLaunchIntent(intent)
 
     // Initialize Firebase manually to prevent FirebaseAuth crashes
     if (FirebaseApp.getApps(this).isEmpty()) {
@@ -1260,6 +1264,28 @@ class MainActivity : ComponentActivity() {
 
     setContent {
       CivilEngineeringProductivityApp()
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleWidgetLaunchIntent(intent)
+  }
+
+  private fun handleWidgetLaunchIntent(intent: Intent?) {
+    val targetTab = intent?.getStringExtra(SibilWidgetSync.EXTRA_WIDGET_TARGET_TAB)?.trim().orEmpty()
+    val shouldOpenAddTask = intent?.getBooleanExtra(SibilWidgetSync.EXTRA_WIDGET_OPEN_ADD_TASK, false) ?: false
+    when (targetTab) {
+      SibilWidgetSync.TARGET_TAB_TASKS -> {
+        pendingWidgetTargetTab = CeNavTab.TASKS
+        if (shouldOpenAddTask) {
+          pendingWidgetOpenAddTask = true
+        }
+      }
+      SibilWidgetSync.TARGET_TAB_SCHEDULE -> {
+        pendingWidgetTargetTab = CeNavTab.SCHEDULE
+      }
     }
   }
 }
@@ -9224,6 +9250,32 @@ private fun MainProductivityScaffold(
   var isProfileSettingsDialogOpen by rememberSaveable { mutableStateOf(false) }
   var lastGlobalTriggeredAlarmKey by remember { mutableStateOf("") }
 
+  // Real-time synchronization of Tasks & Class Schedule with Native Home Screen Widgets
+  val tasksSnapshotForWidgets = taskViewModel.tasks.toList()
+  val schedulesSnapshotForWidgets = taskViewModel.classSchedules.toList()
+  LaunchedEffect(tasksSnapshotForWidgets, schedulesSnapshotForWidgets) {
+    SibilWidgetSync.saveAndRefreshWidgets(
+      context = context,
+      tasks = tasksSnapshotForWidgets,
+      classes = schedulesSnapshotForWidgets
+    )
+  }
+
+  // Handle deep-link navigation when user taps Sibil Tasks or Sibil Class Schedule home screen widget
+  val widgetTarget = pendingWidgetTargetTab
+  val widgetAddTask = pendingWidgetOpenAddTask
+  LaunchedEffect(widgetTarget, widgetAddTask) {
+    if (widgetTarget != null) {
+      selectedTab = widgetTarget
+      pendingWidgetTargetTab = null
+    }
+    if (widgetAddTask) {
+      selectedTab = CeNavTab.TASKS
+      isAddTaskDialogOpen = true
+      pendingWidgetOpenAddTask = false
+    }
+  }
+
   // Continuous 1-second ticker checking active alarms and snooze countdown across the whole app
   LaunchedEffect(Unit) {
     while (true) {
@@ -9282,8 +9334,17 @@ private fun MainProductivityScaffold(
     }
   }
 
-  // Return to Dashboard when pressing system Back on any secondary bottom tab
-  if (selectedTab != CeNavTab.DASHBOARD) {
+  var isPomodoroLockActive by rememberSaveable { mutableStateOf(false) }
+  var pomodoroUnlockPin by rememberSaveable { mutableStateOf("") }
+  var showPinUnlockDialog by remember { mutableStateOf(false) }
+
+  // Intercept system Back button when Pomodoro Focus Lock is active
+  BackHandler(enabled = isPomodoroLockActive) {
+    showPinUnlockDialog = true
+  }
+
+  // Return to Dashboard when pressing system Back on any secondary bottom tab (when not locked)
+  if (selectedTab != CeNavTab.DASHBOARD && !isPomodoroLockActive) {
     BackHandler {
       selectedTab = CeNavTab.DASHBOARD
     }
@@ -9308,7 +9369,7 @@ private fun MainProductivityScaffold(
         WindowInsets.safeDrawing
       },
       floatingActionButton = {
-        if (!isCompactTaskNoteOpen) {
+        if (!isCompactTaskNoteOpen && !isPomodoroLockActive) {
           when (selectedTab) {
             CeNavTab.TASKS -> {
               Box(
@@ -9368,7 +9429,7 @@ private fun MainProductivityScaffold(
         }
       },
       bottomBar = {
-        if (!isCompactTaskNoteOpen) {
+        if (!isCompactTaskNoteOpen && !isPomodoroLockActive) {
           CustomDockedBottomTaskBar(
             selectedTab = selectedTab,
             onSelectTab = { selectedTab = it },
@@ -9383,9 +9444,37 @@ private fun MainProductivityScaffold(
           .then(if (isCompactTaskNoteOpen) Modifier else Modifier.padding(innerPadding)),
         contentAlignment = Alignment.TopCenter
       ) {
-        when (selectedTab) {
+        val effectiveTab = if (isPomodoroLockActive) CeNavTab.CLOCK else selectedTab
+        when (effectiveTab) {
           CeNavTab.CLOCK -> ClockScreen(
             viewModel = taskViewModel,
+            isPomodoroLockActive = isPomodoroLockActive,
+            pomodoroUnlockPin = pomodoroUnlockPin,
+            showPinUnlockDialog = showPinUnlockDialog,
+            onActivatePomodoroLock = { generatedPin ->
+              pomodoroUnlockPin = generatedPin
+              isPomodoroLockActive = true
+              showPinUnlockDialog = false
+              selectedTab = CeNavTab.CLOCK
+              try {
+                (context as? android.app.Activity)?.startLockTask()
+              } catch (_: Exception) {
+              }
+            },
+            onReleasePomodoroLock = {
+              isPomodoroLockActive = false
+              showPinUnlockDialog = false
+              try {
+                (context as? android.app.Activity)?.stopLockTask()
+              } catch (_: Exception) {
+              }
+            },
+            onRequestPinUnlockDialog = {
+              showPinUnlockDialog = true
+            },
+            onDismissPinUnlockDialog = {
+              showPinUnlockDialog = false
+            },
             modifier = Modifier
               .fillMaxSize()
               .widthIn(max = if (metrics.isTabletLandscape) 1080.dp else metrics.maxContentWidth)
@@ -14197,9 +14286,9 @@ private fun UnitConverterScreen(
         bottom = metrics.scaledDp(98)
       )
       .testTag("unit_converter_screen"),
-    verticalArrangement = Arrangement.spacedBy(10.dp)
+    verticalArrangement = Arrangement.spacedBy(6.dp)
   ) {
-    // 1. TOP HEADER BAR: Back Button + "CE Unit Converter" + SI/USCS Filter + Search Toggle
+    // 1. STICKY TOP HEADER BAR: Back Button + "CE Unit Converter" + SI/USCS Filter + Search Toggle
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.SpaceBetween,
@@ -14207,13 +14296,13 @@ private fun UnitConverterScreen(
     ) {
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.weight(1f)
       ) {
         IconButton(
           onClick = onBackToExtras,
           modifier = Modifier
-            .size(38.dp)
+            .size(34.dp)
             .clip(CircleShape)
             .background(
               if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f)
@@ -14230,7 +14319,7 @@ private fun UnitConverterScreen(
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "Back to Extras",
             tint = titleColor,
-            modifier = Modifier.size(19.dp)
+            modifier = Modifier.size(18.dp)
           )
         }
 
@@ -14238,7 +14327,7 @@ private fun UnitConverterScreen(
           Text(
             text = "CE Unit Converter",
             style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = metrics.scaledSp(20),
+              fontSize = metrics.scaledSp(18),
               fontWeight = FontWeight.ExtraBold
             ),
             color = titleColor,
@@ -14248,7 +14337,7 @@ private fun UnitConverterScreen(
           Text(
             text = "${selectedCategory.fullTitle} • ${selectedCategory.boardTag}",
             style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 11.sp,
+              fontSize = 10.5.sp,
               fontWeight = FontWeight.SemiBold
             ),
             color = accentCyan,
@@ -14274,13 +14363,13 @@ private fun UnitConverterScreen(
               else -> "ALL"
             }
           },
-          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+          contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp),
           modifier = Modifier.testTag("unit_converter_system_filter_pill")
         ) {
           Text(
             text = if (systemFilter == "ALL") "SI / USCS" else systemFilter,
             style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 11.sp,
+              fontSize = 10.5.sp,
               fontWeight = FontWeight.ExtraBold
             ),
             color = if (systemFilter != "ALL") accentCyan else titleColor
@@ -14293,7 +14382,7 @@ private fun UnitConverterScreen(
             if (!isSearchVisible) searchQuery = ""
           },
           modifier = Modifier
-            .size(36.dp)
+            .size(34.dp)
             .clip(CircleShape)
             .background(
               if (isSearchVisible) accentCyan.copy(alpha = 0.20f)
@@ -14311,663 +14400,677 @@ private fun UnitConverterScreen(
             imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search,
             contentDescription = "Toggle Unit Search",
             tint = if (isSearchVisible) accentCyan else titleColor,
-            modifier = Modifier.size(18.dp)
+            modifier = Modifier.size(17.dp)
           )
         }
       }
     }
 
-    // Optional Expandable Search Bar
-    AnimatedVisibility(
-      visible = isSearchVisible,
-      enter = expandVertically() + fadeIn(),
-      exit = shrinkVertically() + fadeOut()
+    // Main Converter Content Area below sticky header
+    Column(
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxWidth()
+        .verticalScroll(rememberScrollState()),
+      verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-      OutlinedTextField(
-        value = searchQuery,
-        onValueChange = { searchQuery = it },
-        placeholder = {
-          Text(
-            text = "Filter units by name or symbol (e.g., MPa, kip, cfs, ft)...",
-            fontSize = 12.5.sp,
-            color = subtitleColor
-          )
-        },
-        leadingIcon = {
-          Icon(
-            imageVector = Icons.Default.Search,
-            contentDescription = null,
-            tint = accentCyan,
-            modifier = Modifier.size(18.dp)
-          )
-        },
-        trailingIcon = if (searchQuery.isNotEmpty()) {
-          {
-            IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(30.dp)) {
-              Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Clear search",
-                tint = subtitleColor,
-                modifier = Modifier.size(15.dp)
-              )
+      // Optional Expandable Search Bar
+      AnimatedVisibility(
+        visible = isSearchVisible,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut()
+      ) {
+        OutlinedTextField(
+          value = searchQuery,
+          onValueChange = { searchQuery = it },
+          placeholder = {
+            Text(
+              text = "Filter units by name or symbol (e.g., MPa, kip, cfs, ft)...",
+              fontSize = 12.sp,
+              color = subtitleColor
+            )
+          },
+          leadingIcon = {
+            Icon(
+              imageVector = Icons.Default.Search,
+              contentDescription = null,
+              tint = accentCyan,
+              modifier = Modifier.size(17.dp)
+            )
+          },
+          trailingIcon = if (searchQuery.isNotEmpty()) {
+            {
+              IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(28.dp)) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Clear search",
+                  tint = subtitleColor,
+                  modifier = Modifier.size(14.dp)
+                )
+              }
             }
-          }
-        } else null,
-        singleLine = true,
-        shape = RoundedCornerShape(14.dp),
-        colors = sibilOutlinedTextFieldColors(),
+          } else null,
+          singleLine = true,
+          shape = RoundedCornerShape(14.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("unit_converter_search_input")
+        )
+      }
+
+      // 2. 12-CATEGORY HORIZONTAL SCROLLABLE RIBBON
+      LazyRow(
         modifier = Modifier
           .fillMaxWidth()
-          .testTag("unit_converter_search_input")
-      )
-    }
-
-    // 2. 12-CATEGORY HORIZONTAL SCROLLABLE RIBBON
-    LazyRow(
-      modifier = Modifier
-        .fillMaxWidth()
-        .testTag("unit_converter_category_ribbon"),
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      items(
-        items = CeUnitCategory.entries,
-        key = { it.id }
-      ) { category ->
-        val isSelected = selectedCategory == category
-        RecessedGlassPill(
-          isDarkMode = isDarkMode,
-          fillColor = if (isSelected) {
-            if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.36f) else Color(0xFF0284C7)
-          } else null,
-          borderColor = if (isSelected) Color(0xFF38BDF8) else null,
-          onClick = {
-            playCardHapticSound(context, localView)
-            selectedCategory = category
-          },
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
-          modifier = Modifier.testTag("unit_category_chip_${category.id}")
-        ) {
-          Text(
-            text = category.shortLabel,
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontSize = 12.sp,
-              fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-            ),
-            color = if (isSelected) Color.White else titleColor
-          )
-        }
-      }
-    }
-
-    // 3. QUICK CE BOARD EXAM PRESET STRIP (+ Temp/Angle Sub-Mode Toggle when in TEMP_ANGLE)
-    val presets = remember(selectedCategory) { getPresetsForCategory(selectedCategory) }
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      if (selectedCategory == CeUnitCategory.TEMP_ANGLE) {
-        listOf("TEMP" to "🌡️ Temp", "ANGLE" to "📐 Angle").forEach { (subCode, subLabel) ->
-          val isSubActive = tempAngleSubGroup == subCode
+          .testTag("unit_converter_category_ribbon"),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        items(
+          items = CeUnitCategory.entries,
+          key = { it.id }
+        ) { category ->
+          val isSelected = selectedCategory == category
           RecessedGlassPill(
             isDarkMode = isDarkMode,
-            fillColor = if (isSubActive) accentCyan.copy(alpha = 0.22f) else null,
-            borderColor = if (isSubActive) accentCyan else null,
-            onClick = { tempAngleSubGroup = subCode },
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            fillColor = if (isSelected) {
+              if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.36f) else Color(0xFF0284C7)
+            } else null,
+            borderColor = if (isSelected) Color(0xFF38BDF8) else null,
+            onClick = {
+              playCardHapticSound(context, localView)
+              selectedCategory = category
+            },
+            contentPadding = PaddingValues(horizontal = 11.dp, vertical = 5.dp),
+            modifier = Modifier.testTag("unit_category_chip_${category.id}")
           ) {
             Text(
-              text = subLabel,
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 11.sp,
-                fontWeight = FontWeight.ExtraBold
+              text = category.shortLabel,
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 11.5.sp,
+                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
               ),
-              color = if (isSubActive) accentCyan else subtitleColor
+              color = if (isSelected) Color.White else titleColor
             )
           }
         }
       }
 
-      Text(
-        text = "PRESETS:",
-        style = MaterialTheme.typography.labelSmall.copy(
-          fontSize = 10.sp,
-          fontWeight = FontWeight.ExtraBold,
-          letterSpacing = 0.5.sp
-        ),
-        color = subtitleColor,
-        modifier = Modifier.padding(end = 2.dp)
-      )
-
-      presets.forEach { preset ->
-        val isPresetSelected =
-          activeFromUnit.symbol == preset.fromSymbol && activeToUnit.symbol == preset.toSymbol
-        RecessedGlassPill(
-          isDarkMode = isDarkMode,
-          fillColor = if (isPresetSelected) accentCyan.copy(alpha = 0.20f) else null,
-          borderColor = if (isPresetSelected) accentCyan else null,
-          onClick = {
-            playCardHapticSound(context, localView)
-            if (selectedCategory == CeUnitCategory.TEMP_ANGLE && preset.subGroup != "Default") {
-              tempAngleSubGroup = preset.subGroup
-            }
-            fromSymbol = preset.fromSymbol
-            toSymbol = preset.toSymbol
-          },
-          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-        ) {
-          Text(
-            text = preset.label,
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontSize = 11.sp,
-              fontWeight = if (isPresetSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-            ),
-            color = if (isPresetSelected) accentCyan else titleColor
-          )
-        }
-      }
-    }
-
-    // 4. DUAL "FROM:" & "TO:" INPUT/OUTPUT HEADER BOXES + CENTER SWAP BUTTON
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .clip(RoundedCornerShape(20.dp))
-        .background(brush = panelFillBrush, shape = RoundedCornerShape(20.dp))
-        .border(border = panelBorder, shape = RoundedCornerShape(20.dp))
-        .padding(10.dp)
-    ) {
+      // 3. QUICK CE BOARD EXAM PRESET STRIP (+ Temp/Angle Sub-Mode Toggle when in TEMP_ANGLE)
+      val presets = remember(selectedCategory) { getPresetsForCategory(selectedCategory) }
       Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
-        // Left Box ("From:")
-        val ioBoxFill = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.65f) else Color.White.copy(alpha = 0.90f)
-        val ioBoxBorder = if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1)
+        if (selectedCategory == CeUnitCategory.TEMP_ANGLE) {
+          listOf("TEMP" to "🌡️ Temp", "ANGLE" to "📐 Angle").forEach { (subCode, subLabel) ->
+            val isSubActive = tempAngleSubGroup == subCode
+            RecessedGlassPill(
+              isDarkMode = isDarkMode,
+              fillColor = if (isSubActive) accentCyan.copy(alpha = 0.22f) else null,
+              borderColor = if (isSubActive) accentCyan else null,
+              onClick = { tempAngleSubGroup = subCode },
+              contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
+            ) {
+              Text(
+                text = subLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = if (isSubActive) accentCyan else subtitleColor
+              )
+            }
+          }
+        }
 
-        Column(
-          modifier = Modifier
-            .weight(1f)
-            .clip(RoundedCornerShape(14.dp))
-            .background(ioBoxFill)
-            .border(1.dp, accentCyan.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        Text(
+          text = "PRESETS:",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.5.sp
+          ),
+          color = subtitleColor,
+          modifier = Modifier.padding(end = 2.dp)
+        )
+
+        presets.forEach { preset ->
+          val isPresetSelected =
+            activeFromUnit.symbol == preset.fromSymbol && activeToUnit.symbol == preset.toSymbol
+          RecessedGlassPill(
+            isDarkMode = isDarkMode,
+            fillColor = if (isPresetSelected) accentCyan.copy(alpha = 0.20f) else null,
+            borderColor = if (isPresetSelected) accentCyan else null,
+            onClick = {
+              playCardHapticSound(context, localView)
+              if (selectedCategory == CeUnitCategory.TEMP_ANGLE && preset.subGroup != "Default") {
+                tempAngleSubGroup = preset.subGroup
+              }
+              fromSymbol = preset.fromSymbol
+              toSymbol = preset.toSymbol
+            },
+            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
           ) {
             Text(
-              text = "From: ${activeFromUnit.symbol}",
+              text = preset.label,
               style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 11.sp,
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.5.sp,
+                fontWeight = if (isPresetSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+              ),
+              color = if (isPresetSelected) accentCyan else titleColor
+            )
+          }
+        }
+      }
+
+      // 4. DUAL "FROM:" & "TO:" INPUT/OUTPUT HEADER BOXES + CENTER SWAP BUTTON
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(18.dp))
+          .background(brush = panelFillBrush, shape = RoundedCornerShape(18.dp))
+          .border(border = panelBorder, shape = RoundedCornerShape(18.dp))
+          .padding(8.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          // Left Box ("From:")
+          val ioBoxFill = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.65f) else Color.White.copy(alpha = 0.90f)
+          val ioBoxBorder = if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1)
+
+          Column(
+            modifier = Modifier
+              .weight(1f)
+              .clip(RoundedCornerShape(12.dp))
+              .background(ioBoxFill)
+              .border(1.dp, accentCyan.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+              .padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = "From: ${activeFromUnit.symbol}",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = accentCyan,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+              if (inputExpression.isNotEmpty()) {
+                Icon(
+                  imageVector = Icons.Default.Close,
+                  contentDescription = "Clear Input",
+                  tint = subtitleColor,
+                  modifier = Modifier
+                    .size(14.dp)
+                    .clickable { inputExpression = "" }
+                    .testTag("unit_converter_clear_input_button")
+                )
+              }
+            }
+
+            BasicTextField(
+              value = inputExpression,
+              onValueChange = { inputExpression = it },
+              singleLine = true,
+              textStyle = androidx.compose.ui.text.TextStyle(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = titleColor
+              ),
+              cursorBrush = SolidColor(accentCyan),
+              keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Done
+              ),
+              decorationBox = { innerTextField ->
+                Box(modifier = Modifier.fillMaxWidth()) {
+                  if (inputExpression.isEmpty()) {
+                    Text(
+                      text = "e.g. 25 * 4",
+                      style = MaterialTheme.typography.bodyMedium.copy(
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 13.sp
+                      ),
+                      color = subtitleColor.copy(alpha = 0.65f)
+                    )
+                  }
+                  innerTextField()
+                }
+              },
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("unit_converter_from_input")
+            )
+
+            Text(
+              text = activeFromUnit.name,
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Medium
+              ),
+              color = subtitleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          // Center Swap Button (⇄)
+          Box(
+            modifier = Modifier
+              .size(34.dp)
+              .shadow(
+                elevation = 6.dp,
+                shape = CircleShape,
+                ambientColor = accentCyan.copy(alpha = 0.35f),
+                spotColor = accentCyan.copy(alpha = 0.35f)
+              )
+              .clip(CircleShape)
+              .background(
+                Brush.linearGradient(
+                  listOf(Color(0xFF0284C7), Color(0xFF2563EB))
+                )
+              )
+              .border(1.dp, Color.White.copy(alpha = 0.65f), CircleShape)
+              .clickable {
+                playCardHapticSound(context, localView)
+                val prevFrom = activeFromUnit.symbol
+                fromSymbol = activeToUnit.symbol
+                toSymbol = prevFrom
+              }
+              .testTag("unit_converter_swap_button"),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = Icons.Filled.SwapHoriz,
+              contentDescription = "Swap Units",
+              tint = Color.White,
+              modifier = Modifier.size(18.dp)
+            )
+          }
+
+          // Right Box ("To:")
+          Column(
+            modifier = Modifier
+              .weight(1f)
+              .clip(RoundedCornerShape(12.dp))
+              .background(ioBoxFill)
+              .border(1.dp, ioBoxBorder, RoundedCornerShape(12.dp))
+              .padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = "To: ${activeToUnit.symbol}",
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = subtitleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+              )
+
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Text(
+                  text = precisionMode.label,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.ExtraBold
+                  ),
+                  color = accentCyan,
+                  modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(accentCyan.copy(alpha = 0.14f))
+                    .clickable {
+                      precisionMode = when (precisionMode) {
+                        UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
+                        UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
+                        UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
+                      }
+                    }
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                    .testTag("unit_converter_precision_toggle")
+                )
+
+                Icon(
+                  imageVector = Icons.Filled.ContentCopy,
+                  contentDescription = "Copy Converted Result",
+                  tint = accentCyan,
+                  modifier = Modifier
+                    .size(14.dp)
+                    .clickable {
+                      clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
+                      Toast.makeText(
+                        context,
+                        "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                    }
+                    .testTag("unit_converter_copy_result_button")
+                )
+              }
+            }
+
+            Text(
+              text = formattedPrimaryOutput,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.ExtraBold
               ),
               color = accentCyan,
               maxLines = 1,
-              overflow = TextOverflow.Ellipsis
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("unit_converter_to_output")
             )
-            if (inputExpression.isNotEmpty()) {
-              Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Clear Input",
-                tint = subtitleColor,
-                modifier = Modifier
-                  .size(15.dp)
-                  .clickable { inputExpression = "" }
-                  .testTag("unit_converter_clear_input_button")
-              )
-            }
-          }
 
-          BasicTextField(
-            value = inputExpression,
-            onValueChange = { inputExpression = it },
-            singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(
-              fontFamily = JetBrainsMonoFamily,
-              fontSize = 16.sp,
-              fontWeight = FontWeight.ExtraBold,
-              color = titleColor
-            ),
-            cursorBrush = SolidColor(accentCyan),
-            keyboardOptions = KeyboardOptions(
-              keyboardType = KeyboardType.Text,
-              imeAction = ImeAction.Done
-            ),
-            decorationBox = { innerTextField ->
-              Box(modifier = Modifier.fillMaxWidth()) {
-                if (inputExpression.isEmpty()) {
-                  Text(
-                    text = "e.g. 25 * 4",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontSize = 14.sp
-                    ),
-                    color = subtitleColor.copy(alpha = 0.65f)
-                  )
-                }
-                innerTextField()
-              }
-            },
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("unit_converter_from_input")
-          )
-
-          Text(
-            text = activeFromUnit.name,
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.sp,
-              fontWeight = FontWeight.Medium
-            ),
-            color = subtitleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-        }
-
-        // Center Swap Button (⇄)
-        Box(
-          modifier = Modifier
-            .size(38.dp)
-            .shadow(
-              elevation = 8.dp,
-              shape = CircleShape,
-              ambientColor = accentCyan.copy(alpha = 0.35f),
-              spotColor = accentCyan.copy(alpha = 0.35f)
-            )
-            .clip(CircleShape)
-            .background(
-              Brush.linearGradient(
-                listOf(Color(0xFF0284C7), Color(0xFF2563EB))
-              )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.65f), CircleShape)
-            .clickable {
-              playCardHapticSound(context, localView)
-              val prevFrom = activeFromUnit.symbol
-              fromSymbol = activeToUnit.symbol
-              toSymbol = prevFrom
-            }
-            .testTag("unit_converter_swap_button"),
-          contentAlignment = Alignment.Center
-        ) {
-          Icon(
-            imageVector = Icons.Filled.SwapHoriz,
-            contentDescription = "Swap Units",
-            tint = Color.White,
-            modifier = Modifier.size(20.dp)
-          )
-        }
-
-        // Right Box ("To:")
-        Column(
-          modifier = Modifier
-            .weight(1f)
-            .clip(RoundedCornerShape(14.dp))
-            .background(ioBoxFill)
-            .border(1.dp, ioBoxBorder, RoundedCornerShape(14.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
             Text(
-              text = "To: ${activeToUnit.symbol}",
+              text = activeToUnit.name,
               style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 11.sp,
-                fontWeight = FontWeight.ExtraBold
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Medium
               ),
               color = subtitleColor,
               maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.weight(1f)
+              overflow = TextOverflow.Ellipsis
             )
-
-            Row(
-              horizontalArrangement = Arrangement.spacedBy(6.dp),
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Text(
-                text = precisionMode.label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 9.5.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = accentCyan,
-                modifier = Modifier
-                  .clip(RoundedCornerShape(6.dp))
-                  .background(accentCyan.copy(alpha = 0.14f))
-                  .clickable {
-                    precisionMode = when (precisionMode) {
-                      UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
-                      UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
-                      UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
-                    }
-                  }
-                  .padding(horizontal = 5.dp, vertical = 2.dp)
-                  .testTag("unit_converter_precision_toggle")
-              )
-
-              Icon(
-                imageVector = Icons.Filled.ContentCopy,
-                contentDescription = "Copy Converted Result",
-                tint = accentCyan,
-                modifier = Modifier
-                  .size(15.dp)
-                  .clickable {
-                    clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
-                    Toast.makeText(
-                      context,
-                      "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
-                      Toast.LENGTH_SHORT
-                    ).show()
-                  }
-                  .testTag("unit_converter_copy_result_button")
-              )
-            }
           }
-
-          Text(
-            text = formattedPrimaryOutput,
-            style = MaterialTheme.typography.titleMedium.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontSize = 16.sp,
-              fontWeight = FontWeight.ExtraBold
-            ),
-            color = accentCyan,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("unit_converter_to_output")
-          )
-
-          Text(
-            text = activeToUnit.name,
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.sp,
-              fontWeight = FontWeight.Medium
-            ),
-            color = subtitleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
         }
       }
-    }
 
-    // 5. INTERACTIVE DUAL-LIST SELECTOR ("From" List vs. Live "To" Multi-Preview List)
-    Box(
-      modifier = Modifier
-        .weight(1f)
-        .fillMaxWidth()
-        .clip(panelShape)
-        .background(brush = panelFillBrush, shape = panelShape)
-        .border(border = panelBorder, shape = panelShape)
-    ) {
-      Column(modifier = Modifier.fillMaxSize()) {
-        // Dual Column Header Strip
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .background(
-              if (isDarkMode) Color.White.copy(alpha = 0.05f)
-              else Color(0xFF0284C7).copy(alpha = 0.07f)
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = "FROM UNIT (${filteredDisplayUnits.size})",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.5.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 0.6.sp
-            ),
-            color = subtitleColor,
-            modifier = Modifier.weight(0.46f)
-          )
-          Text(
-            text = "TO UNIT • LIVE EQUIVALENTS",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.5.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 0.6.sp
-            ),
-            color = accentCyan,
-            modifier = Modifier.weight(0.54f)
-          )
-        }
-
-        GlassHairlineDivider(isDarkMode = isDarkMode)
-
-        Row(
-          modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
-        ) {
-          // LEFT SCROLLABLE COLUMN: "From Unit" Selector List
-          LazyColumn(
+      // 5. INTERACTIVE DUAL-LIST SELECTOR ("From" List vs. Live "To" Multi-Preview List)
+      // Expanded height so 6 to 9 units are clearly visible at once without cramped 2-line scrolling
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 360.dp, max = 520.dp)
+          .clip(panelShape)
+          .background(brush = panelFillBrush, shape = panelShape)
+          .border(border = panelBorder, shape = panelShape)
+      ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+          // Dual Column Header Strip
+          Row(
             modifier = Modifier
-              .weight(0.46f)
-              .fillMaxHeight()
-              .testTag("unit_converter_from_list"),
-            contentPadding = PaddingValues(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+              .fillMaxWidth()
+              .background(
+                if (isDarkMode) Color.White.copy(alpha = 0.05f)
+                else Color(0xFF0284C7).copy(alpha = 0.07f)
+              )
+              .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
           ) {
-            items(
-              items = filteredDisplayUnits,
-              key = { "from_${it.symbol}" }
-            ) { unit ->
-              val isSelected = unit.symbol == activeFromUnit.symbol
-              val itemFill = if (isSelected) {
-                if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
-                else Color(0xFFE0F2FE).copy(alpha = 0.92f)
-              } else {
-                Color.Transparent
-              }
-              val itemBorder = if (isSelected) {
-                BorderStroke(1.dp, accentCyan)
-              } else {
-                BorderStroke(0.5.dp, Color.Transparent)
-              }
+            Text(
+              text = "FROM UNIT (${filteredDisplayUnits.size})",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.6.sp
+              ),
+              color = subtitleColor,
+              modifier = Modifier.weight(0.46f)
+            )
+            Text(
+              text = "TO UNIT • LIVE EQUIVALENTS",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.6.sp
+              ),
+              color = accentCyan,
+              modifier = Modifier.weight(0.54f)
+            )
+          }
 
-              Surface(
-                onClick = {
-                  playCardHapticSound(context, localView)
-                  fromSymbol = unit.symbol
-                },
-                shape = RoundedCornerShape(12.dp),
-                color = itemFill,
-                border = itemBorder,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("from_unit_row_${unit.symbol}")
-              ) {
-                Row(
+          GlassHairlineDivider(isDarkMode = isDarkMode)
+
+          Row(
+            modifier = Modifier
+              .weight(1f)
+              .fillMaxWidth()
+          ) {
+            // LEFT SCROLLABLE COLUMN: "From Unit" Selector List
+            LazyColumn(
+              modifier = Modifier
+                .weight(0.46f)
+                .fillMaxHeight()
+                .heightIn(min = 320.dp, max = 520.dp)
+                .testTag("unit_converter_from_list"),
+              contentPadding = PaddingValues(6.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              items(
+                items = filteredDisplayUnits,
+                key = { "from_${it.symbol}" }
+              ) { unit ->
+                val isSelected = unit.symbol == activeFromUnit.symbol
+                val itemFill = if (isSelected) {
+                  if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
+                  else Color(0xFFE0F2FE).copy(alpha = 0.92f)
+                } else {
+                  Color.Transparent
+                }
+                val itemBorder = if (isSelected) {
+                  BorderStroke(1.dp, accentCyan)
+                } else {
+                  BorderStroke(0.5.dp, Color.Transparent)
+                }
+
+                Surface(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    fromSymbol = unit.symbol
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  color = itemFill,
+                  border = itemBorder,
                   modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 9.dp, vertical = 8.dp),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    .testTag("from_unit_row_${unit.symbol}")
                 ) {
-                  // Symbol Badge
-                  Box(
+                  Row(
                     modifier = Modifier
-                      .clip(RoundedCornerShape(7.dp))
-                      .background(
-                        if (isSelected) accentCyan
-                        else if (isDarkMode) Color.White.copy(alpha = 0.08f)
-                        else Color(0xFF0F172A).copy(alpha = 0.07f)
-                      )
-                      .padding(horizontal = 6.dp, vertical = 3.dp),
-                    contentAlignment = Alignment.Center
+                      .fillMaxWidth()
+                      .padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                   ) {
+                    // Symbol Badge
+                    Box(
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                          if (isSelected) accentCyan
+                          else if (isDarkMode) Color.White.copy(alpha = 0.08f)
+                          else Color(0xFF0F172A).copy(alpha = 0.07f)
+                        )
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                      contentAlignment = Alignment.Center
+                    ) {
+                      Text(
+                        text = unit.symbol,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontFamily = JetBrainsMonoFamily,
+                          fontSize = 10.sp,
+                          fontWeight = FontWeight.ExtraBold
+                        ),
+                        color = if (isSelected) Color.White else titleColor
+                      )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                      Text(
+                        text = unit.name,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 11.sp,
+                          fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
+                        ),
+                        color = titleColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                      )
+                      Text(
+                        text = unit.system,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 9.sp,
+                          fontWeight = FontWeight.SemiBold
+                        ),
+                        color = subtitleColor
+                      )
+                    }
+                  }
+                }
+              }
+            }
+
+            // Vertical Hairline Divider between From and To lists
+            Box(
+              modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .background(
+                  if (isDarkMode) Color.White.copy(alpha = 0.12f)
+                  else Color(0xFFCBD5E1).copy(alpha = 0.75f)
+                )
+            )
+
+            // RIGHT SCROLLABLE COLUMN: "To Unit" List with Live Multi-Previews
+            LazyColumn(
+              modifier = Modifier
+                .weight(0.54f)
+                .fillMaxHeight()
+                .heightIn(min = 320.dp, max = 520.dp)
+                .testTag("unit_converter_to_list"),
+              contentPadding = PaddingValues(6.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              items(
+                items = filteredDisplayUnits,
+                key = { "to_${it.symbol}" }
+              ) { unit ->
+                val isSelected = unit.symbol == activeToUnit.symbol
+                val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
+                  evaluatedInput?.let {
+                    val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
+                    formatConvertedValue(conv, precisionMode)
+                  } ?: "—"
+                }
+
+                val itemFill = if (isSelected) {
+                  if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
+                  else Color(0xFFE0F2FE).copy(alpha = 0.92f)
+                } else {
+                  Color.Transparent
+                }
+                val itemBorder = if (isSelected) {
+                  BorderStroke(1.dp, accentCyan)
+                } else {
+                  BorderStroke(0.5.dp, Color.Transparent)
+                }
+
+                Surface(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    toSymbol = unit.symbol
+                  },
+                  shape = RoundedCornerShape(10.dp),
+                  color = itemFill,
+                  border = itemBorder,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("to_unit_row_${unit.symbol}")
+                ) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                  ) {
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.SpaceBetween,
+                      verticalAlignment = Alignment.CenterVertically
+                    ) {
+                      Text(
+                        text = unit.name,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                          fontSize = 11.sp,
+                          fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+                        ),
+                        color = titleColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                      )
+
+                      Text(
+                        text = unit.system,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 8.5.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = subtitleColor,
+                        modifier = Modifier.padding(start = 4.dp)
+                      )
+                    }
+
                     Text(
-                      text = unit.symbol,
-                      style = MaterialTheme.typography.labelSmall.copy(
+                      text = "($livePreviewText ${unit.symbol})",
+                      style = MaterialTheme.typography.labelMedium.copy(
                         fontFamily = JetBrainsMonoFamily,
-                        fontSize = 10.5.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold
                       ),
-                      color = if (isSelected) Color.White else titleColor
-                    )
-                  }
-
-                  Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                      text = unit.name,
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.5.sp,
-                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
-                      ),
-                      color = titleColor,
+                      color = if (isSelected) accentCyan else subtitleColor,
                       maxLines = 1,
                       overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                      text = unit.system,
-                      style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.SemiBold
-                      ),
-                      color = subtitleColor
-                    )
                   }
-                }
-              }
-            }
-          }
-
-          // Vertical Hairline Divider between From and To lists
-          Box(
-            modifier = Modifier
-              .width(1.dp)
-              .fillMaxHeight()
-              .background(
-                if (isDarkMode) Color.White.copy(alpha = 0.12f)
-                else Color(0xFFCBD5E1).copy(alpha = 0.75f)
-              )
-          )
-
-          // RIGHT SCROLLABLE COLUMN: "To Unit" List with Live Multi-Previews
-          LazyColumn(
-            modifier = Modifier
-              .weight(0.54f)
-              .fillMaxHeight()
-              .testTag("unit_converter_to_list"),
-            contentPadding = PaddingValues(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-          ) {
-            items(
-              items = filteredDisplayUnits,
-              key = { "to_${it.symbol}" }
-            ) { unit ->
-              val isSelected = unit.symbol == activeToUnit.symbol
-              val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
-                evaluatedInput?.let {
-                  val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
-                  formatConvertedValue(conv, precisionMode)
-                } ?: "—"
-              }
-
-              val itemFill = if (isSelected) {
-                if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
-                else Color(0xFFE0F2FE).copy(alpha = 0.92f)
-              } else {
-                Color.Transparent
-              }
-              val itemBorder = if (isSelected) {
-                BorderStroke(1.dp, accentCyan)
-              } else {
-                BorderStroke(0.5.dp, Color.Transparent)
-              }
-
-              Surface(
-                onClick = {
-                  playCardHapticSound(context, localView)
-                  toSymbol = unit.symbol
-                },
-                shape = RoundedCornerShape(12.dp),
-                color = itemFill,
-                border = itemBorder,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("to_unit_row_${unit.symbol}")
-              ) {
-                Column(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 9.dp, vertical = 7.dp),
-                  verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                  Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                  ) {
-                    Text(
-                      text = unit.name,
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.5.sp,
-                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-                      ),
-                      color = titleColor,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis,
-                      modifier = Modifier.weight(1f)
-                    )
-
-                    Text(
-                      text = unit.system,
-                      style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
-                      ),
-                      color = subtitleColor,
-                      modifier = Modifier.padding(start = 4.dp)
-                    )
-                  }
-
-                  Text(
-                    text = "($livePreviewText ${unit.symbol})",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontSize = 11.5.sp,
-                      fontWeight = FontWeight.ExtraBold
-                    ),
-                    color = if (isSelected) accentCyan else subtitleColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
                 }
               }
             }
           }
         }
       }
-    }
 
-    // 6. BOTTOM FORMULA & CONVERSION FACTOR CAPSULE (1-Tap Copy)
-    MathFormulaCapsule(
-      label = "${selectedCategory.shortLabel} Conversion",
-      equation = liveEquationText,
-      secondaryEquation = unitScaleFactorText,
-      accentColor = accentCyan,
-      testTag = "unit_converter_formula_capsule"
-    )
+      // 6. BOTTOM FORMULA & CONVERSION FACTOR CAPSULE (1-Tap Copy)
+      Box(modifier = Modifier.padding(bottom = 4.dp)) {
+        MathFormulaCapsule(
+          label = "${selectedCategory.shortLabel} Conversion",
+          equation = liveEquationText,
+          secondaryEquation = unitScaleFactorText,
+          accentColor = accentCyan,
+          testTag = "unit_converter_formula_capsule"
+        )
+      }
+    }
   }
 }
 
@@ -16147,6 +16250,7 @@ fun FormulaVaultMainView(
         } else {
           "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET"
         },
+        isDarkMode = palette.isDark,
         onDismiss = { showTocSheet = false },
         onSelectSection = { sectionZeroBasedIndex ->
           playCardHapticSound(context, localView)
@@ -16249,10 +16353,37 @@ fun FormulaVaultMainView(
 private fun FormulaVaultTocGlassSheet(
   sections: List<AlgebraHandbookSection>,
   sheetSubtitle: String = "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET",
+  isDarkMode: Boolean = currentGlassPalette().isDark,
   onDismiss: () -> Unit,
   onSelectSection: (Int) -> Unit
 ) {
-  val palette = currentGlassPalette()
+  val sheetBackground = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.96f) else Color(0xFFF1F5F9)
+  val headerTitleColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
+  val headerSubtitleColor = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val rowTitleColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
+  val rowSubtitleColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
+  val rowBorderColor = if (isDarkMode) Color.White.copy(alpha = 0.14f) else Color(0xFFCBD5E1)
+  val badgeFillColor = if (isDarkMode) Color(0xFF38BDF8).copy(alpha = 0.16f) else Color(0xFF0284C7).copy(alpha = 0.14f)
+  val badgeBorderColor = if (isDarkMode) Color(0xFF38BDF8).copy(alpha = 0.38f) else Color(0xFF0284C7).copy(alpha = 0.30f)
+  val badgeTextColor = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0369A1)
+  val arrowTintColor = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val rowCardBrush = remember(isDarkMode) {
+    if (isDarkMode) {
+      Brush.horizontalGradient(
+        listOf(
+          Color(0xFF1E293B).copy(alpha = 0.65f),
+          Color(0xFF1E293B).copy(alpha = 0.65f)
+        )
+      )
+    } else {
+      Brush.horizontalGradient(
+        listOf(
+          Color.White.copy(alpha = 0.88f),
+          Color(0xFFE0F2FE).copy(alpha = 0.65f)
+        )
+      )
+    }
+  }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -16261,7 +16392,7 @@ private fun FormulaVaultTocGlassSheet(
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .background(Color.Black.copy(alpha = 0.42f))
+        .background(Color.Black.copy(alpha = if (isDarkMode) 0.52f else 0.32f))
         .clickable(
           interactionSource = remember { MutableInteractionSource() },
           indication = null,
@@ -16272,13 +16403,13 @@ private fun FormulaVaultTocGlassSheet(
       Surface(
         onClick = {},
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        color = palette.dialogSurface.copy(alpha = 0.96f),
+        color = sheetBackground,
         border = BorderStroke(
           width = 1.dp,
           brush = Brush.linearGradient(
             listOf(
-              Color.White.copy(alpha = if (palette.isDark) 0.35f else 0.75f),
-              Color(0xFF6366F1).copy(alpha = 0.25f)
+              if (isDarkMode) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.95f),
+              if (isDarkMode) Color(0xFF38BDF8).copy(alpha = 0.25f) else Color(0xFFCBD5E1)
             )
           )
         ),
@@ -16308,7 +16439,7 @@ private fun FormulaVaultTocGlassSheet(
                   .width(42.dp)
                   .height(4.dp)
                   .clip(CircleShape)
-                  .background(palette.textSecondary.copy(alpha = 0.35f))
+                  .background(rowSubtitleColor.copy(alpha = 0.35f))
               )
             }
 
@@ -16328,7 +16459,7 @@ private fun FormulaVaultTocGlassSheet(
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                   ),
-                  color = palette.textPrimary
+                  color = headerTitleColor
                 )
                 Text(
                   text = sheetSubtitle,
@@ -16338,15 +16469,15 @@ private fun FormulaVaultTocGlassSheet(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.2.sp
                   ),
-                  color = palette.accentIndigo
+                  color = headerSubtitleColor
                 )
               }
 
               Surface(
                 onClick = onDismiss,
                 shape = CircleShape,
-                color = palette.nestedCardFill,
-                border = palette.nestedBorder,
+                color = if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.72f) else Color.White.copy(alpha = 0.90f),
+                border = BorderStroke(1.dp, rowBorderColor),
                 modifier = Modifier
                   .size(38.dp)
                   .testTag("formula_vault_toc_close_button")
@@ -16355,7 +16486,7 @@ private fun FormulaVaultTocGlassSheet(
                   Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Close Table of Contents",
-                    tint = palette.textSecondary,
+                    tint = rowSubtitleColor,
                     modifier = Modifier.size(18.dp)
                   )
                 }
@@ -16366,24 +16497,27 @@ private fun FormulaVaultTocGlassSheet(
 
             HorizontalDivider(
               thickness = 1.dp,
-              color = Color(0xFF6366F1).copy(alpha = 0.22f)
+              color = rowBorderColor
             )
           }
 
           items(sections.size) { index ->
             val section = sections[index]
             val chapterNumberText = String.format(Locale.ROOT, "[%02d]", index + 1)
-            Surface(
-              onClick = { onSelectSection(index) },
-              shape = RoundedCornerShape(12.dp),
-              color = palette.nestedCardFill.copy(alpha = if (palette.isDark) 0.82f else 0.92f),
-              border = BorderStroke(
-                width = 1.dp,
-                color = Color(0xFF6366F1).copy(alpha = 0.25f)
-              ),
-              shadowElevation = 2.dp,
+            val cardShape = RoundedCornerShape(14.dp)
+            Box(
               modifier = Modifier
                 .fillMaxWidth()
+                .shadow(
+                  elevation = if (isDarkMode) 2.dp else 3.dp,
+                  shape = cardShape,
+                  ambientColor = if (isDarkMode) Color.Black.copy(alpha = 0.25f) else Color(0xFF0284C7).copy(alpha = 0.08f),
+                  spotColor = if (isDarkMode) Color.Black.copy(alpha = 0.25f) else Color(0xFF0284C7).copy(alpha = 0.10f)
+                )
+                .clip(cardShape)
+                .background(brush = rowCardBrush, shape = cardShape)
+                .border(width = 1.dp, color = rowBorderColor, shape = cardShape)
+                .clickable { onSelectSection(index) }
                 .testTag("toc_section_item_${index + 1}")
             ) {
               Row(
@@ -16401,8 +16535,8 @@ private fun FormulaVaultTocGlassSheet(
                   // Chapter Indicator Chip on the left: "[01]", "[02]", ...
                   Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF6366F1).copy(alpha = 0.16f),
-                    border = BorderStroke(1.dp, Color(0xFF6366F1).copy(alpha = 0.40f))
+                    color = badgeFillColor,
+                    border = BorderStroke(1.dp, badgeBorderColor)
                   ) {
                     Text(
                       text = chapterNumberText,
@@ -16411,7 +16545,7 @@ private fun FormulaVaultTocGlassSheet(
                         fontSize = 12.sp,
                         fontWeight = FontWeight.ExtraBold
                       ),
-                      color = palette.accentIndigo,
+                      color = badgeTextColor,
                       modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                   }
@@ -16427,7 +16561,7 @@ private fun FormulaVaultTocGlassSheet(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                       ),
-                      color = palette.textPrimary
+                      color = rowTitleColor
                     )
                     Text(
                       text = "${section.items.size} reference laws & equations",
@@ -16435,7 +16569,7 @@ private fun FormulaVaultTocGlassSheet(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                       ),
-                      color = palette.textSecondary
+                      color = rowSubtitleColor
                     )
                   }
                 }
@@ -16443,7 +16577,7 @@ private fun FormulaVaultTocGlassSheet(
                 Icon(
                   imageVector = Icons.Default.ArrowForward,
                   contentDescription = "Jump to ${section.sectionTitle}",
-                  tint = palette.accentIndigo,
+                  tint = arrowTintColor,
                   modifier = Modifier.size(18.dp)
                 )
               }
@@ -36015,6 +36149,13 @@ fun cancelTimerExactAlarm(context: Context) {
 @Composable
 fun ClockScreen(
   viewModel: TaskViewModel? = null,
+  isPomodoroLockActive: Boolean = false,
+  pomodoroUnlockPin: String = "",
+  showPinUnlockDialog: Boolean = false,
+  onActivatePomodoroLock: (String) -> Unit = {},
+  onReleasePomodoroLock: () -> Unit = {},
+  onRequestPinUnlockDialog: () -> Unit = {},
+  onDismissPinUnlockDialog: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -36024,7 +36165,49 @@ fun ClockScreen(
   val creamCardColor = palette.cardFill
   val ivoryInnerColor = palette.nestedCardFill
 
+  // Local fallback states if ClockScreen is rendered standalone outside SibilAppShell
+  var localPomodoroLockActive by rememberSaveable { mutableStateOf(false) }
+  var localPomodoroUnlockPin by rememberSaveable { mutableStateOf("") }
+  var localShowPinUnlockDialog by remember { mutableStateOf(false) }
+  var isStrictPomodoroLockEnabled by rememberSaveable { mutableStateOf(true) }
+
+  val effectiveLockActive = isPomodoroLockActive || localPomodoroLockActive
+  val effectiveUnlockPin = pomodoroUnlockPin.ifEmpty { localPomodoroUnlockPin }
+  val effectiveShowPinDialog = showPinUnlockDialog || localShowPinUnlockDialog
+
+  fun activateFocusLockWithNewPin() {
+    val generatedPin = (1000..9999).random().toString()
+    localPomodoroUnlockPin = generatedPin
+    localPomodoroLockActive = true
+    localShowPinUnlockDialog = false
+    onActivatePomodoroLock(generatedPin)
+    try {
+      (context as? android.app.Activity)?.startLockTask()
+    } catch (_: Exception) {
+    }
+  }
+
+  fun releaseFocusLock() {
+    localPomodoroLockActive = false
+    localShowPinUnlockDialog = false
+    onReleasePomodoroLock()
+    try {
+      (context as? android.app.Activity)?.stopLockTask()
+    } catch (_: Exception) {
+    }
+  }
+
+  BackHandler(enabled = effectiveLockActive) {
+    localShowPinUnlockDialog = true
+    onRequestPinUnlockDialog()
+  }
+
   var selectedSubTab by rememberSaveable { mutableStateOf(ClockSubTab.ALARM) }
+  LaunchedEffect(effectiveLockActive) {
+    if (effectiveLockActive) {
+      selectedSubTab = ClockSubTab.TIMER
+    }
+  }
 
   // Notification Permission state (Android 13+) & Exact Alarm Permission state (Android 12+)
   var hasNotificationPermission by remember {
@@ -36167,13 +36350,22 @@ fun ClockScreen(
           timerRemainingSeconds = 0L
           targetEndTime = 0L
           isTimerRunning = false
+          val wasFocusLocked = effectiveLockActive
+          if (wasFocusLocked) {
+            releaseFocusLock()
+            Toast.makeText(
+              context,
+              "Pomodoro Complete! Focus Lock Released.",
+              Toast.LENGTH_LONG
+            ).show()
+          }
           if (!hasFiredAlarm) {
             hasFiredAlarm = true
             cancelTimerExactAlarm(context)
             val labelSuffix = activePresetLabel?.let { " ($it)" } ?: ""
             triggerSingleTimerExpirationAlert(
               context = context,
-              title = "Timer Reached 00:00:00!$labelSuffix",
+              title = if (wasFocusLocked) "Pomodoro Complete! Focus Lock Released." else "Timer Reached 00:00:00!$labelSuffix",
               message = "Countdown timer finished (00:00:00)$labelSuffix. Tap Stop / Dismiss to silence."
             )
           }
@@ -36210,60 +36402,126 @@ fun ClockScreen(
       .background(Color.Transparent)
       .testTag("clock_screen")
   ) {
-    // Minimalist Floating Liquid Glass Header ("Clock")
+    // Minimalist Floating Liquid Glass Header ("Clock" or "Pomodoro Focus Sanctuary")
     Row(
       modifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 20.dp, vertical = 12.dp),
       verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(12.dp)
+      horizontalArrangement = Arrangement.SpaceBetween
     ) {
-      Box(
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier
-          .size(38.dp)
-          .clip(RoundedCornerShape(12.dp))
-          .background(
-            brush = Brush.linearGradient(
-              colors = listOf(
-                Color(0xFF6366F1).copy(alpha = 0.2f),
-                Color(0xFF4F46E5).copy(alpha = 0.1f)
-              )
-            ),
-            shape = RoundedCornerShape(12.dp)
-          )
-          .border(
-            border = BorderStroke(
-              width = 1.dp,
+          .weight(1f)
+          .padding(end = 8.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .size(38.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
               brush = Brush.linearGradient(
                 colors = listOf(
-                  Color.White.copy(alpha = 0.55f),
-                  Color(0xFF6366F1).copy(alpha = 0.35f)
+                  Color(0xFF6366F1).copy(alpha = 0.2f),
+                  Color(0xFF4F46E5).copy(alpha = 0.1f)
                 )
-              )
+              ),
+              shape = RoundedCornerShape(12.dp)
+            )
+            .border(
+              border = BorderStroke(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                  colors = listOf(
+                    Color.White.copy(alpha = 0.55f),
+                    Color(0xFF6366F1).copy(alpha = 0.35f)
+                  )
+                )
+              ),
+              shape = RoundedCornerShape(12.dp)
             ),
-            shape = RoundedCornerShape(12.dp)
-          ),
-        contentAlignment = Alignment.Center
-      ) {
-        Icon(
-          imageVector = Icons.Filled.Schedule,
-          contentDescription = "Clock header icon",
-          tint = Color(0xFF6366F1),
-          modifier = Modifier.size(20.dp)
-        )
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = if (effectiveLockActive) Icons.Filled.Lock else Icons.Filled.Schedule,
+            contentDescription = "Clock header icon",
+            tint = Color(0xFF6366F1),
+            modifier = Modifier.size(20.dp)
+          )
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = if (effectiveLockActive) "Focus Sanctuary" else "Clock",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+          if (effectiveLockActive) {
+            Text(
+              text = "DEEP FOCUS LOCKED • NAVIGATION DISABLED",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.8.sp
+              ),
+              color = palette.accentIndigo,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
       }
 
-      Text(
-        text = "Clock",
-        fontSize = 26.sp,
-        fontWeight = FontWeight.ExtraBold,
-        color = palette.textPrimary,
-        maxLines = 1
-      )
+      if (effectiveLockActive) {
+        Surface(
+          onClick = {
+            localShowPinUnlockDialog = true
+            onRequestPinUnlockDialog()
+          },
+          shape = RoundedCornerShape(50),
+          color = palette.accentRed.copy(alpha = 0.14f),
+          border = BorderStroke(1.dp, palette.accentRed.copy(alpha = 0.55f)),
+          modifier = Modifier
+            .wrapContentWidth()
+            .testTag("header_emergency_unlock_pill")
+        ) {
+          Row(
+            modifier = Modifier
+              .wrapContentWidth()
+              .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Lock,
+              contentDescription = "Emergency Unlock",
+              tint = palette.accentRed,
+              modifier = Modifier.size(14.dp)
+            )
+            Text(
+              text = "LOCKED",
+              maxLines = 1,
+              softWrap = false,
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 11.sp
+              ),
+              color = palette.accentRed
+            )
+          }
+        }
+      }
     }
 
     val isStopwatchTabletLandscape =
-      selectedSubTab == ClockSubTab.STOPWATCH && metrics.isTabletLandscape
+      selectedSubTab == ClockSubTab.STOPWATCH && metrics.isTabletLandscape && !effectiveLockActive
 
     @Composable
     fun renderClockModeSwitcher(modifier: Modifier = Modifier) {
@@ -36370,8 +36628,8 @@ fun ClockScreen(
       }
     }
 
-    // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch)
-    if (!isStopwatchTabletLandscape) {
+    // 3D Segmented Liquid Glass Pill Switcher (Alarm, Timer, Stopwatch) — Hidden during Pomodoro Lock!
+    if (!isStopwatchTabletLandscape && !effectiveLockActive) {
       renderClockModeSwitcher(
         modifier = Modifier
           .widthIn(max = 680.dp)
@@ -36381,7 +36639,7 @@ fun ClockScreen(
     }
 
     // Dismissible POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM Permission Rationale Card (only on Alarm tab)
-    if (selectedSubTab == ClockSubTab.ALARM && (!hasNotificationPermission || !canScheduleExactAlarms) && !isPermissionRationaleDismissed) {
+    if (selectedSubTab == ClockSubTab.ALARM && !effectiveLockActive && (!hasNotificationPermission || !canScheduleExactAlarms) && !isPermissionRationaleDismissed) {
       LiquidGlassCard(
         shape = RoundedCornerShape(18.dp),
         elevation = if (palette.isDark) 6.dp else 4.dp,
@@ -36489,7 +36747,8 @@ fun ClockScreen(
         .weight(1f)
         .fillMaxWidth()
     ) {
-      when (selectedSubTab) {
+      val displayedSubTab = if (effectiveLockActive) ClockSubTab.TIMER else selectedSubTab
+      when (displayedSubTab) {
         ClockSubTab.ALARM -> AlarmSubScreen(
           alarms = alarms,
           creamCardColor = creamCardColor,
@@ -36541,6 +36800,14 @@ fun ClockScreen(
           remainingSeconds = timerRemainingSeconds,
           isRunning = isTimerRunning,
           activePresetLabel = activePresetLabel,
+          isStrictPomodoroLockEnabled = isStrictPomodoroLockEnabled,
+          onToggleStrictPomodoroLock = { isStrictPomodoroLockEnabled = it },
+          isPomodoroLockActive = effectiveLockActive,
+          pomodoroUnlockPin = effectiveUnlockPin,
+          onEmergencyUnlockClick = {
+            localShowPinUnlockDialog = true
+            onRequestPinUnlockDialog()
+          },
           creamCardColor = creamCardColor,
           ivoryInnerColor = ivoryInnerColor,
           metrics = metrics,
@@ -36556,25 +36823,35 @@ fun ClockScreen(
             }
           },
           onClearInput = {
-            isTimerRunning = false
-            hasFiredAlarm = false
-            stopActiveRingtone()
-            targetEndTime = 0L
-            timerRemainingMillis = 0L
-            timerRemainingSeconds = 0L
-            timerTotalDurationSeconds = 0L
-            timerDigitInput = ""
-            activePresetLabel = null
-            cancelTimerExactAlarm(context)
+            if (!effectiveLockActive) {
+              isTimerRunning = false
+              hasFiredAlarm = false
+              stopActiveRingtone()
+              targetEndTime = 0L
+              timerRemainingMillis = 0L
+              timerRemainingSeconds = 0L
+              timerTotalDurationSeconds = 0L
+              timerDigitInput = ""
+              activePresetLabel = null
+              cancelTimerExactAlarm(context)
+            } else {
+              localShowPinUnlockDialog = true
+              onRequestPinUnlockDialog()
+            }
           },
           onStartOrPause = {
             if (isTimerRunning) {
-              val remaining = (targetEndTime - System.currentTimeMillis()).coerceAtLeast(0L)
-              timerRemainingMillis = remaining
-              timerRemainingSeconds = (remaining + 999L) / 1000L
-              targetEndTime = 0L
-              isTimerRunning = false
-              cancelTimerExactAlarm(context)
+              if (effectiveLockActive) {
+                localShowPinUnlockDialog = true
+                onRequestPinUnlockDialog()
+              } else {
+                val remaining = (targetEndTime - System.currentTimeMillis()).coerceAtLeast(0L)
+                timerRemainingMillis = remaining
+                timerRemainingSeconds = (remaining + 999L) / 1000L
+                targetEndTime = 0L
+                isTimerRunning = false
+                cancelTimerExactAlarm(context)
+              }
             } else {
               stopActiveRingtone()
               hasFiredAlarm = false
@@ -36586,6 +36863,9 @@ fun ClockScreen(
                 timerRemainingMillis = selectedDurationMillis
                 timerRemainingSeconds = (selectedDurationMillis + 999L) / 1000L
                 isTimerRunning = true
+                if (isStrictPomodoroLockEnabled && !effectiveLockActive) {
+                  activateFocusLockWithNewPin()
+                }
                 scheduleTimerExactAlarm(
                   context = context,
                   durationSeconds = timerRemainingSeconds,
@@ -36602,6 +36882,9 @@ fun ClockScreen(
                   timerRemainingSeconds = parsedSeconds
                   activePresetLabel = "Custom Timer"
                   isTimerRunning = true
+                  if (isStrictPomodoroLockEnabled && !effectiveLockActive) {
+                    activateFocusLockWithNewPin()
+                  }
                   scheduleTimerExactAlarm(
                     context = context,
                     durationSeconds = parsedSeconds,
@@ -36612,33 +36895,46 @@ fun ClockScreen(
             }
           },
           onResetTimer = {
-            isTimerRunning = false
-            hasFiredAlarm = false
-            stopActiveRingtone()
-            targetEndTime = 0L
-            timerRemainingMillis = 0L
-            timerRemainingSeconds = 0L
-            timerTotalDurationSeconds = 0L
-            activePresetLabel = null
-            cancelTimerExactAlarm(context)
+            if (effectiveLockActive) {
+              localShowPinUnlockDialog = true
+              onRequestPinUnlockDialog()
+            } else {
+              isTimerRunning = false
+              hasFiredAlarm = false
+              stopActiveRingtone()
+              targetEndTime = 0L
+              timerRemainingMillis = 0L
+              timerRemainingSeconds = 0L
+              timerTotalDurationSeconds = 0L
+              activePresetLabel = null
+              cancelTimerExactAlarm(context)
+            }
           },
           onSelectPreset = { preset ->
-            stopActiveRingtone()
-            hasFiredAlarm = false
-            timerDigitInput = ""
-            val selectedDurationMillis = preset.durationSeconds * 1000L
-            val newTargetEndTime = System.currentTimeMillis() + selectedDurationMillis
-            targetEndTime = newTargetEndTime
-            timerTotalDurationSeconds = preset.durationSeconds
-            timerRemainingMillis = selectedDurationMillis
-            timerRemainingSeconds = preset.durationSeconds
-            activePresetLabel = preset.label
-            isTimerRunning = true
-            scheduleTimerExactAlarm(
-              context = context,
-              durationSeconds = preset.durationSeconds,
-              label = preset.label
-            )
+            if (effectiveLockActive) {
+              localShowPinUnlockDialog = true
+              onRequestPinUnlockDialog()
+            } else {
+              stopActiveRingtone()
+              hasFiredAlarm = false
+              timerDigitInput = ""
+              val selectedDurationMillis = preset.durationSeconds * 1000L
+              val newTargetEndTime = System.currentTimeMillis() + selectedDurationMillis
+              targetEndTime = newTargetEndTime
+              timerTotalDurationSeconds = preset.durationSeconds
+              timerRemainingMillis = selectedDurationMillis
+              timerRemainingSeconds = preset.durationSeconds
+              activePresetLabel = preset.label
+              isTimerRunning = true
+              if (isStrictPomodoroLockEnabled) {
+                activateFocusLockWithNewPin()
+              }
+              scheduleTimerExactAlarm(
+                context = context,
+                durationSeconds = preset.durationSeconds,
+                label = preset.label
+              )
+            }
           }
         )
 
@@ -36676,6 +36972,25 @@ fun ClockScreen(
         )
       }
     }
+  }
+
+  if (effectiveShowPinDialog && effectiveLockActive) {
+    PinUnlockDialog(
+      requiredPin = effectiveUnlockPin,
+      isDarkMode = palette.isDark,
+      onDismiss = {
+        localShowPinUnlockDialog = false
+        onDismissPinUnlockDialog()
+      },
+      onPinVerified = {
+        releaseFocusLock()
+        Toast.makeText(
+          context,
+          "Focus Lock unlocked via 4-digit PIN.",
+          Toast.LENGTH_SHORT
+        ).show()
+      }
+    )
   }
 
   // If ClockScreen is rendered standalone without MainProductivityScaffold, still show RingingAlertDialog
@@ -37349,6 +37664,11 @@ private fun TimerSubScreen(
   remainingSeconds: Long,
   isRunning: Boolean,
   activePresetLabel: String?,
+  isStrictPomodoroLockEnabled: Boolean = true,
+  onToggleStrictPomodoroLock: (Boolean) -> Unit = {},
+  isPomodoroLockActive: Boolean = false,
+  pomodoroUnlockPin: String = "",
+  onEmergencyUnlockClick: () -> Unit = {},
   creamCardColor: Color,
   ivoryInnerColor: Color,
   metrics: ResponsiveMetrics,
@@ -37394,7 +37714,37 @@ private fun TimerSubScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
       ) {
-        if (activePresetLabel != null) {
+        if (isPomodoroLockActive) {
+          Surface(
+            shape = RoundedCornerShape(50),
+            color = palette.accentIndigo.copy(alpha = 0.18f),
+            border = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.55f)),
+            modifier = Modifier.testTag("pomodoro_deep_focus_locked_badge")
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = "Deep Focus Locked",
+                tint = palette.accentIndigo,
+                modifier = Modifier.size(14.dp)
+              )
+              Text(
+                text = "DEEP FOCUS LOCKED",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontWeight = FontWeight.ExtraBold,
+                  fontSize = metrics.scaledSp(11),
+                  letterSpacing = 0.8.sp
+                ),
+                color = palette.accentIndigo
+              )
+            }
+          }
+        } else if (activePresetLabel != null) {
           Surface(
             shape = RoundedCornerShape(50),
             color = palette.accentIndigo.copy(alpha = 0.16f),
@@ -37452,21 +37802,36 @@ private fun TimerSubScreen(
               }
             }
 
-            Text(
-              text = formatDurationSecondsHms(remainingSeconds),
-              maxLines = 1,
-              softWrap = false,
-              style = MaterialTheme.typography.displayLarge.copy(
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                fontSize = timeFontSize,
-                lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
-                letterSpacing = (-0.5).sp
-              ),
-              color = palette.textPrimary,
-              textAlign = TextAlign.Center,
-              modifier = Modifier.testTag("timer_countdown_display")
-            )
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+              Text(
+                text = formatDurationSecondsHms(remainingSeconds),
+                maxLines = 1,
+                softWrap = false,
+                style = MaterialTheme.typography.displayLarge.copy(
+                  fontFamily = FontFamily.Monospace,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = timeFontSize,
+                  lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
+                  letterSpacing = (-0.5).sp
+                ),
+                color = palette.textPrimary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.testTag("timer_countdown_display")
+              )
+              if (activePresetLabel != null) {
+                Text(
+                  text = activePresetLabel,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp
+                  ),
+                  color = palette.textSecondary
+                )
+              }
+            }
           }
 
           LinearProgressIndicator(
@@ -37511,93 +37876,221 @@ private fun TimerSubScreen(
       }
     }
 
-    // CE Focus Presets Section
-    LiquidGlassCard(
-      shape = RoundedCornerShape(24.dp),
-      elevation = 6.dp,
-      modifier = Modifier
-        .fillMaxWidth()
-        .testTag("ce_focus_presets_section")
-    ) {
-      Column(
+    // Active Session Security PIN Card (when Pomodoro Focus Lock is active)
+    if (isPomodoroLockActive) {
+      LiquidGlassCard(
+        shape = RoundedCornerShape(22.dp),
+        elevation = 8.dp,
+        borderStroke = BorderStroke(1.2.dp, palette.accentIndigo.copy(alpha = 0.55f)),
         modifier = Modifier
           .fillMaxWidth()
-          .padding(metrics.scaledDp(14)),
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+          .testTag("pomodoro_session_pin_card")
       ) {
-        Text(
-          text = "CE Focus Presets",
-          style = MaterialTheme.typography.titleSmall.copy(
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = metrics.scaledSp(14)
-          ),
-          color = palette.textPrimary
-        )
-
-        GlassHairlineDivider(isDarkMode = palette.isDark)
-
-        LazyRow(
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
-          modifier = Modifier.fillMaxWidth()
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-          items(CE_FOCUS_PRESETS, key = { it.label }) { preset ->
-            val isSelected = activePresetLabel == preset.label && isCountdownActive
-            Box(
-              modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(
-                  brush = if (isSelected) {
-                    LiquidVioletChipGradient
-                  } else {
-                    Brush.linearGradient(
-                      listOf(
-                        palette.nestedCardFill,
-                        palette.nestedCardFill
-                      )
-                    )
-                  }
-                )
-                .border(
-                  border = if (isSelected) {
-                    BorderStroke(1.dp, Color.White.copy(alpha = 0.7f))
-                  } else {
-                    palette.nestedBorder
-                  },
-                  shape = RoundedCornerShape(50)
-                )
-                .clickable { onSelectPreset(preset) }
-                .testTag(preset.testTag)
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-              Row(
-                modifier = Modifier.padding(
-                  horizontal = metrics.scaledDp(14),
-                  vertical = metrics.scaledDp(10)
+              Text(
+                text = "Session Unlock PIN: [$pomodoroUnlockPin]",
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontWeight = FontWeight.ExtraBold,
+                  fontSize = 15.sp
                 ),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.Timer,
-                  contentDescription = preset.label,
-                  modifier = Modifier.size(16.dp),
-                  tint = if (isSelected) {
-                    Color.White
-                  } else {
-                    palette.accentIndigo
-                  }
+                color = palette.textPrimary
+              )
+              Text(
+                text = "App navigation is locked until the countdown reaches 00:00 or you enter the 4-digit PIN.",
+                style = MaterialTheme.typography.bodySmall.copy(
+                  fontSize = 11.5.sp,
+                  fontWeight = FontWeight.Medium
+                ),
+                color = palette.textSecondary
+              )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Button(
+              onClick = onEmergencyUnlockClick,
+              shape = RoundedCornerShape(14.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = palette.accentRed,
+                contentColor = Color.White
+              ),
+              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+              modifier = Modifier.testTag("pomodoro_emergency_unlock_button")
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text(
+                text = "Emergency Unlock",
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontWeight = FontWeight.ExtraBold,
+                  fontSize = 12.sp
+                )
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // Strict Pomodoro Focus Lock Toggle & CE Focus Presets Section
+    if (!isPomodoroLockActive) {
+      LiquidGlassCard(
+        shape = RoundedCornerShape(24.dp),
+        elevation = 6.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("ce_focus_presets_section")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(metrics.scaledDp(14)),
+          verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
+        ) {
+          // Strict Pomodoro Focus Lock Toggle Row
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(14.dp))
+              .background(palette.nestedCardFill)
+              .border(palette.nestedBorder, RoundedCornerShape(14.dp))
+              .clickable { onToggleStrictPomodoroLock(!isStrictPomodoroLockEnabled) }
+              .padding(horizontal = 12.dp, vertical = 8.dp)
+              .testTag("strict_pomodoro_lock_toggle_row"),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              modifier = Modifier.weight(1f)
+            ) {
+              Icon(
+                imageVector = if (isStrictPomodoroLockEnabled) Icons.Filled.Lock else Icons.Filled.Lock,
+                contentDescription = "Strict Pomodoro Focus Lock",
+                tint = if (isStrictPomodoroLockEnabled) palette.accentIndigo else palette.textSecondary,
+                modifier = Modifier.size(20.dp)
+              )
+              Column {
+                Text(
+                  text = "Strict Pomodoro Focus Lock",
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 13.sp
+                  ),
+                  color = palette.textPrimary
                 )
                 Text(
-                  text = preset.label,
-                  style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = metrics.scaledSp(13)
+                  text = "Locks app navigation with a random 4-digit PIN until timer completes",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Medium
                   ),
-                  color = if (isSelected) {
-                    Color.White
-                  } else {
-                    palette.textPrimary
-                  }
+                  color = palette.textSecondary
                 )
+              }
+            }
+
+            Switch(
+              checked = isStrictPomodoroLockEnabled,
+              onCheckedChange = onToggleStrictPomodoroLock,
+              modifier = Modifier.testTag("strict_pomodoro_lock_switch")
+            )
+          }
+
+          GlassHairlineDivider(isDarkMode = palette.isDark)
+
+          Text(
+            text = "CE Focus Presets (Tap to Start)",
+            style = MaterialTheme.typography.titleSmall.copy(
+              fontWeight = FontWeight.ExtraBold,
+              fontSize = metrics.scaledSp(14)
+            ),
+            color = palette.textPrimary
+          )
+
+          LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            items(CE_FOCUS_PRESETS, key = { it.label }) { preset ->
+              val isSelected = activePresetLabel == preset.label && isCountdownActive
+              Box(
+                modifier = Modifier
+                  .clip(RoundedCornerShape(50))
+                  .background(
+                    brush = if (isSelected) {
+                      LiquidVioletChipGradient
+                    } else {
+                      Brush.linearGradient(
+                        listOf(
+                          palette.nestedCardFill,
+                          palette.nestedCardFill
+                        )
+                      )
+                    }
+                  )
+                  .border(
+                    border = if (isSelected) {
+                      BorderStroke(1.dp, Color.White.copy(alpha = 0.7f))
+                    } else {
+                      palette.nestedBorder
+                    },
+                    shape = RoundedCornerShape(50)
+                  )
+                  .clickable { onSelectPreset(preset) }
+                  .testTag(preset.testTag)
+              ) {
+                Row(
+                  modifier = Modifier.padding(
+                    horizontal = metrics.scaledDp(14),
+                    vertical = metrics.scaledDp(10)
+                  ),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                  Icon(
+                    imageVector = if (isStrictPomodoroLockEnabled) Icons.Filled.Lock else Icons.Filled.Timer,
+                    contentDescription = preset.label,
+                    modifier = Modifier.size(16.dp),
+                    tint = if (isSelected) {
+                      Color.White
+                    } else {
+                      palette.accentIndigo
+                    }
+                  )
+                  Text(
+                    text = preset.label,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                      fontWeight = FontWeight.Bold,
+                      fontSize = metrics.scaledSp(13)
+                    ),
+                    color = if (isSelected) {
+                      Color.White
+                    } else {
+                      palette.textPrimary
+                    }
+                  )
+                }
               }
             }
           }
@@ -37606,7 +38099,7 @@ private fun TimerSubScreen(
     }
 
     // Standard Google Clock Number Pad when entering a custom timer
-    if (!isCountdownActive) {
+    if (!isCountdownActive && !isPomodoroLockActive) {
       val keypadRows = remember {
         listOf(
           listOf("1", "2", "3"),
@@ -37674,7 +38167,7 @@ private fun TimerSubScreen(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = 28.dp),
+        .padding(top = 20.dp),
       horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
@@ -37687,13 +38180,20 @@ private fun TimerSubScreen(
         modifier = Modifier
           .size(56.dp)
           .clip(CircleShape)
-          .clickable(enabled = canReset) { onResetTimer(); onClearInput() }
+          .clickable(enabled = canReset) {
+            if (isPomodoroLockActive) {
+              onEmergencyUnlockClick()
+            } else {
+              onResetTimer()
+              onClearInput()
+            }
+          }
           .testTag("timer_reset_button")
       ) {
         Box(contentAlignment = Alignment.Center) {
           Icon(
-            imageVector = Icons.Filled.Replay,
-            contentDescription = "Reset timer",
+            imageVector = if (isPomodoroLockActive) Icons.Filled.Lock else Icons.Filled.Replay,
+            contentDescription = if (isPomodoroLockActive) "Unlock timer" else "Reset timer",
             tint = if (canReset) palette.accentIndigo else palette.textMuted,
             modifier = Modifier.size(22.dp)
           )
@@ -37714,10 +38214,182 @@ private fun TimerSubScreen(
           .testTag("timer_play_pause_fab")
       ) {
         Icon(
-          imageVector = if (isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-          contentDescription = if (isRunning) "Pause timer" else "Start timer",
+          imageVector = if (isPomodoroLockActive) {
+            Icons.Filled.Lock
+          } else if (isRunning) {
+            Icons.Filled.Pause
+          } else {
+            Icons.Filled.PlayArrow
+          },
+          contentDescription = if (isPomodoroLockActive) {
+            "Unlock Pomodoro Focus Lock"
+          } else if (isRunning) {
+            "Pause timer"
+          } else {
+            "Start timer"
+          },
           modifier = Modifier.size(34.dp)
         )
+      }
+    }
+  }
+}
+
+@Composable
+private fun PinUnlockDialog(
+  requiredPin: String,
+  isDarkMode: Boolean,
+  onDismiss: () -> Unit,
+  onPinVerified: () -> Unit
+) {
+  var enteredPin by remember { mutableStateOf("") }
+  var errorMessage by remember { mutableStateOf<String?>(null) }
+
+  val sheetBackground = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.96f) else Color(0xFFF8FAFC)
+  val titleColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
+  val subtitleColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
+  val accentCyan = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val borderColor = if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color(0xFFCBD5E1)
+
+  Dialog(
+    onDismissRequest = onDismiss
+  ) {
+    Surface(
+      shape = RoundedCornerShape(26.dp),
+      color = sheetBackground,
+      border = BorderStroke(1.2.dp, borderColor),
+      shadowElevation = 24.dp,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("pomodoro_pin_unlock_dialog")
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        Surface(
+          shape = CircleShape,
+          color = accentCyan.copy(alpha = 0.14f),
+          border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.40f)),
+          modifier = Modifier.size(48.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Filled.Lock,
+              contentDescription = "Unlock Focus Mode",
+              tint = accentCyan,
+              modifier = Modifier.size(24.dp)
+            )
+          }
+        }
+
+        Text(
+          text = "Emergency Focus Unlock",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 19.sp
+          ),
+          color = titleColor
+        )
+
+        Text(
+          text = "Enter your 4-digit Session PIN ($requiredPin) to end Focus Lock early:",
+          style = MaterialTheme.typography.bodyMedium.copy(
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Medium
+          ),
+          color = subtitleColor,
+          textAlign = TextAlign.Center
+        )
+
+        OutlinedTextField(
+          value = enteredPin,
+          onValueChange = { raw ->
+            val digitsOnly = raw.filter { it.isDigit() }.take(4)
+            enteredPin = digitsOnly
+            errorMessage = null
+            if (digitsOnly.length == 4 && digitsOnly == requiredPin) {
+              onPinVerified()
+            }
+          },
+          label = { Text("4-Digit Session PIN") },
+          placeholder = { Text(requiredPin) },
+          singleLine = true,
+          keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.NumberPassword,
+            imeAction = ImeAction.Done
+          ),
+          textStyle = MaterialTheme.typography.headlineSmall.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontWeight = FontWeight.ExtraBold,
+            textAlign = TextAlign.Center,
+            letterSpacing = 6.sp,
+            color = titleColor
+          ),
+          shape = RoundedCornerShape(16.dp),
+          colors = sibilOutlinedTextFieldColors(),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("pomodoro_pin_input_field")
+        )
+
+        if (errorMessage != null) {
+          Text(
+            text = errorMessage!!,
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp
+            ),
+            color = Color(0xFFEF4444),
+            textAlign = TextAlign.Center
+          )
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          OutlinedButton(
+            onClick = onDismiss,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, borderColor),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("pomodoro_pin_cancel_button")
+          ) {
+            Text(
+              text = "Stay Focused",
+              color = subtitleColor,
+              fontWeight = FontWeight.Bold
+            )
+          }
+
+          Button(
+            onClick = {
+              if (enteredPin == requiredPin) {
+                onPinVerified()
+              } else {
+                errorMessage = "Incorrect PIN. Enter $requiredPin to unlock."
+              }
+            },
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = accentCyan,
+              contentColor = Color.White
+            ),
+            modifier = Modifier
+              .weight(1f)
+              .testTag("pomodoro_pin_unlock_confirm_button")
+          ) {
+            Text(
+              text = "Unlock App",
+              fontWeight = FontWeight.ExtraBold
+            )
+          }
+        }
       }
     }
   }
