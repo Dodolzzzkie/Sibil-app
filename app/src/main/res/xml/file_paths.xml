@@ -3,6 +3,9 @@
     <cache-path
         name="cache_apk"
         path="." />
+    <cache-path
+        name="shared_decks"
+        path="shared_decks/" />
     <external-cache-path
         name="external_cache_apk"
         path="." />

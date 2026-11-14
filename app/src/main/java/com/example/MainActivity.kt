@@ -66,6 +66,7 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.SoundEffectConstants
 import android.view.View
 import android.widget.Toast
@@ -75,6 +76,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview as CameraXPreview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
@@ -113,6 +120,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -188,6 +197,7 @@ import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
@@ -295,6 +305,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -327,9 +338,12 @@ import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.google.zxing.BarcodeFormat
 import androidx.compose.ui.input.pointer.pointerInput
@@ -369,6 +383,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationCompat
@@ -378,6 +393,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
@@ -426,6 +442,9 @@ import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.zip.CRC32
+import java.util.zip.Deflater
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import java.util.zip.Inflater
@@ -1234,8 +1253,12 @@ fun LiquidGlassContainer(
   )
 }
 
+class SibilDeckFileProvider : FileProvider()
+
 var pendingWidgetTargetTab by mutableStateOf<CeNavTab?>(null)
 var pendingWidgetOpenAddTask by mutableStateOf(false)
+var pendingImportedDeckUri by mutableStateOf<Uri?>(null)
+var pendingOpenFlashcardsAfterImport by mutableStateOf(false)
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -1292,6 +1315,23 @@ class MainActivity : ComponentActivity() {
       }
       SibilWidgetSync.TARGET_TAB_SCHEDULE -> {
         pendingWidgetTargetTab = CeNavTab.SCHEDULE
+      }
+    }
+
+    // Handle offline Quick Share / Bluetooth / File Manager `.sibil` file imports
+    when (intent?.action) {
+      Intent.ACTION_VIEW -> {
+        val dataUri = intent.data
+        if (dataUri != null) {
+          pendingImportedDeckUri = dataUri
+        }
+      }
+      Intent.ACTION_SEND -> {
+        @Suppress("DEPRECATION")
+        val streamUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: intent.data
+        if (streamUri != null) {
+          pendingImportedDeckUri = streamUri
+        }
       }
     }
   }
@@ -1953,89 +1993,289 @@ fun DocumentSnapshot.toFlashcardDeckOrNull(): FlashcardDeck? {
 }
 
 /**
- * Unified Ultra-Compact Offline Encoder (`exportDeckToOfflineCode`):
- * Encodes 100% of `deck.cards` (zero card limits) into a minified JSON object with 1-letter keys
- * (`"t"`, `"s"`, `"c":[{"q","a"}]`), compresses with GZIPOutputStream, and returns `"SIBIL_DECK:<base64>"`.
+ * Ultra-Compact Offline Codec (`SibilDeckCodec`):
+ * - Schema: Positional JSON arrays `["Deck Title", [["Q","A"], ...]]` (optional 3rd string element if subject != "General")
+ * - Compression: Raw Deflate (`Deflater.BEST_COMPRESSION`, `nowrap = true`)
+ * - Encoding: RFC 9285 Base45 (`0-9A-Z $%*+-./:`) so QR payloads stay strictly inside QR Alphanumeric Mode.
+ * - AirScan Framing:
+ *     * Single QR when Base45 <= 420 chars: `SIBIL2:1/1:<base45>`
+ *     * Multi-frame stream otherwise: `SIBIL2:<part>/<total>:<DECKHASH4>:<base45Chunk>`
  */
-fun exportDeckToOfflineCode(deck: FlashcardDeck): String {
-  return try {
-    val root = org.json.JSONObject()
-    root.put("t", deck.title.trim().ifEmpty { "Shared Study Deck" })
-    root.put("s", deck.subject.trim().ifEmpty { "General" })
-    val arr = org.json.JSONArray()
+object SibilDeckCodec {
+  const val BASE45_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ \$%*+-./:"
+  const val DEFAULT_AIRSCAN_CHUNK_CHARS = 420
+
+  data class AirScanFrame(
+    val partIndex: Int,
+    val totalParts: Int,
+    val deckHash4: String,
+    val base45Chunk: String,
+    val packetString: String
+  )
+
+  fun computeDeckHash4(payload: String): String {
+    val crc = CRC32()
+    crc.update(payload.toByteArray(Charsets.UTF_8))
+    return String.format(Locale.US, "%04X", crc.value and 0xFFFFL)
+  }
+
+  fun serializePositionalJson(deck: FlashcardDeck): ByteArray {
+    val cleanTitle = deck.title.trim().ifEmpty { "Shared Study Deck" }
+    val cleanSubject = deck.subject.trim().ifEmpty { "General" }
+    val cardsArray = JSONArray()
     for (card in deck.cards) {
       val q = card.question.trim()
       val a = card.answer.trim()
       if (q.isNotEmpty() || a.isNotEmpty()) {
-        val obj = org.json.JSONObject()
-        obj.put("q", q)
-        obj.put("a", a)
-        arr.put(obj)
+        val pair = JSONArray()
+        pair.put(q)
+        pair.put(a)
+        cardsArray.put(pair)
       }
     }
-    root.put("c", arr)
-    val jsonBytes = root.toString().toByteArray(Charsets.UTF_8)
-    val baos = java.io.ByteArrayOutputStream()
-    java.util.zip.GZIPOutputStream(baos).use { it.write(jsonBytes) }
-    val base64 = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
-    "SIBIL_DECK:$base64"
-  } catch (e: Exception) {
-    Log.e("SibilExport", "Export failed: ${e.message}")
-    ""
+    val root = JSONArray()
+    root.put(cleanTitle)
+    root.put(cardsArray)
+    if (!cleanSubject.equals("General", ignoreCase = true) && cleanSubject.isNotEmpty()) {
+      root.put(cleanSubject)
+    }
+    return root.toString().toByteArray(Charsets.UTF_8)
+  }
+
+  fun deflateRaw(input: ByteArray): ByteArray {
+    val deflater = Deflater(Deflater.BEST_COMPRESSION, true)
+    return try {
+      deflater.setInput(input)
+      deflater.finish()
+      val out = ByteArrayOutputStream(input.size.coerceAtLeast(64))
+      val buf = ByteArray(1024)
+      while (!deflater.finished()) {
+        val count = deflater.deflate(buf)
+        if (count <= 0) break
+        out.write(buf, 0, count)
+      }
+      out.toByteArray()
+    } finally {
+      deflater.end()
+    }
+  }
+
+  fun inflateRaw(compressed: ByteArray): ByteArray {
+    val inflater = Inflater(true)
+    return try {
+      inflater.setInput(compressed)
+      val out = ByteArrayOutputStream(compressed.size * 3)
+      val buf = ByteArray(2048)
+      while (!inflater.finished()) {
+        val count = inflater.inflate(buf)
+        if (count == 0) {
+          if (inflater.needsInput() || inflater.needsDictionary()) break
+        } else {
+          out.write(buf, 0, count)
+        }
+      }
+      out.toByteArray()
+    } finally {
+      inflater.end()
+    }
+  }
+
+  fun encodeBase45(data: ByteArray): String {
+    val sb = StringBuilder((data.size * 3 + 1) / 2)
+    var i = 0
+    while (i + 1 < data.size) {
+      val b0 = data[i].toInt() and 0xFF
+      val b1 = data[i + 1].toInt() and 0xFF
+      val value = (b0 shl 8) or b1
+      val c0 = value % 45
+      val rem = value / 45
+      val c1 = rem % 45
+      val c2 = rem / 45
+      sb.append(BASE45_ALPHABET[c0])
+      sb.append(BASE45_ALPHABET[c1])
+      sb.append(BASE45_ALPHABET[c2])
+      i += 2
+    }
+    if (i < data.size) {
+      val v = data[i].toInt() and 0xFF
+      val c0 = v % 45
+      val c1 = v / 45
+      sb.append(BASE45_ALPHABET[c0])
+      sb.append(BASE45_ALPHABET[c1])
+    }
+    return sb.toString()
+  }
+
+  fun decodeBase45(encoded: String): ByteArray? {
+    val sanitized = encoded.replace("\r", "").replace("\n", "")
+    if (sanitized.isEmpty() || sanitized.length % 3 == 1) return null
+    val out = ByteArrayOutputStream((sanitized.length * 2) / 3)
+    var i = 0
+    while (i < sanitized.length) {
+      val c0 = BASE45_ALPHABET.indexOf(sanitized[i])
+      val c1 = if (i + 1 < sanitized.length) BASE45_ALPHABET.indexOf(sanitized[i + 1]) else -1
+      if (c0 < 0 || c1 < 0) return null
+      if (i + 2 < sanitized.length) {
+        val c2 = BASE45_ALPHABET.indexOf(sanitized[i + 2])
+        if (c2 < 0) return null
+        val value = c0 + 45 * c1 + 2025 * c2
+        if (value > 0xFFFF) return null
+        out.write((value ushr 8) and 0xFF)
+        out.write(value and 0xFF)
+        i += 3
+      } else {
+        val value = c0 + 45 * c1
+        if (value > 0xFF) return null
+        out.write(value)
+        i += 2
+      }
+    }
+    return out.toByteArray()
+  }
+
+  fun encodePayloadBase45(deck: FlashcardDeck): String {
+    val jsonBytes = serializePositionalJson(deck)
+    val compressed = deflateRaw(jsonBytes)
+    return encodeBase45(compressed)
+  }
+
+  fun encodeFullCode(deck: FlashcardDeck): String {
+    val b45 = encodePayloadBase45(deck)
+    return "SIBIL2:1/1:$b45"
+  }
+
+  fun encodeAirScanFrames(
+    deck: FlashcardDeck,
+    maxCharsPerFrame: Int = DEFAULT_AIRSCAN_CHUNK_CHARS
+  ): List<AirScanFrame> {
+    val safeMax = maxCharsPerFrame.coerceAtLeast(120)
+    val b45 = encodePayloadBase45(deck)
+    if (b45.length <= safeMax) {
+      val packet = "SIBIL2:1/1:$b45"
+      return listOf(
+        AirScanFrame(
+          partIndex = 1,
+          totalParts = 1,
+          deckHash4 = computeDeckHash4(b45),
+          base45Chunk = b45,
+          packetString = packet
+        )
+      )
+    }
+    val hash4 = computeDeckHash4(b45)
+    val chunks = b45.chunked(safeMax)
+    val total = chunks.size
+    return chunks.mapIndexed { index, chunk ->
+      val part = index + 1
+      AirScanFrame(
+        partIndex = part,
+        totalParts = total,
+        deckHash4 = hash4,
+        base45Chunk = chunk,
+        packetString = "SIBIL2:$part/$total:$hash4:$chunk"
+      )
+    }
+  }
+
+  /**
+   * Parses an AirScan frame string without splitting Base45 `:` characters.
+   * Supports `SIBIL2:1/1:<b45>` and `SIBIL2:<p>/<N>:<HASH4>:<b45Chunk>`.
+   */
+  fun parseAirScanFrame(rawInput: String): AirScanFrame? {
+    val cleaned = rawInput.replace("\r", "").replace("\n", "").trim()
+    if (!cleaned.startsWith("SIBIL2:", ignoreCase = true)) return null
+    val body = cleaned.substring(7)
+    val firstColon = body.indexOf(':')
+    if (firstColon <= 0) return null
+    val partToken = body.substring(0, firstColon)
+    val slashIdx = partToken.indexOf('/')
+    if (slashIdx <= 0 || slashIdx >= partToken.lastIndex) return null
+    val part = partToken.substring(0, slashIdx).toIntOrNull() ?: return null
+    val total = partToken.substring(slashIdx + 1).toIntOrNull() ?: return null
+    if (part < 1 || total < 1 || part > total) return null
+
+    if (total == 1) {
+      val b45 = body.substring(firstColon + 1)
+      if (b45.isEmpty()) return null
+      return AirScanFrame(
+        partIndex = 1,
+        totalParts = 1,
+        deckHash4 = computeDeckHash4(b45),
+        base45Chunk = b45,
+        packetString = cleaned
+      )
+    }
+
+    val secondColon = body.indexOf(':', firstColon + 1)
+    if (secondColon <= firstColon + 1) return null
+    val deckHash4 = body.substring(firstColon + 1, secondColon).trim().uppercase(Locale.US)
+    val chunk = body.substring(secondColon + 1)
+    if (deckHash4.isEmpty() || chunk.isEmpty()) return null
+    return AirScanFrame(
+      partIndex = part,
+      totalParts = total,
+      deckHash4 = deckHash4,
+      base45Chunk = chunk,
+      packetString = cleaned
+    )
+  }
+
+  fun decodeBase45Payload(b45: String): FlashcardDeck? {
+    return try {
+      val compressed = decodeBase45(b45) ?: return null
+      val jsonBytes = inflateRaw(compressed)
+      val jsonText = String(jsonBytes, Charsets.UTF_8).trim()
+      parseDeckFromDecodedJson(jsonText)
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  fun decodeFullCode(rawInput: String): FlashcardDeck? {
+    val frame = parseAirScanFrame(rawInput) ?: return null
+    if (frame.totalParts != 1) return null
+    return decodeBase45Payload(frame.base45Chunk)
+  }
+
+  fun reassembleAndDecode(
+    parts: Map<Int, String>,
+    totalParts: Int,
+    expectedDeckHash4: String?
+  ): FlashcardDeck? {
+    if (totalParts < 1 || parts.size != totalParts) return null
+    val sb = StringBuilder()
+    for (p in 1..totalParts) {
+      val chunk = parts[p] ?: return null
+      sb.append(chunk)
+    }
+    val fullB45 = sb.toString()
+    if (!expectedDeckHash4.isNullOrBlank()) {
+      val actualHash = computeDeckHash4(fullB45)
+      if (!actualHash.equals(expectedDeckHash4.trim(), ignoreCase = true)) {
+        return null
+      }
+    }
+    return decodeBase45Payload(fullB45)
   }
 }
 
-fun exportDeckToShareableCode(deck: FlashcardDeck): String = exportDeckToOfflineCode(deck)
+private fun parseDeckFromDecodedJson(jsonString: String): FlashcardDeck? {
+  val trimmed = jsonString.trim()
+  if (trimmed.isEmpty()) return null
 
-/**
- * Bulletproof 100% Offline Decoder (`importDeckFromOfflineCode`):
- * Accepts pasted or scanned `SIBIL_DECK:...` codes (supporting both `"c"` and `"cards"` arrays,
- * 1-letter and full keys) and reconstructs the complete `FlashcardDeck` offline.
- */
-fun importDeckFromOfflineCode(rawInput: String): FlashcardDeck? {
-  return try {
-    val trimmed = rawInput.trim()
-    if (trimmed.isEmpty()) return null
-    val withoutPrefix = if (trimmed.startsWith("SIBIL_DECK:", ignoreCase = true)) {
-      trimmed.substringAfter(":")
-    } else {
-      trimmed
-    }
-    val cleaned = withoutPrefix.replace("\\s+".toRegex(), "")
-    if (cleaned.isEmpty()) return null
-
-    val compressedBytes = try {
-      android.util.Base64.decode(cleaned, android.util.Base64.NO_WRAP)
-    } catch (_: Exception) {
-      try {
-        android.util.Base64.decode(cleaned, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
-      } catch (_: Exception) {
-        android.util.Base64.decode(cleaned, android.util.Base64.DEFAULT)
-      }
-    }
-    val jsonString = try {
-      java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(compressedBytes))
-        .bufferedReader(Charsets.UTF_8)
-        .use { it.readText() }
-    } catch (_: Exception) {
-      String(compressedBytes, Charsets.UTF_8)
-    }
-
-    val root = org.json.JSONObject(jsonString)
-    val title = root.optString("t").ifBlank { root.optString("title", "Imported Deck") }.trim().ifEmpty { "Imported Deck" }
-    val subject = root.optString("s")
-      .ifBlank { root.optString("subject", "") }
-      .ifBlank { root.optString("subjectTag", "General") }
-      .trim()
-      .ifEmpty { "General" }
-    val cardsArray = root.optJSONArray("c") ?: root.optJSONArray("cards") ?: org.json.JSONArray()
+  // New v2 positional array format: ["Title", [["Q","A"], ...], optionalSubject]
+  if (trimmed.startsWith("[")) {
+    val rootArray = JSONArray(trimmed)
+    val title = rootArray.optString(0, "Imported Deck").trim().ifEmpty { "Imported Deck" }
+    val cardsArray = rootArray.optJSONArray(1) ?: return null
+    val subject = rootArray.optString(2, "General").trim().ifEmpty { "General" }
     val parsedCards = mutableListOf<FlashcardItem>()
     for (i in 0 until cardsArray.length()) {
-      val item = cardsArray.optJSONObject(i) ?: continue
-      val q = item.optString("q").ifBlank { item.optString("question", "") }.trim()
-      val a = item.optString("a").ifBlank { item.optString("answer", "") }.trim()
-      if (q.isNotBlank() || a.isNotBlank()) {
-        val cardId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1)
+      val pair = cardsArray.optJSONArray(i) ?: continue
+      val q = pair.optString(0, "").trim()
+      val a = pair.optString(1, "").trim()
+      if (q.isNotEmpty() || a.isNotEmpty()) {
+        val cardId = (UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1)
         parsedCards.add(
           FlashcardItem(
             id = cardId,
@@ -2048,18 +2288,133 @@ fun importDeckFromOfflineCode(rawInput: String): FlashcardDeck? {
         )
       }
     }
-    if (parsedCards.isEmpty()) {
-      null
-    } else {
-      val deckId = (java.util.UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
-      FlashcardDeck(
-        id = deckId,
-        title = title,
-        subjectTag = subject,
-        cards = parsedCards,
-        masteredCardIds = emptyList()
+    if (parsedCards.isEmpty()) return null
+    val deckId = (UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+    return FlashcardDeck(
+      id = deckId,
+      title = title,
+      subjectTag = subject,
+      cards = parsedCards,
+      masteredCardIds = emptyList()
+    )
+  }
+
+  // Legacy JSONObject format: {"t":..., "s":..., "c":[{"q":..., "a":...}]}
+  val root = JSONObject(trimmed)
+  val title = root.optString("t").ifBlank { root.optString("title", "Imported Deck") }.trim().ifEmpty { "Imported Deck" }
+  val subject = root.optString("s")
+    .ifBlank { root.optString("subject", "") }
+    .ifBlank { root.optString("subjectTag", "General") }
+    .trim()
+    .ifEmpty { "General" }
+  val cardsArray = root.optJSONArray("c") ?: root.optJSONArray("cards") ?: JSONArray()
+  val parsedCards = mutableListOf<FlashcardItem>()
+  for (i in 0 until cardsArray.length()) {
+    val item = cardsArray.optJSONObject(i) ?: continue
+    val q = item.optString("q").ifBlank { item.optString("question", "") }.trim()
+    val a = item.optString("a").ifBlank { item.optString("answer", "") }.trim()
+    if (q.isNotBlank() || a.isNotBlank()) {
+      val cardId = (UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1)
+      parsedCards.add(
+        FlashcardItem(
+          id = cardId,
+          question = q,
+          answer = a,
+          category = subject,
+          masteryLevel = "New",
+          isMastered = false
+        )
       )
     }
+  }
+  if (parsedCards.isEmpty()) return null
+  val deckId = (UUID.randomUUID().toString().hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+  return FlashcardDeck(
+    id = deckId,
+    title = title,
+    subjectTag = subject,
+    cards = parsedCards,
+    masteredCardIds = emptyList()
+  )
+}
+
+/**
+ * Unified Ultra-Compact Offline Encoder (`exportDeckToOfflineCode`):
+ * Encodes 100% of `deck.cards` using `SibilDeckCodec` (`SIBIL2:1/1:<base45>`).
+ */
+fun exportDeckToOfflineCode(deck: FlashcardDeck): String {
+  return try {
+    SibilDeckCodec.encodeFullCode(deck)
+  } catch (e: Exception) {
+    Log.e("SibilExport", "Export failed: ${e.message}")
+    ""
+  }
+}
+
+fun exportDeckToShareableCode(deck: FlashcardDeck): String = exportDeckToOfflineCode(deck)
+
+/**
+ * Bulletproof 100% Offline Decoder (`importDeckFromOfflineCode`):
+ * Accepts `SIBIL2:...` (positional JSON + raw Deflate + RFC 9285 Base45), `SIBIL1:...`,
+ * legacy `SIBIL_DECK:...` (GZIP + Base64 JSON), raw Base64, or raw JSON strings.
+ */
+fun importDeckFromOfflineCode(rawInput: String): FlashcardDeck? {
+  return try {
+    val trimmed = rawInput.trim()
+    if (trimmed.isEmpty()) return null
+
+    // 1. SIBIL2 v2 format (single or 1-part AirScan)
+    if (trimmed.startsWith("SIBIL2:", ignoreCase = true)) {
+      SibilDeckCodec.decodeFullCode(trimmed)?.let { return it }
+    }
+
+    // 2. SIBIL1 optional prefix (Raw Deflate or GZIP + Base45 or Base64)
+    if (trimmed.startsWith("SIBIL1:", ignoreCase = true)) {
+      val payload = trimmed.substring(7).replace("\r", "").replace("\n", "").trim()
+      SibilDeckCodec.decodeBase45Payload(payload)?.let { return it }
+      try {
+        val raw = Base64.decode(payload, Base64.NO_WRAP)
+        val inflated = SibilDeckCodec.inflateRaw(raw)
+        parseDeckFromDecodedJson(String(inflated, Charsets.UTF_8))?.let { return it }
+      } catch (_: Exception) {
+      }
+    }
+
+    // 3. Raw JSON fallback
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      parseDeckFromDecodedJson(trimmed)?.let { return it }
+    }
+
+    // 4. Legacy SIBIL_DECK: (GZIP + Base64) or raw Base64 GZIP/JSON
+    val withoutPrefix = if (trimmed.startsWith("SIBIL_DECK:", ignoreCase = true)) {
+      trimmed.substringAfter(":")
+    } else {
+      trimmed
+    }
+    val cleaned = withoutPrefix.replace("\\s+".toRegex(), "")
+    if (cleaned.isEmpty()) return null
+
+    val compressedBytes = try {
+      Base64.decode(cleaned, Base64.NO_WRAP)
+    } catch (_: Exception) {
+      try {
+        Base64.decode(cleaned, Base64.URL_SAFE or Base64.NO_WRAP)
+      } catch (_: Exception) {
+        Base64.decode(cleaned, Base64.DEFAULT)
+      }
+    }
+    val jsonString = try {
+      GZIPInputStream(ByteArrayInputStream(compressedBytes))
+        .bufferedReader(Charsets.UTF_8)
+        .use { it.readText() }
+    } catch (_: Exception) {
+      try {
+        String(SibilDeckCodec.inflateRaw(compressedBytes), Charsets.UTF_8)
+      } catch (_: Exception) {
+        String(compressedBytes, Charsets.UTF_8)
+      }
+    }
+    parseDeckFromDecodedJson(jsonString)
   } catch (_: Exception) {
     null
   }
@@ -9430,6 +9785,39 @@ private fun MainProductivityScaffold(
     }
   }
 
+  // Handle incoming `.sibil` flashcard deck file shared via Quick Share, Bluetooth, or Android File Manager
+  val incomingDeckUri = pendingImportedDeckUri
+  LaunchedEffect(incomingDeckUri) {
+    if (incomingDeckUri != null) {
+      val decodedDeck = withContext(Dispatchers.IO) {
+        try {
+          context.contentResolver.openInputStream(incomingDeckUri)?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+            importDeckFromOfflineCode(reader.readText())
+          }
+        } catch (_: Exception) {
+          null
+        }
+      }
+      pendingImportedDeckUri = null
+      if (decodedDeck != null && decodedDeck.cards.isNotEmpty()) {
+        val savedDeck = taskViewModel.importSharedFlashcardDeck(decodedDeck)
+        selectedTab = CeNavTab.EXTRAS
+        pendingOpenFlashcardsAfterImport = true
+        Toast.makeText(
+          context,
+          "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
+          Toast.LENGTH_LONG
+        ).show()
+      } else {
+        Toast.makeText(
+          context,
+          "Unable to read .sibil flashcard deck file.",
+          Toast.LENGTH_SHORT
+        ).show()
+      }
+    }
+  }
+
   // Continuous 1-second ticker checking active alarms and snooze countdown across the whole app
   LaunchedEffect(Unit) {
     while (true) {
@@ -13542,6 +13930,22 @@ fun ExtrasScreen(
   var localClassWizOpen by rememberSaveable { mutableStateOf(false) }
   val effectiveCalculatorOpen = isCalculatorOpen || localClassWizOpen
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+
+  val openFlashcardsSignal = pendingOpenFlashcardsAfterImport
+  LaunchedEffect(openFlashcardsSignal) {
+    if (openFlashcardsSignal) {
+      localClassWizOpen = false
+      onCalculatorOpenChange(false)
+      localUnitConverterOpen = false
+      onUnitConverterOpenChange(false)
+      isEstimateOpen = false
+      isSurveyingSolverOpen = false
+      isFormulaVaultOpen = false
+      activeStudyDeckId = null
+      isFlashcardsOpen = true
+      pendingOpenFlashcardsAfterImport = false
+    }
+  }
 
   val activeStudyDeck = viewModel.flashcardDecks.firstOrNull { it.id == activeStudyDeckId }
 
@@ -26578,18 +26982,18 @@ fun FlashcardMainView(
       metrics = metrics,
       onDismiss = { isImportDeckCodeDialogOpen = false },
       onImportDeck = { importedDeck ->
-        viewModel.importSharedFlashcardDeck(importedDeck)
+        val savedDeck = viewModel.importSharedFlashcardDeck(importedDeck)
         isImportDeckCodeDialogOpen = false
         Toast.makeText(
           context,
-          "Imported ${importedDeck.cards.size} flashcards!",
-          Toast.LENGTH_SHORT
+          "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
+          Toast.LENGTH_LONG
         ).show()
       }
     )
   }
 
-  // 100% Offline QR Code Share Dialog (exports all 78+ cards with automatic multi-part QR chunking if > 1800 chars)
+  // 100% Offline AirScan QR Stream & Quick Share (.sibil) Export Dialog
   val targetDeckForQr = decks.firstOrNull { it.id == shareQrTargetDeckId }
   if (targetDeckForQr != null) {
     val shareCode = remember(targetDeckForQr.id, targetDeckForQr.cards.size, targetDeckForQr.title) {
@@ -26606,7 +27010,7 @@ fun FlashcardMainView(
 
 /**
  * 1. 100% Offline QR Code Generator Helper using ZXing `QRCodeWriter` with `ErrorCorrectionLevel.L`
- * and `MARGIN = 1`. Encodes the exact `SIBIL_DECK:<base64_gzip>` string into a QR Code bitmap.
+ * and `MARGIN = 1`. Supports `SIBIL2:...` (QR Alphanumeric Mode), `SIBIL1:...`, and legacy `SIBIL_DECK:...`.
  */
 fun generateDeckQrBitmap(
   deckCode: String,
@@ -26619,7 +27023,9 @@ fun generateDeckQrBitmap(
   )
   val rawClean = deckCode.replace("\n", "").replace("\r", "").trim()
   val normalizedCode = when {
-    rawClean.isNotEmpty() && rawClean.startsWith("SIBIL_DECK:") -> rawClean
+    rawClean.startsWith("SIBIL2:", ignoreCase = true) ||
+      rawClean.startsWith("SIBIL1:", ignoreCase = true) ||
+      rawClean.startsWith("SIBIL_DECK:", ignoreCase = true) -> rawClean
     rawClean.isNotEmpty() -> "SIBIL_DECK:$rawClean"
     sourceDeck != null -> exportDeckToOfflineCode(sourceDeck)
     else -> ""
@@ -26641,7 +27047,7 @@ fun generateDeckQrBitmap(
 }
 
 /**
- * 2. Camera QR Scanner using Google Play Services GmsBarcodeScanning (zero manifest camera permissions).
+ * 2. Legacy Single-Frame QR Scanner helper kept available if needed.
  */
 fun launchDeckQrScanner(
   context: Context,
@@ -26669,12 +27075,58 @@ fun launchDeckQrScanner(
 }
 
 /**
- * 3. 100% Offline Liquid Glass Modal QR Share Dialog:
- * - If `fullCode.length <= 1800`: encodes the entire `SIBIL_DECK:...` string directly into a single QR code.
- * - If `fullCode.length > 1800` (huge 78+ card decks with long paragraphs): splits `deck.cards.chunked(25)`
- *   into valid `exportDeckToOfflineCode(chunkDeck)` (`SIBIL_DECK:...`) parts with `< Part 1 of N >` navigation,
- *   while the `"Copy Full Deck Code (All ${deck.cards.size} Cards)"` button copies the single combined 100%-card
- *   `SIBIL_DECK:...` string!
+ * Writes a `.sibil` offline flashcard deck file inside `cacheDir/shared_decks/` and opens Android's
+ * Share Sheet (`Quick Share` / `Nearby Share` / `Bluetooth`) via `SibilDeckFileProvider`.
+ */
+private fun shareDeckAsSibilFileOffline(
+  context: Context,
+  deckTitle: String,
+  cardCount: Int,
+  fullCode: String
+) {
+  try {
+    val safeName = deckTitle.trim()
+      .replace(Regex("[^A-Za-z0-9._-]+"), "_")
+      .trim('_')
+      .ifEmpty { "Sibil_Study_Deck" }
+      .take(48)
+    val sharedDir = File(context.cacheDir, "shared_decks").apply { mkdirs() }
+    val outFile = File(sharedDir, "$safeName.sibil")
+    outFile.writeText(fullCode, Charsets.UTF_8)
+
+    val uri = FileProvider.getUriForFile(
+      context,
+      "${context.packageName}.fileprovider",
+      outFile
+    )
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+      type = "application/octet-stream"
+      putExtra(Intent.EXTRA_STREAM, uri)
+      putExtra(Intent.EXTRA_SUBJECT, "$deckTitle ($cardCount Cards)")
+      putExtra(Intent.EXTRA_TEXT, "Sibil CE Offline Flashcard Deck: $deckTitle ($cardCount cards)")
+      clipData = ClipData.newRawUri("$safeName.sibil", uri)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val chooser = Intent.createChooser(sendIntent, "Send Deck Offline via Quick Share / Bluetooth").apply {
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(chooser)
+  } catch (e: Exception) {
+    Toast.makeText(
+      context,
+      "Unable to share .sibil file: ${e.localizedMessage ?: "Unknown error"}",
+      Toast.LENGTH_SHORT
+    ).show()
+  }
+}
+
+/**
+ * 3. 100% Offline Liquid Glass Modal AirScan QR Stream & Quick Share Export Dialog:
+ * - Uses `SibilDeckCodec.encodeAirScanFrames(deck, maxCharsPerFrame = 420)` (Positional JSON + Raw Deflate + Base45).
+ * - Small decks fit in a single crisp QR (`SIBIL2:1/1:<base45>`).
+ * - Large decks (77+ cards) auto-cycle continuously at ~550ms/frame (`Part X of N • Auto-Cycling for Camera Scan`)
+ *   with animated progress bar + `< Prev`, `Pause / Play`, `Next >` controls.
+ * - Includes 1-tap `"Share Deck File (Offline Quick Share)"` `.sibil` export and `"Copy Full Deck Code"`.
  */
 @Composable
 fun ShareDeckQrDialog(
@@ -26688,44 +27140,74 @@ fun ShareDeckQrDialog(
   val isDarkMode = palette.isDark
 
   val fullCode = remember(deckId, deck) {
-    val raw = if (deck != null) {
-      exportDeckToOfflineCode(deck)
+    if (deck != null) {
+      SibilDeckCodec.encodeFullCode(deck)
     } else {
-      deckId.replace("\n", "").replace("\r", "").trim()
-    }
-    if (raw.isNotEmpty() && !raw.startsWith("SIBIL_DECK:")) {
-      "SIBIL_DECK:$raw"
-    } else {
-      raw
-    }
-  }
-
-  val qrParts = remember(fullCode, deck) {
-    if (fullCode.length <= 1800 || deck == null || deck.cards.isEmpty()) {
-      listOf(fullCode)
-    } else {
-      val chunks = deck.cards.chunked(25)
-      chunks.map { chunkCards ->
-        exportDeckToOfflineCode(deck.copy(cards = chunkCards))
+      val raw = deckId.replace("\n", "").replace("\r", "").trim()
+      if (raw.startsWith("SIBIL2:", ignoreCase = true) ||
+        raw.startsWith("SIBIL1:", ignoreCase = true) ||
+        raw.startsWith("SIBIL_DECK:", ignoreCase = true)
+      ) {
+        raw
+      } else if (raw.isNotEmpty()) {
+        "SIBIL_DECK:$raw"
+      } else {
+        ""
       }
     }
   }
 
-  var currentPartIndex by remember(qrParts.size) { mutableIntStateOf(0) }
-  val activeQrPayload = qrParts.getOrElse(currentPartIndex.coerceIn(0, (qrParts.size - 1).coerceAtLeast(0))) { fullCode }
-  var qrBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-
-  LaunchedEffect(activeQrPayload) {
-    qrBitmap = null
-    val encodedBitmap = withContext(Dispatchers.IO) {
-      generateDeckQrBitmap(
-        deckCode = activeQrPayload,
-        size = 512,
-        sourceDeck = deck
+  val airScanFrames = remember(fullCode, deck) {
+    if (deck != null && deck.cards.isNotEmpty()) {
+      SibilDeckCodec.encodeAirScanFrames(deck, SibilDeckCodec.DEFAULT_AIRSCAN_CHUNK_CHARS)
+    } else {
+      listOf(
+        SibilDeckCodec.AirScanFrame(
+          partIndex = 1,
+          totalParts = 1,
+          deckHash4 = SibilDeckCodec.computeDeckHash4(fullCode),
+          base45Chunk = fullCode,
+          packetString = fullCode
+        )
       )
     }
-    qrBitmap = encodedBitmap?.asImageBitmap()
   }
+
+  var currentPartIndex by remember(airScanFrames.size) { mutableIntStateOf(0) }
+  var isPlaying by remember(airScanFrames.size) { mutableStateOf(true) }
+
+  // Pre-render all AirScan frames in background IO so 550ms auto-cycling renders smoothly without flicker
+  var preRenderedBitmaps by remember(airScanFrames) { mutableStateOf<List<ImageBitmap?>>(emptyList()) }
+  LaunchedEffect(airScanFrames) {
+    preRenderedBitmaps = emptyList()
+    val rendered = withContext(Dispatchers.IO) {
+      airScanFrames.map { frame ->
+        generateDeckQrBitmap(
+          deckCode = frame.packetString,
+          size = 540,
+          sourceDeck = deck
+        )?.asImageBitmap()
+      }
+    }
+    preRenderedBitmaps = rendered
+  }
+
+  LaunchedEffect(isPlaying, airScanFrames.size) {
+    if (airScanFrames.size > 1 && isPlaying) {
+      while (true) {
+        delay(550L)
+        currentPartIndex = (currentPartIndex + 1) % airScanFrames.size
+      }
+    }
+  }
+
+  val safeIndex = currentPartIndex.coerceIn(0, (airScanFrames.size - 1).coerceAtLeast(0))
+  val currentQrBitmap = preRenderedBitmaps.getOrNull(safeIndex)
+  val animatedCycleProgress by animateFloatAsState(
+    targetValue = if (airScanFrames.isNotEmpty()) (safeIndex + 1).toFloat() / airScanFrames.size.toFloat() else 1f,
+    animationSpec = tween(durationMillis = 220),
+    label = "airscan_cycle_progress"
+  )
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -26785,16 +27267,15 @@ fun ShareDeckQrDialog(
             text = if (deck != null) "$deckTitle ($cardCount Cards)" else deckTitle,
             style = MaterialTheme.typography.bodyMedium,
             color = palette.textSecondary,
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+            modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
           )
 
-          val currentQrBitmap = qrBitmap
           if (currentQrBitmap != null) {
             Image(
               bitmap = currentQrBitmap,
-              contentDescription = "QR Code for $deckTitle",
+              contentDescription = "QR Code for $deckTitle part ${safeIndex + 1}",
               modifier = Modifier
-                .size(220.dp)
+                .size(228.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color.White)
                 .padding(10.dp)
@@ -26802,67 +27283,151 @@ fun ShareDeckQrDialog(
           } else {
             Box(
               modifier = Modifier
-                .size(220.dp)
+                .size(228.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(palette.nestedCardFill),
               contentAlignment = Alignment.Center
             ) {
-              Text("Generating QR Code...", color = palette.textSecondary)
+              Text("Generating AirScan QR...", color = palette.textSecondary)
             }
           }
 
-          if (qrParts.size > 1) {
-            Spacer(modifier = Modifier.height(12.dp))
+          Spacer(modifier = Modifier.height(12.dp))
+
+          if (airScanFrames.size > 1) {
+            LinearProgressIndicator(
+              progress = { animatedCycleProgress },
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(99.dp)),
+              color = Color(0xFF0284C7),
+              trackColor = palette.nestedCardFill
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+              text = if (isPlaying) {
+                "Part ${safeIndex + 1} of ${airScanFrames.size} • Auto-Cycling for Camera Scan"
+              } else {
+                "Part ${safeIndex + 1} of ${airScanFrames.size} • Paused"
+              },
+              style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+              color = palette.accentIndigo,
+              textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(10.dp))
             Row(
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(12.dp)
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
               OutlinedButton(
                 onClick = {
-                  if (currentPartIndex > 0) currentPartIndex -= 1
+                  isPlaying = false
+                  currentPartIndex = if (safeIndex > 0) safeIndex - 1 else airScanFrames.lastIndex
                 },
-                enabled = currentPartIndex > 0,
                 shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier
+                  .heightIn(min = 48.dp)
+                  .testTag("airscan_prev_part_button")
               ) {
                 Text("< Prev", fontWeight = FontWeight.Bold, fontSize = 12.sp)
               }
 
-              Text(
-                text = "Part ${currentPartIndex + 1} of ${qrParts.size}",
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
-                color = palette.accentIndigo
-              )
+              OutlinedButton(
+                onClick = { isPlaying = !isPlaying },
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                modifier = Modifier
+                  .heightIn(min = 48.dp)
+                  .testTag("airscan_play_pause_button")
+              ) {
+                Icon(
+                  imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                  contentDescription = if (isPlaying) "Pause QR Stream" else "Play QR Stream",
+                  modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(if (isPlaying) "Pause" else "Play", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+              }
 
               OutlinedButton(
                 onClick = {
-                  if (currentPartIndex < qrParts.lastIndex) currentPartIndex += 1
+                  isPlaying = false
+                  currentPartIndex = (safeIndex + 1) % airScanFrames.size
                 },
-                enabled = currentPartIndex < qrParts.lastIndex,
                 shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier
+                  .heightIn(min = 48.dp)
+                  .testTag("airscan_next_part_button")
               ) {
                 Text("Next >", fontWeight = FontWeight.Bold, fontSize = 12.sp)
               }
             }
+          } else {
+            Text(
+              text = if (cardCount > 0) "All $cardCount Cards in 1 QR" else "100% Offline QR",
+              style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+              color = Color(0xFF10B981)
+            )
           }
 
-          Spacer(modifier = Modifier.height(14.dp))
+          Spacer(modifier = Modifier.height(10.dp))
 
           Text(
-            text = if (qrParts.size > 1) {
-              "Large $cardCount-card deck split into ${qrParts.size} offline QR parts (25 cards/part) for instant camera focus, or tap below to copy the single full $cardCount-card offline code!"
+            text = if (airScanFrames.size > 1) {
+              "Classmate taps Scan QR Code and holds their camera steady — Sibil captures all ${airScanFrames.size} parts automatically in any order. Or send 1 offline .sibil file via Quick Share / Bluetooth!"
             } else {
-              "100% Offline QR: Classmates can scan this QR code or paste the full Deck Code to import all $cardCount cards offline with zero AI quota."
+              "100% Offline Base45 QR: Classmates can scan once with Camera or share 1 offline .sibil file via Quick Share / Bluetooth."
             },
             style = MaterialTheme.typography.bodySmall,
             color = palette.textSecondary,
             textAlign = TextAlign.Center
           )
 
-          Spacer(modifier = Modifier.height(18.dp))
+          Spacer(modifier = Modifier.height(16.dp))
 
+          // Primary CTA: 1-Tap Offline Quick Share / Bluetooth `.sibil` File Export
           Button(
+            onClick = {
+              shareDeckAsSibilFileOffline(
+                context = context,
+                deckTitle = deckTitle,
+                cardCount = cardCount,
+                fullCode = fullCode
+              )
+            },
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color(0xFF0284C7),
+              contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("share_deck_file_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Share,
+              contentDescription = "Share Deck File Offline",
+              modifier = Modifier.size(17.dp),
+              tint = Color.White
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+              text = "Share Deck File (Offline Quick Share)",
+              fontWeight = FontWeight.Bold,
+              fontSize = 13.sp,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // Secondary Frosted Glass Button: Copy Full Deck Code
+          OutlinedButton(
             onClick = {
               val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
               clipboard?.setPrimaryClip(ClipData.newPlainText("Sibil Deck Code", fullCode))
@@ -26872,11 +27437,12 @@ fun ShareDeckQrDialog(
                 Toast.LENGTH_SHORT
               ).show()
             },
-            colors = ButtonDefaults.buttonColors(
-              containerColor = palette.accentIndigo,
-              contentColor = Color.White
-            ),
             shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+            colors = ButtonDefaults.outlinedButtonColors(
+              containerColor = palette.nestedCardFill,
+              contentColor = palette.accentIndigo
+            ),
             modifier = Modifier
               .fillMaxWidth()
               .heightIn(min = 48.dp)
@@ -26885,8 +27451,7 @@ fun ShareDeckQrDialog(
             Icon(
               imageVector = Icons.Filled.ContentCopy,
               contentDescription = "Copy Full Deck Code",
-              modifier = Modifier.size(17.dp),
-              tint = Color.White
+              modifier = Modifier.size(17.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
@@ -26898,14 +27463,368 @@ fun ShareDeckQrDialog(
             )
           }
 
-          Spacer(modifier = Modifier.height(10.dp))
+          Spacer(modifier = Modifier.height(8.dp))
 
           TextButton(
             onClick = onDismiss,
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
           ) {
             Text("Close", color = palette.textSecondary, fontWeight = FontWeight.SemiBold)
+          }
+        }
+      }
+    }
+  }
+}
+
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
+private fun processAirScanImageProxy(
+  imageProxy: androidx.camera.core.ImageProxy,
+  scanner: com.google.mlkit.vision.barcode.BarcodeScanner,
+  onBarcodesDetected: (List<String>) -> Unit
+) {
+  val mediaImage = imageProxy.image
+  if (mediaImage == null) {
+    imageProxy.close()
+    return
+  }
+  val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+  scanner.process(inputImage)
+    .addOnSuccessListener { barcodes ->
+      val values = barcodes.mapNotNull { it.rawValue?.takeIf { raw -> raw.isNotBlank() } }
+      if (values.isNotEmpty()) {
+        onBarcodesDetected(values)
+      }
+    }
+    .addOnCompleteListener {
+      imageProxy.close()
+    }
+}
+
+/**
+ * Full-Screen Continuous CameraX + ML Kit AirScan QR Stream Receiver.
+ * Does NOT close on Part 1 — accumulates `SIBIL2:<part>/<total>:<hash4>:<chunk>` frames in any order,
+ * displays segmented emerald progress pills, verifies checksum, and auto-completes on full capture.
+ */
+@kotlin.OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AirScanCameraScannerDialog(
+  onDismiss: () -> Unit,
+  onDeckDecoded: (FlashcardDeck) -> Unit
+) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val localView = LocalView.current
+  val palette = currentGlassPalette()
+
+  val collectedParts = remember { mutableStateMapOf<Int, String>() }
+  var expectedTotalParts by remember { mutableIntStateOf(0) }
+  var activeDeckHash by remember { mutableStateOf<String?>(null) }
+  var hasFinished by remember { mutableStateOf(false) }
+  var cameraError by remember { mutableStateOf<String?>(null) }
+  var statusHint by remember { mutableStateOf("Hold steady over classmate's QR stream") }
+
+  val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+  val barcodeScanner = remember {
+    BarcodeScanning.getClient(
+      BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .build()
+    )
+  }
+  val previewView = remember {
+    PreviewView(context).apply {
+      scaleType = PreviewView.ScaleType.FILL_CENTER
+    }
+  }
+
+  DisposableEffect(lifecycleOwner) {
+    val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+    var boundProvider: ProcessCameraProvider? = null
+    val mainExecutor = ContextCompat.getMainExecutor(context)
+
+    cameraProviderFuture.addListener({
+      try {
+        val provider = cameraProviderFuture.get()
+        boundProvider = provider
+        val preview = CameraXPreview.Builder().build().also {
+          it.surfaceProvider = previewView.surfaceProvider
+        }
+        val imageAnalysis = ImageAnalysis.Builder()
+          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+          .build()
+
+        imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+          if (hasFinished) {
+            imageProxy.close()
+          } else {
+            processAirScanImageProxy(
+              imageProxy = imageProxy,
+              scanner = barcodeScanner
+            ) { scannedValues ->
+              mainExecutor.execute {
+                if (hasFinished) return@execute
+                for (raw in scannedValues) {
+                  val frame = SibilDeckCodec.parseAirScanFrame(raw)
+                  if (frame != null) {
+                    if (frame.totalParts == 1 && frame.partIndex == 1) {
+                      val decoded = SibilDeckCodec.decodeBase45Payload(frame.base45Chunk)
+                      if (decoded != null && decoded.cards.isNotEmpty()) {
+                        hasFinished = true
+                        localView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                        onDeckDecoded(decoded)
+                        return@execute
+                      }
+                    } else {
+                      if (activeDeckHash != null && activeDeckHash != frame.deckHash4) {
+                        collectedParts.clear()
+                        activeDeckHash = frame.deckHash4
+                        expectedTotalParts = frame.totalParts
+                      } else if (activeDeckHash == null) {
+                        activeDeckHash = frame.deckHash4
+                        expectedTotalParts = frame.totalParts
+                      }
+                      if (!collectedParts.containsKey(frame.partIndex)) {
+                        collectedParts[frame.partIndex] = frame.base45Chunk
+                        localView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        statusHint = "Captured Part ${frame.partIndex} of ${frame.totalParts}"
+                        if (expectedTotalParts > 0 && collectedParts.size == expectedTotalParts) {
+                          val assembled = SibilDeckCodec.reassembleAndDecode(
+                            parts = collectedParts.toMap(),
+                            totalParts = expectedTotalParts,
+                            expectedDeckHash4 = activeDeckHash
+                          )
+                          if (assembled != null && assembled.cards.isNotEmpty()) {
+                            hasFinished = true
+                            localView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                            onDeckDecoded(assembled)
+                            return@execute
+                          } else {
+                            statusHint = "Checksum mismatch — rescanning stream..."
+                            collectedParts.clear()
+                            activeDeckHash = null
+                            expectedTotalParts = 0
+                          }
+                        }
+                      }
+                    }
+                  } else {
+                    val legacyDeck = importDeckFromOfflineCode(raw)
+                    if (legacyDeck != null && legacyDeck.cards.isNotEmpty()) {
+                      hasFinished = true
+                      localView.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                      onDeckDecoded(legacyDeck)
+                      return@execute
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        provider.unbindAll()
+        provider.bindToLifecycle(
+          lifecycleOwner,
+          CameraSelector.DEFAULT_BACK_CAMERA,
+          preview,
+          imageAnalysis
+        )
+      } catch (e: Exception) {
+        cameraError = e.localizedMessage ?: "Unable to start camera scanner."
+      }
+    }, mainExecutor)
+
+    onDispose {
+      try {
+        boundProvider?.unbindAll()
+      } catch (_: Exception) {
+      }
+      try {
+        barcodeScanner.close()
+      } catch (_: Exception) {
+      }
+      cameraExecutor.shutdown()
+    }
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false)
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black)
+        .testTag("airscan_camera_dialog")
+    ) {
+      AndroidView(
+        factory = { previewView },
+        modifier = Modifier.fillMaxSize()
+      )
+
+      // Top Frosted Header
+      Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0xFF0B1324).copy(alpha = 0.78f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
+        modifier = Modifier
+          .align(Alignment.TopCenter)
+          .statusBarsPadding()
+          .padding(horizontal = 16.dp, vertical = 14.dp)
+          .fillMaxWidth()
+          .widthIn(max = 520.dp)
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.QrCodeScanner,
+              contentDescription = null,
+              tint = Color(0xFF38BDF8),
+              modifier = Modifier.size(22.dp)
+            )
+            Column {
+              Text(
+                text = "AirScan QR Stream Receiver",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp
+              )
+              Text(
+                text = "100% Offline Multi-Frame Scanner",
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp
+              )
+            }
+          }
+
+          IconButton(
+            onClick = onDismiss,
+            modifier = Modifier
+              .size(48.dp)
+              .testTag("close_airscan_camera_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Close,
+              contentDescription = "Close scanner",
+              tint = Color.White
+            )
+          }
+        }
+      }
+
+      // Center Scanning Reticle
+      Box(
+        modifier = Modifier
+          .align(Alignment.Center)
+          .size(240.dp)
+          .border(
+            width = 2.5.dp,
+            color = if (collectedParts.isNotEmpty()) Color(0xFF10B981) else Color(0xFF38BDF8).copy(alpha = 0.85f),
+            shape = RoundedCornerShape(24.dp)
+          )
+      )
+
+      // Bottom Frosted Glass Progress HUD
+      Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF0B1324).copy(alpha = 0.88f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .navigationBarsPadding()
+          .padding(horizontal = 16.dp, vertical = 16.dp)
+          .fillMaxWidth()
+          .widthIn(max = 520.dp)
+      ) {
+        Column(
+          modifier = Modifier.padding(18.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          if (cameraError != null) {
+            Text(
+              text = cameraError.orEmpty(),
+              color = palette.accentRed,
+              fontWeight = FontWeight.SemiBold,
+              fontSize = 13.sp,
+              textAlign = TextAlign.Center
+            )
+          } else if (expectedTotalParts > 1) {
+            Text(
+              text = "Scanning AirScan Stream: Captured ${collectedParts.size} of $expectedTotalParts parts",
+              color = Color.White,
+              fontWeight = FontWeight.Bold,
+              fontSize = 14.sp,
+              textAlign = TextAlign.Center
+            )
+            LinearProgressIndicator(
+              progress = { collectedParts.size.toFloat() / expectedTotalParts.toFloat() },
+              modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(99.dp)),
+              color = Color(0xFF10B981),
+              trackColor = Color.White.copy(alpha = 0.16f)
+            )
+            FlowRow(
+              horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              for (partIdx in 1..expectedTotalParts) {
+                val captured = collectedParts.containsKey(partIdx)
+                Surface(
+                  shape = RoundedCornerShape(8.dp),
+                  color = if (captured) Color(0xFF10B981) else Color.White.copy(alpha = 0.12f),
+                  border = BorderStroke(
+                    width = 1.dp,
+                    color = if (captured) Color(0xFF34D399) else Color.White.copy(alpha = 0.25f)
+                  )
+                ) {
+                  Text(
+                    text = partIdx.toString(),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                  )
+                }
+              }
+            }
+          } else {
+            Text(
+              text = "Point camera at classmate's AirScan QR stream",
+              color = Color.White,
+              fontWeight = FontWeight.Bold,
+              fontSize = 14.sp,
+              textAlign = TextAlign.Center
+            )
+            Text(
+              text = statusHint,
+              color = Color(0xFF94A3B8),
+              fontSize = 12.sp,
+              textAlign = TextAlign.Center
+            )
+          }
+
+          TextButton(
+            onClick = onDismiss,
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+          ) {
+            Text("Cancel Scan", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
           }
         }
       }
@@ -26922,13 +27841,15 @@ private fun ImportSharedDeckCodeDialog(
   val context = LocalContext.current
   val palette = currentGlassPalette()
   val isDarkMode = palette.isDark
+  val coroutineScope = rememberCoroutineScope()
   var deckCodeInput by rememberSaveable { mutableStateOf("") }
   var decodeError by rememberSaveable { mutableStateOf<String?>(null) }
+  var isAirScanOpen by remember { mutableStateOf(false) }
 
   fun executeOfflineDeckImport(rawInput: String) {
     val trimmed = rawInput.trim()
     if (trimmed.isEmpty()) {
-      decodeError = "Please paste a deck code or scan a classmate's QR code first."
+      decodeError = "Please paste a deck code, open a .sibil file, or scan a classmate's QR stream first."
       return
     }
     val importedDeck = importDeckFromOfflineCode(trimmed)
@@ -26936,8 +27857,54 @@ private fun ImportSharedDeckCodeDialog(
       decodeError = null
       onImportDeck(importedDeck)
     } else {
-      decodeError = "Invalid deck code. Please copy the full SIBIL_DECK:... code shared by your classmate."
+      decodeError = "Invalid deck code. Please copy the full SIBIL2:... or SIBIL_DECK:... code shared by your classmate."
     }
+  }
+
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    if (granted) {
+      decodeError = null
+      isAirScanOpen = true
+    } else {
+      decodeError = "Camera permission is required to scan offline AirScan QR streams."
+    }
+  }
+
+  val sibilFilePicker = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument()
+  ) { selectedUri ->
+    if (selectedUri != null) {
+      coroutineScope.launch {
+        val loadedText = withContext(Dispatchers.IO) {
+          try {
+            context.contentResolver.openInputStream(selectedUri)?.bufferedReader(Charsets.UTF_8)?.use {
+              it.readText()
+            }
+          } catch (_: Exception) {
+            null
+          }
+        }
+        if (!loadedText.isNullOrBlank()) {
+          deckCodeInput = loadedText.trim()
+          executeOfflineDeckImport(loadedText)
+        } else {
+          decodeError = "Could not read the selected .sibil deck file."
+        }
+      }
+    }
+  }
+
+  if (isAirScanOpen) {
+    AirScanCameraScannerDialog(
+      onDismiss = { isAirScanOpen = false },
+      onDeckDecoded = { decodedDeck ->
+        isAirScanOpen = false
+        decodeError = null
+        onImportDeck(decodedDeck)
+      }
+    )
   }
 
   Dialog(
@@ -26975,7 +27942,7 @@ private fun ImportSharedDeckCodeDialog(
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(22.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+          verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
           Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -26998,26 +27965,26 @@ private fun ImportSharedDeckCodeDialog(
           }
 
           Text(
-            text = "One classmate can generate a deck from a PDF or DOCX and tap Share. Scan their QR code or paste their SIBIL_DECK:... code below to load all 100% of their cards offline.",
+            text = "Scan your classmate's auto-cycling AirScan QR stream, open a .sibil file received over Quick Share / Bluetooth, or paste their offline deck code.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontSize = metrics.scaledSp(12)
             ),
             color = palette.textSecondary
           )
 
-          // Native Google Play Services QR Scanner Button with opaque-backed container
+          // Continuous CameraX + ML Kit AirScan QR Stream Scanner Button
           Button(
             onClick = {
-              launchDeckQrScanner(
-                context = context,
-                onSuccess = { scannedString ->
-                  deckCodeInput = scannedString.trim()
-                  executeOfflineDeckImport(scannedString)
-                },
-                onError = { err ->
-                  decodeError = err
-                }
-              )
+              val hasCameraPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+              ) == PackageManager.PERMISSION_GRANTED
+              if (hasCameraPermission) {
+                decodeError = null
+                isAirScanOpen = true
+              } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+              }
             },
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
@@ -27039,6 +28006,32 @@ private fun ImportSharedDeckCodeDialog(
             Text("Scan QR Code (Camera)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
           }
 
+          // Offline `.sibil` File Importer Button
+          OutlinedButton(
+            onClick = {
+              decodeError = null
+              sibilFilePicker.launch(arrayOf("*/*"))
+            },
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, palette.accentIndigo.copy(alpha = 0.45f)),
+            colors = ButtonDefaults.outlinedButtonColors(
+              containerColor = palette.nestedCardFill,
+              contentColor = palette.accentIndigo
+            ),
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 48.dp)
+              .testTag("import_sibil_file_button")
+          ) {
+            Icon(
+              imageVector = Icons.Filled.FolderOpen,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Import .sibil File", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+          }
+
           OutlinedTextField(
             value = deckCodeInput,
             onValueChange = {
@@ -27046,7 +28039,7 @@ private fun ImportSharedDeckCodeDialog(
               decodeError = null
             },
             label = { Text("Paste Deck Code from Classmate") },
-            placeholder = { Text("SIBIL_DECK:H4sIAAAAAAAA/...") },
+            placeholder = { Text("SIBIL2:1/1:... or SIBIL_DECK:...") },
             isError = decodeError != null,
             minLines = 3,
             maxLines = 6,
@@ -27073,7 +28066,8 @@ private fun ImportSharedDeckCodeDialog(
                   Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
                 }
               },
-              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+              modifier = Modifier.heightIn(min = 48.dp)
             ) {
               Icon(
                 imageVector = Icons.Filled.ContentPaste,
@@ -27096,7 +28090,8 @@ private fun ImportSharedDeckCodeDialog(
                   deckCodeInput = ""
                   decodeError = null
                 },
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
               ) {
                 Text("Clear", fontSize = 12.sp, color = palette.textSecondary)
               }
@@ -27116,7 +28111,10 @@ private fun ImportSharedDeckCodeDialog(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
           ) {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+              onClick = onDismiss,
+              modifier = Modifier.heightIn(min = 48.dp)
+            ) {
               Text("Cancel", color = palette.textSecondary)
             }
             Spacer(modifier = Modifier.width(8.dp))
@@ -27127,7 +28125,9 @@ private fun ImportSharedDeckCodeDialog(
                 containerColor = palette.accentIndigo,
                 contentColor = Color.White
               ),
-              modifier = Modifier.testTag("confirm_import_deck_code_button")
+              modifier = Modifier
+                .heightIn(min = 48.dp)
+                .testTag("confirm_import_deck_code_button")
             ) {
               Text(
                 text = "Import Deck",

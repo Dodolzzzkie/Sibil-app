@@ -132,6 +132,13 @@ dependencies {
   // Google Play Services Native Code Scanner (Zero AndroidManifest camera permissions)
   implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 
+  // CameraX + On-Device ML Kit Barcode Scanning for Continuous AirScan Multi-Frame QR Receiver
+  implementation(libs.androidx.camera.core)
+  implementation(libs.androidx.camera.camera2)
+  implementation(libs.androidx.camera.lifecycle)
+  implementation(libs.androidx.camera.view)
+  implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
   // Lightweight QR Code Generator
   implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
