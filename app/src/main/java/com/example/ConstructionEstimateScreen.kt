@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -108,13 +109,15 @@ internal fun ConstructionEstimateScreen(
   val boqCart = remember { mutableStateListOf<BoqCartItem>() }
   var nextBoqId by rememberSaveable { mutableLongStateOf(1L) }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 760.dp)
-      .padding(top = metrics.scaledDp(14))
+      .widthIn(max = if (orientation.isLandscape) 1140.dp else 760.dp)
+      .padding(top = if (orientation.isCompactLandscape) 8.dp else metrics.scaledDp(14))
       .testTag("construction_estimate_screen"),
-    verticalArrangement = Arrangement.spacedBy(12.dp)
+    verticalArrangement = Arrangement.spacedBy(if (orientation.isCompactLandscape) 8.dp else 12.dp)
   ) {
     // 1. TOP STICKY HEADER
     Row(
@@ -231,14 +234,18 @@ internal fun ConstructionEstimateScreen(
       }
     }
 
-    // 2. 2-COLUMN INTERACTIVE CAD FIGURE GRID
+    // 2. ADAPTIVE INTERACTIVE CAD FIGURE GRID
     LazyVerticalGrid(
-      columns = GridCells.Fixed(2),
+      columns = if (orientation.isLandscape || metrics.screenWidthDp >= 600) {
+        GridCells.Adaptive(minSize = 180.dp)
+      } else {
+        GridCells.Fixed(2)
+      },
       contentPadding = PaddingValues(
         start = 16.dp,
         end = 16.dp,
         top = 4.dp,
-        bottom = metrics.scaledDp(116)
+        bottom = if (orientation.isCompactLandscape) 32.dp else metrics.scaledDp(116)
       ),
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -735,19 +742,9 @@ private fun EstimateTakeOffSheetContent(
       }
     }
 
-    // Scrollable Body (Blueprint + Inputs + Material Breakdown)
-    Column(
-      modifier = Modifier
-        .weight(1f, fill = false)
-        .heightIn(max = 520.dp)
-        .verticalScroll(rememberScrollState()),
-      verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-      EstimateDynamicBlueprintPreview(
-        specs = blueprintSpecs,
-        isDarkMode = isDarkMode
-      )
+    val sheetOrientation = rememberScreenOrientationState()
 
+    val renderSheetInputsAndBreakdown: @Composable () -> Unit = {
       // Optional Custom Tag Input
       OutlinedTextField(
         value = customLabel,
@@ -1050,6 +1047,51 @@ private fun EstimateTakeOffSheetContent(
       }
     }
 
+    if (sheetOrientation.isLandscape) {
+      Row(
+        modifier = Modifier
+          .weight(1f, fill = false)
+          .heightIn(max = if (sheetOrientation.isCompactLandscape) 235.dp else 360.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+      ) {
+        Column(
+          modifier = Modifier
+            .weight(0.40f)
+            .verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          EstimateDynamicBlueprintPreview(
+            specs = blueprintSpecs,
+            isDarkMode = isDarkMode,
+            heightDp = if (sheetOrientation.isCompactLandscape) 156 else 186
+          )
+        }
+        Column(
+          modifier = Modifier
+            .weight(0.60f)
+            .verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          renderSheetInputsAndBreakdown()
+        }
+      }
+    } else {
+      Column(
+        modifier = Modifier
+          .weight(1f, fill = false)
+          .heightIn(max = 520.dp)
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        EstimateDynamicBlueprintPreview(
+          specs = blueprintSpecs,
+          isDarkMode = isDarkMode
+        )
+        renderSheetInputsAndBreakdown()
+      }
+    }
+
     // "+ Add to Project BOQ" CTA
     Button(
       onClick = { onAddToBoq(preparedBoqItem) },
@@ -1165,10 +1207,11 @@ private fun ProjectBoqCartSheetContent(
         }
       }
     } else {
+      val cartOrientation = rememberScreenOrientationState()
       Column(
         modifier = Modifier
           .weight(1f, fill = false)
-          .heightIn(max = 500.dp)
+          .heightIn(max = if (cartOrientation.isCompactLandscape) 225.dp else 500.dp)
           .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {

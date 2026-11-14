@@ -56,7 +56,8 @@ internal data class SurveyingBlueprintState(
 internal fun SurveyingCadBlueprintCanvas(
   state: SurveyingBlueprintState,
   isDarkMode: Boolean,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  heightDp: Int = 210
 ) {
   val density = LocalDensity.current
   val labelPx = with(density) { 10.5f * density.density }
@@ -103,7 +104,7 @@ internal fun SurveyingCadBlueprintCanvas(
   Box(
     modifier = modifier
       .fillMaxWidth()
-      .height(210.dp)
+      .height(heightDp.dp)
       .clip(RoundedCornerShape(18.dp))
       .background(bgColor)
       .border(1.dp, borderColor, RoundedCornerShape(18.dp))

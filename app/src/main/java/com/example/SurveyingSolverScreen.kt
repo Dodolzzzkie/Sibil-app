@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -171,13 +172,15 @@ internal fun SurveyingSolverScreen(
     Toast.makeText(context, "Surveying solution copied", Toast.LENGTH_SHORT).show()
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 760.dp)
-      .padding(top = metrics.scaledDp(14))
+      .widthIn(max = if (orientation.isLandscape) 1140.dp else 760.dp)
+      .padding(top = if (orientation.isCompactLandscape) 8.dp else metrics.scaledDp(14))
       .testTag("surveying_solver_screen"),
-    verticalArrangement = Arrangement.spacedBy(12.dp)
+    verticalArrangement = Arrangement.spacedBy(if (orientation.isCompactLandscape) 8.dp else 12.dp)
   ) {
     // 1. TOP STICKY HEADER
     Row(
@@ -302,20 +305,8 @@ internal fun SurveyingSolverScreen(
       }
     }
 
-    // 3. MAIN SCROLLABLE WORKSPACE (TOP CAD -> MIDDLE INPUTS -> BOTTOM RESULTS)
-    Column(
-      modifier = Modifier
-        .fillMaxSize()
-        .verticalScroll(rememberScrollState())
-        .padding(
-          start = 16.dp,
-          end = 16.dp,
-          top = 2.dp,
-          bottom = metrics.scaledDp(116)
-        ),
-      verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-      // TOP CARD: Live Interactive CAD Blueprint
+    // 3. MAIN WORKSPACE (PORTRAIT: VERTICAL STACK; LANDSCAPE: CAD LEFT + WORKSPACE RIGHT)
+    val renderLiveCadCard: @Composable () -> Unit = {
       LiquidGlassCard(
         cornerRadius = 22.dp,
         elevation = 6.dp,
@@ -355,12 +346,18 @@ internal fun SurveyingSolverScreen(
 
           SurveyingCadBlueprintCanvas(
             state = blueprintState,
-            isDarkMode = isDarkMode
+            isDarkMode = isDarkMode,
+            heightDp = when {
+              orientation.isCompactLandscape -> 195
+              orientation.isLandscape -> 240
+              else -> 210
+            }
           )
         }
       }
+    }
 
-      // MIDDLE INPUT CARD & BOTTOM BREAKDOWN CARD PER TAB
+    val renderActiveTabCards: @Composable () -> Unit = {
       when (activeTab) {
         SurveyingToolTab.TRAVERSE_DMD -> {
           TraverseInputCard(
@@ -502,6 +499,53 @@ internal fun SurveyingSolverScreen(
             onCopy = { copyReport(earthResult.copySummary) }
           )
         }
+      }
+    }
+
+    if (orientation.isLandscape) {
+      Row(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Top
+      ) {
+        Column(
+          modifier = Modifier
+            .weight(0.45f)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            .padding(top = 2.dp, bottom = if (orientation.isCompactLandscape) 24.dp else 96.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          renderLiveCadCard()
+        }
+        Column(
+          modifier = Modifier
+            .weight(0.55f)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState())
+            .padding(top = 2.dp, bottom = if (orientation.isCompactLandscape) 24.dp else 96.dp),
+          verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+          renderActiveTabCards()
+        }
+      }
+    } else {
+      Column(
+        modifier = Modifier
+          .fillMaxSize()
+          .verticalScroll(rememberScrollState())
+          .padding(
+            start = 16.dp,
+            end = 16.dp,
+            top = 2.dp,
+            bottom = metrics.scaledDp(116)
+          ),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+      ) {
+        renderLiveCadCard()
+        renderActiveTabCards()
       }
     }
   }

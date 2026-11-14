@@ -85,7 +85,8 @@ internal fun EstimateCadThumbnail(
 internal fun EstimateDynamicBlueprintPreview(
   specs: EstimateBlueprintSpecs,
   isDarkMode: Boolean,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  heightDp: Int = 142
 ) {
   val density = LocalDensity.current
   val labelPx = with(density) { 10.5f * density.density }
@@ -117,7 +118,7 @@ internal fun EstimateDynamicBlueprintPreview(
   Box(
     modifier = modifier
       .fillMaxWidth()
-      .height(142.dp)
+      .height(heightDp.dp)
       .clip(RoundedCornerShape(18.dp))
       .background(bgColor)
       .border(1.2.dp, borderColor, RoundedCornerShape(18.dp))

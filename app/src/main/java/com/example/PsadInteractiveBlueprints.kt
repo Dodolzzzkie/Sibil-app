@@ -266,6 +266,12 @@ private fun PsadCadCanvasShell(
   val amberColor = if (palette.isDark) Color(0xFFFBBF24) else Color(0xFFD97706)
   val emeraldColor = if (palette.isDark) Color(0xFF34D399) else Color(0xFF059669)
   val textColor = if (palette.isDark) Color(0xFFE2E8F0) else Color(0xFF0F172A)
+  val orientation = rememberScreenOrientationState()
+  val resolvedHeightDp = if (orientation.isCompactLandscape) {
+    (heightDp * 0.85f).toInt().coerceAtLeast(150)
+  } else {
+    heightDp
+  }
 
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
     Surface(
@@ -279,7 +285,7 @@ private fun PsadCadCanvasShell(
       ),
       modifier = Modifier
         .fillMaxWidth()
-        .height(heightDp.dp)
+        .height(resolvedHeightDp.dp)
         .testTag(testTag)
     ) {
       Box(modifier = Modifier.fillMaxSize()) {

@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -49,6 +50,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,6 +60,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,9 +129,17 @@ internal fun ScientificCalculatorScreen(
   var baseRadix by rememberSaveable { mutableStateOf(BaseNRadix.DEC) }
   var lastBaseInt by rememberSaveable { mutableIntStateOf(0) }
 
-  var exprText by rememberSaveable { mutableStateOf("") }
-  var cursorPos by rememberSaveable { mutableIntStateOf(0) }
+  val rootMathContainer = remember { MathContainer() }
+  var cursorLocation by remember { mutableStateOf(CursorLocation(rootMathContainer, 0)) }
+  var answerMathTree by remember { mutableStateOf(mathContainerOfText("0")) }
   var displayResult by rememberSaveable { mutableStateOf("0") }
+  var activeDisplayNumeric by rememberSaveable { mutableStateOf(0.0) }
+  var activeDisplayComplex by remember { mutableStateOf(ComplexNum(0.0, 0.0)) }
+  var activeComplexPolar by rememberSaveable { mutableStateOf(false) }
+  var hasCustomTextAnswer by rememberSaveable { mutableStateOf(false) }
+  var preserveAnswerOnNextCalcLine by rememberSaveable { mutableStateOf(false) }
+  var isErrorActive by rememberSaveable { mutableStateOf(false) }
+  var errorGotoTarget by remember { mutableStateOf<CursorLocation?>(null) }
   var lastNumericAns by rememberSaveable { mutableStateOf(0.0) }
   var lastComplexAns by remember { mutableStateOf(ComplexNum(0.0, 0.0)) }
   var lastMatrixResult by remember { mutableStateOf<ClassWizMatrixData?>(null) }
@@ -141,9 +155,8 @@ internal fun ScientificCalculatorScreen(
   val history = remember { mutableStateListOf<ClassWizHistoryEntry>() }
   var historyIndex by rememberSaveable { mutableIntStateOf(-1) }
 
-  // Auxiliary Modals (SETUP, History, Variables, DRG, CALC variable prompt, CMPLX menu)
+  // Auxiliary Modals (SETUP, History, Variables, DRG, CALC variable prompt)
   var showSetupModal by remember { mutableStateOf(false) }
-  var showOptnModal by remember { mutableStateOf(false) }
   var showVariablesModal by remember { mutableStateOf(false) }
   var showHistoryModal by remember { mutableStateOf(false) }
   var showDrgModal by remember { mutableStateOf(false) }
@@ -213,14 +226,40 @@ internal fun ScientificCalculatorScreen(
   // Mode 7: Table State (In-LCD, blank prompts)
   var tableFx by rememberSaveable { mutableStateOf("") }
   var tableGx by rememberSaveable { mutableStateOf("") }
+  var tableFxTree by remember { mutableStateOf<MathContainer?>(null) }
+  var tableGxTree by remember { mutableStateOf<MathContainer?>(null) }
   var tableStart by rememberSaveable { mutableStateOf("") }
   var tableEnd by rememberSaveable { mutableStateOf("") }
   var tableStep by rememberSaveable { mutableStateOf("") }
   var tableRows by remember { mutableStateOf<List<TableEvalRow>>(emptyList()) }
   var tableScrollIdx by rememberSaveable { mutableIntStateOf(0) }
 
-  fun pushHistory(expr: String, disp: String, scalar: Double?) {
-    history.add(0, ClassWizHistoryEntry(expr, disp, scalar))
+  fun clearErrorState() {
+    if (isErrorActive) {
+      isErrorActive = false
+      errorGotoTarget = null
+      if (statusToast == "[◄][►] : Goto") statusToast = null
+    }
+  }
+
+  fun resetExpressionTree() {
+    clearErrorState()
+    rootMathContainer.nodes.clear()
+    cursorLocation = CursorLocation(rootMathContainer, 0)
+  }
+
+  fun loadTreeIntoRoot(source: MathContainer?) {
+    clearErrorState()
+    rootMathContainer.nodes.clear()
+    if (source != null) {
+      val cloned = cloneMathContainer(source)
+      rootMathContainer.nodes.addAll(cloned.nodes)
+    }
+    cursorLocation = CursorLocation(rootMathContainer, rootMathContainer.nodes.size)
+  }
+
+  fun pushHistory(expr: String, disp: String, scalar: Double?, tree: MathContainer? = null) {
+    history.add(0, ClassWizHistoryEntry(expr, disp, scalar, tree?.let { cloneMathContainer(it) }))
     if (history.size > 50) history.removeAt(history.lastIndex)
     historyIndex = -1
   }
@@ -237,22 +276,95 @@ internal fun ScientificCalculatorScreen(
     }
   }
 
-  fun refreshCompDisplayFromNumeric(valNum: Double, prefix: String = "") {
-    lastNumericAns = cleanZero(valNum)
-    val text = formatValueForS2D(lastNumericAns)
-    displayResult = if (prefix.isNotEmpty()) "$prefix$text" else text
+  fun refreshCompDisplayFromNumeric(
+    valNum: Double,
+    prefix: String = "",
+    isCommit: Boolean = true
+  ) {
+    val cleaned = cleanZero(valNum)
+    activeDisplayNumeric = cleaned
+    if (isCommit) lastNumericAns = cleaned
+    val text = formatValueForS2D(cleaned)
+    if (prefix.isNotEmpty()) {
+      hasCustomTextAnswer = true
+      displayResult = "$prefix$text"
+      answerMathTree = mathContainerOfText(displayResult)
+    } else {
+      hasCustomTextAnswer = false
+      displayResult = text
+      answerMathTree = buildCompAnswerTree(
+        value = cleaned,
+        isExact = isExactMode,
+        isMixedFraction = isMixedFraction,
+        isDmsOutput = isDmsOutput,
+        format = numberFormat,
+        fixDigits = fixDigits,
+        engShift = engShift
+      )
+    }
   }
 
-  fun refreshComplexDisplay(z: ComplexNum) {
-    lastComplexAns = z
+  fun refreshComplexDisplay(
+    z: ComplexNum,
+    polar: Boolean = complexPolarOutput,
+    isCommit: Boolean = true
+  ) {
+    activeDisplayComplex = z
+    activeComplexPolar = polar
+    if (isCommit) lastComplexAns = z
+    hasCustomTextAnswer = false
     displayResult = formatComplexDisplay(
       z = z,
-      polarMode = complexPolarOutput,
+      polarMode = polar,
       angleUnit = angleUnit,
       exactMode = isExactMode,
       format = numberFormat,
       fixDigits = fixDigits
     )
+    answerMathTree = buildComplexAnswerTree(
+      z = z,
+      polarMode = polar,
+      angleUnit = angleUnit,
+      exactMode = isExactMode,
+      format = numberFormat,
+      fixDigits = fixDigits
+    )
+  }
+
+  fun evalComplexTreeAware(
+    rawExpr: String,
+    cVars: Map<String, ComplexNum>
+  ): Pair<ComplexNum, Boolean> {
+    var coreExpr = rawExpr.trim()
+    var polarOverride: Boolean? = null
+    while (true) {
+      when {
+        coreExpr.endsWith("▶r∠θ") -> {
+          if (polarOverride == null) polarOverride = true
+          coreExpr = coreExpr.removeSuffix("▶r∠θ").trim()
+        }
+        coreExpr.endsWith("▶a+bi") -> {
+          if (polarOverride == null) polarOverride = false
+          coreExpr = coreExpr.removeSuffix("▶a+bi").trim()
+        }
+        coreExpr.endsWith("►r∠θ") -> {
+          if (polarOverride == null) polarOverride = true
+          coreExpr = coreExpr.removeSuffix("►r∠θ").trim()
+        }
+        coreExpr.endsWith("►a+bi") -> {
+          if (polarOverride == null) polarOverride = false
+          coreExpr = coreExpr.removeSuffix("►a+bi").trim()
+        }
+        else -> break
+      }
+    }
+    val effPolar = polarOverride ?: complexPolarOutput
+    val z = if (coreExpr.isEmpty()) {
+      cVars["Ans"] ?: lastComplexAns
+    } else {
+      evaluateComplex(coreExpr, cVars, angleUnit)
+    }
+    return z to effPolar
   }
 
   fun resetStatRowsBlank() {
@@ -274,26 +386,30 @@ internal fun ScientificCalculatorScreen(
     lastMatrixResult = null
     lastVectorResult = null
     statusToast = null
+    hasCustomTextAnswer = false
+    preserveAnswerOnNextCalcLine = false
+    activeDisplayNumeric = 0.0
+    isExactMode = (mode != ClassWizMode.STAT)
     when (mode) {
       ClassWizMode.COMP, ClassWizMode.CMPLX -> {
         lcdState = EsLcdScreenState.CALC_LINE
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
       }
       ClassWizMode.BASE_N -> {
         lcdState = EsLcdScreenState.CALC_LINE
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         displayResult = BaseNLogic.formatForRadix(lastBaseInt, baseRadix)
+        answerMathTree = mathContainerOfText(displayResult)
       }
       ClassWizMode.STAT -> {
         resetStatRowsBlank()
         statResultsLines = emptyList()
         lastAutoStatExpr = null
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
         lcdState = EsLcdScreenState.STAT_TYPE_MENU
       }
       ClassWizMode.EQN -> {
@@ -303,28 +419,29 @@ internal fun ScientificCalculatorScreen(
       }
       ClassWizMode.MATRIX -> {
         matMenuForDim = true
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
         lcdState = EsLcdScreenState.MATRIX_SELECT_MENU
       }
       ClassWizMode.TABLE -> {
         tableFx = ""
         tableGx = ""
+        tableFxTree = null
+        tableGxTree = null
         tableStart = ""
         tableEnd = ""
         tableStep = ""
         tableRows = emptyList()
         tableScrollIdx = 0
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         lcdState = EsLcdScreenState.TABLE_PROMPT_FX
       }
       ClassWizMode.VECTOR -> {
         vctMenuForDim = true
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
         lcdState = EsLcdScreenState.VECTOR_SELECT_MENU
       }
     }
@@ -418,8 +535,10 @@ internal fun ScientificCalculatorScreen(
   }
 
   fun buildTableData() {
-    if (tableFx.isBlank()) {
+    val fxAst = tableFxTree
+    if (tableFx.isBlank() && (fxAst == null || fxAst.nodes.isEmpty())) {
       statusToast = "Enter f(X) first"
+      loadTreeIntoRoot(tableFxTree)
       lcdState = EsLcdScreenState.TABLE_PROMPT_FX
       return
     }
@@ -437,13 +556,24 @@ internal fun ScientificCalculatorScreen(
     val out = mutableListOf<TableEvalRow>()
     var x = s
     var count = 0
+    val gxAst = tableGxTree
     while (x <= e + 1e-9 && count < 200) {
       val fVal = runCatching {
-        formatDecimalCompact(evaluateScalar(tableFx, variables + ("X" to x), angleUnit), numberFormat, fixDigits)
+        val v = if (fxAst != null && fxAst.nodes.isNotEmpty()) {
+          evaluateMathAst(fxAst, variables + ("X" to x), angleUnit)
+        } else {
+          evaluateScalar(tableFx, variables + ("X" to x), angleUnit)
+        }
+        formatDecimalCompact(v, numberFormat, fixDigits)
       }.getOrElse { "Error" }
-      val gVal = if (tableGx.isNotBlank()) {
+      val gVal = if ((gxAst != null && gxAst.nodes.isNotEmpty()) || tableGx.isNotBlank()) {
         runCatching {
-          formatDecimalCompact(evaluateScalar(tableGx, variables + ("X" to x), angleUnit), numberFormat, fixDigits)
+          val v = if (gxAst != null && gxAst.nodes.isNotEmpty()) {
+            evaluateMathAst(gxAst, variables + ("X" to x), angleUnit)
+          } else {
+            evaluateScalar(tableGx, variables + ("X" to x), angleUnit)
+          }
+          formatDecimalCompact(v, numberFormat, fixDigits)
         }.getOrElse { "Error" }
       } else null
       out.add(TableEvalRow(x = cleanZero(x), fxText = fVal, gxText = gVal))
@@ -457,10 +587,13 @@ internal fun ScientificCalculatorScreen(
   }
 
   fun handleStatSymbolChoice(token: String) {
+    clearErrorState()
     lcdState = EsLcdScreenState.CALC_LINE
-    if (exprText.isEmpty() || exprText == lastAutoStatExpr) {
-      exprText = token
-      cursorPos = token.length
+    val curCanonical = rootMathContainer.toCanonicalString()
+    if (rootMathContainer.nodes.isEmpty() || curCanonical == lastAutoStatExpr) {
+      rootMathContainer.nodes.clear()
+      cursorLocation = CursorLocation(rootMathContainer, 0)
+      cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, token)
       lastAutoStatExpr = token
       val evalRes = runCatching {
         StatPredictionLogic.evaluateStatExpression(
@@ -480,25 +613,23 @@ internal fun ScientificCalculatorScreen(
       }
     } else {
       lastAutoStatExpr = null
-      val safeCursor = cursorPos.coerceIn(0, exprText.length)
-      exprText = exprText.substring(0, safeCursor) + token + exprText.substring(safeCursor)
-      cursorPos = safeCursor + token.length
+      cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, token)
     }
   }
 
   fun handleStatPredictChoice(opToken: String) {
+    clearErrorState()
     if (statModel == StatRegModel.ONE_VAR) {
       statResultsLines = listOf("1-VAR has no Regression", "Press SHIFT+1 → 1:Type (2–8)")
       statResultIndex = 0
       lcdState = EsLcdScreenState.STAT_RESULTS
       return
     }
-    if (exprText.isNotBlank() && exprText != lastAutoStatExpr) {
+    val curCanonical = rootMathContainer.toCanonicalString()
+    if (rootMathContainer.nodes.isNotEmpty() && curCanonical != lastAutoStatExpr) {
       // Casio Postfix Syntax: append ŷ / x̂ / x̂₁ / x̂₂ right after typed operand
       lastAutoStatExpr = null
-      val safeCursor = cursorPos.coerceIn(0, exprText.length)
-      exprText = exprText.substring(0, safeCursor) + opToken + exprText.substring(safeCursor)
-      cursorPos = safeCursor + opToken.length
+      cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, opToken)
       lcdState = EsLcdScreenState.CALC_LINE
       statusToast = "Press = to evaluate $opToken"
     } else {
@@ -512,6 +643,37 @@ internal fun ScientificCalculatorScreen(
 
   fun handleMenuChoice(choiceOneBased: Int): Boolean {
     return when (lcdState) {
+      EsLcdScreenState.CMPLX_OPS -> {
+        when (choiceOneBased) {
+          1 -> {
+            lcdState = EsLcdScreenState.CALC_LINE
+            clearErrorState()
+            cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "arg(")
+            true
+          }
+          2 -> {
+            lcdState = EsLcdScreenState.CALC_LINE
+            clearErrorState()
+            cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "Conjg(")
+            true
+          }
+          3 -> {
+            lcdState = EsLcdScreenState.CALC_LINE
+            clearErrorState()
+            complexPolarOutput = true
+            cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "▶r∠θ")
+            true
+          }
+          4 -> {
+            lcdState = EsLcdScreenState.CALC_LINE
+            clearErrorState()
+            complexPolarOutput = false
+            cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "▶a+bi")
+            true
+          }
+          else -> false
+        }
+      }
       EsLcdScreenState.MODE_MENU -> {
         val m = ClassWizMode.entries.firstOrNull { it.code == choiceOneBased } ?: return false
         enterMode(m)
@@ -619,12 +781,12 @@ internal fun ScientificCalculatorScreen(
         when (choiceOneBased) {
           1 -> { matMenuForDim = true; lcdState = EsLcdScreenState.MATRIX_SELECT_MENU; true }
           2 -> { matMenuForDim = false; lcdState = EsLcdScreenState.MATRIX_SELECT_MENU; true }
-          3 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "MatA"; cursorPos = exprText.length; true }
-          4 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "MatB"; cursorPos = exprText.length; true }
-          5 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "MatC"; cursorPos = exprText.length; true }
-          6 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "Det("; cursorPos = exprText.length; true }
-          7 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "Trn("; cursorPos = exprText.length; true }
-          8 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "⁻¹"; cursorPos = exprText.length; true }
+          3 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "MatA"); true }
+          4 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "MatB"); true }
+          5 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "MatC"); true }
+          6 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "Det("); true }
+          7 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "Trn("); true }
+          8 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "⁻¹"); true }
           else -> false
         }
       }
@@ -664,12 +826,12 @@ internal fun ScientificCalculatorScreen(
         when (choiceOneBased) {
           1 -> { vctMenuForDim = true; lcdState = EsLcdScreenState.VECTOR_SELECT_MENU; true }
           2 -> { vctMenuForDim = false; lcdState = EsLcdScreenState.VECTOR_SELECT_MENU; true }
-          3 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "VctA"; cursorPos = exprText.length; true }
-          4 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "VctB"; cursorPos = exprText.length; true }
-          5 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "VctC"; cursorPos = exprText.length; true }
-          6 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "•"; cursorPos = exprText.length; true }
-          7 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "abs("; cursorPos = exprText.length; true }
-          8 -> { lcdState = EsLcdScreenState.CALC_LINE; exprText += "Angle(VctA,VctB)"; cursorPos = exprText.length; true }
+          3 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "VctA"); true }
+          4 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "VctB"); true }
+          5 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "VctC"); true }
+          6 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "•"); true }
+          7 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "abs("); true }
+          8 -> { lcdState = EsLcdScreenState.CALC_LINE; clearErrorState(); cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, "Angle(VctA,VctB)"); true }
           else -> false
         }
       }
@@ -911,10 +1073,9 @@ internal fun ScientificCalculatorScreen(
       return
     }
 
+    clearErrorState()
     lastAutoStatExpr = null
-    val safeCursor = cursorPos.coerceIn(0, exprText.length)
-    exprText = exprText.substring(0, safeCursor) + token + exprText.substring(safeCursor)
-    cursorPos = safeCursor + token.length
+    cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, token)
     isShiftActive = false
     isAlphaActive = false
     isHypPending = false
@@ -922,6 +1083,10 @@ internal fun ScientificCalculatorScreen(
 
   fun deleteAtCursor() {
     playCardHapticSound(context, localView)
+    if (lcdState == EsLcdScreenState.CMPLX_OPS) {
+      lcdState = EsLcdScreenState.CALC_LINE
+      return
+    }
     if (lcdState == EsLcdScreenState.CONST_PROMPT || lcdState == EsLcdScreenState.CONV_PROMPT) {
       if (codePromptBuffer.isNotEmpty()) codePromptBuffer = codePromptBuffer.dropLast(1)
       else lcdState = EsLcdScreenState.CALC_LINE
@@ -981,25 +1146,9 @@ internal fun ScientificCalculatorScreen(
       }
       return
     }
+    clearErrorState()
     lastAutoStatExpr = null
-    if (cursorPos <= 0 || exprText.isEmpty()) return
-    val safeCursor = cursorPos.coerceIn(1, exprText.length)
-    val multiTokens = listOf(
-      "x̂₁", "x̂₂", "x̂", "ŷ", "Σx²", "Σy²", "Σxy", "Σx", "Σy",
-      "x̄", "σx", "sx", "ȳ", "σy", "sy",
-      "integral(", "deriv(", "logBase(", "asinh(", "acosh(", "atanh(",
-      "nroot(", "Conjg(", "sinh(", "cosh(", "tanh(", "asin(", "acos(", "atan(",
-      "sqrt(", "cbrt(", "RanInt(", "Ran#", "Rnd(", "sin(", "cos(", "tan(", "log(",
-      "abs(", "Pol(", "Rec(", "arg(", "ReP(", "ImP(", "MatA", "MatB", "MatC",
-      "VctA", "VctB", "VctC", "Det(", "Trn(", "UnitV(", "Angle(",
-      " and ", " or ", " xor ", " xnor ", "not(", "neg(",
-      "Ans", "sum(", "ln(", "×10^", "⁻¹"
-    )
-    val prefix = exprText.substring(0, safeCursor)
-    val matched = multiTokens.firstOrNull { prefix.endsWith(it) }
-    val delLen = matched?.length ?: 1
-    exprText = exprText.substring(0, safeCursor - delLen) + exprText.substring(safeCursor)
-    cursorPos = (safeCursor - delLen).coerceAtLeast(0)
+    cursorLocation = deleteOrUnwrapAtCursor(rootMathContainer, cursorLocation)
   }
 
   fun handleReplayDpad(dir: String) {
@@ -1082,35 +1231,103 @@ internal fun ScientificCalculatorScreen(
         }
       }
       else -> {
+        if (isErrorActive && (dir == "LEFT" || dir == "RIGHT")) {
+          val goto = errorGotoTarget
+          clearErrorState()
+          hasCustomTextAnswer = false
+          displayResult = "0"
+          answerMathTree = mathContainerOfText("0")
+          cursorLocation = if (goto != null && containsContainer(rootMathContainer, goto.container)) {
+            CursorLocation(goto.container, goto.index.coerceIn(0, goto.container.nodes.size))
+          } else {
+            CursorLocation(rootMathContainer, rootMathContainer.nodes.size)
+          }
+          return
+        }
+        clearErrorState()
         when (dir) {
           "UP" -> {
-            if (history.isNotEmpty()) {
+            val vert = moveCursorVertical(rootMathContainer, cursorLocation, isUp = true)
+            if (vert != null) {
+              cursorLocation = vert
+            } else if (lcdState == EsLcdScreenState.CALC_LINE && history.isNotEmpty()) {
               historyIndex = (historyIndex + 1).coerceAtMost(history.lastIndex)
               val h = history[historyIndex]
-              exprText = h.expression
-              cursorPos = exprText.length
+              loadTreeIntoRoot(h.treeSnapshot ?: mathContainerOfText(h.expression))
               displayResult = h.exactOrDisplay
             }
           }
           "DOWN" -> {
-            if (historyIndex > 0) {
-              historyIndex--
-              val h = history[historyIndex]
-              exprText = h.expression
-              cursorPos = exprText.length
-              displayResult = h.exactOrDisplay
-            } else historyIndex = -1
+            val vert = moveCursorVertical(rootMathContainer, cursorLocation, isUp = false)
+            if (vert != null) {
+              cursorLocation = vert
+            } else if (lcdState == EsLcdScreenState.CALC_LINE) {
+              if (historyIndex > 0) {
+                historyIndex--
+                val h = history[historyIndex]
+                loadTreeIntoRoot(h.treeSnapshot ?: mathContainerOfText(h.expression))
+                displayResult = h.exactOrDisplay
+              } else {
+                historyIndex = -1
+              }
+            }
           }
-          "LEFT" -> cursorPos = (cursorPos - 1).coerceAtLeast(0)
-          "RIGHT" -> cursorPos = (cursorPos + 1).coerceAtMost(exprText.length)
+          "LEFT" -> cursorLocation = moveCursorLeft(rootMathContainer, cursorLocation)
+          "RIGHT" -> cursorLocation = moveCursorRight(rootMathContainer, cursorLocation)
         }
       }
     }
   }
 
+  fun triggerAstError(title: String, target: CursorLocation?) {
+    displayResult = title
+    statusToast = "[◄][►] : Goto"
+    errorGotoTarget = target ?: CursorLocation(rootMathContainer, rootMathContainer.nodes.size)
+    isErrorActive = true
+  }
+
+  fun splitStatementsAtColon(nodes: List<MathNode>): List<List<MathNode>> {
+    val out = mutableListOf<List<MathNode>>()
+    var cur = mutableListOf<MathNode>()
+    for (n in nodes) {
+      if (n is MathNode.TextNode && n.text == ":") {
+        if (cur.isNotEmpty()) {
+          out.add(cur)
+          cur = mutableListOf()
+        }
+      } else {
+        cur.add(n)
+      }
+    }
+    if (cur.isNotEmpty()) out.add(cur)
+    return out
+  }
+
+  fun splitTopLevelTwoArgs(nodes: List<MathNode>, prefixFn: String): Pair<List<MathNode>, List<MathNode>>? {
+    val first = nodes.firstOrNull() as? MathNode.TextNode ?: return null
+    val last = nodes.lastOrNull() as? MathNode.TextNode ?: return null
+    if (first.text != prefixFn || last.text != ")") return null
+    val inner = nodes.subList(1, nodes.size - 1)
+    var depth = 0
+    for (idx in inner.indices) {
+      val n = inner[idx]
+      if (n is MathNode.TextNode) {
+        when {
+          n.text == "(" || n.text.endsWith("(") -> depth++
+          n.text == ")" -> depth = (depth - 1).coerceAtLeast(0)
+          n.text == "," && depth == 0 -> {
+            return inner.subList(0, idx) to inner.subList(idx + 1, inner.size)
+          }
+        }
+      }
+    }
+    return null
+  }
+
   fun executeEvaluation(forceApprox: Boolean = false) {
     playCardHapticSound(context, localView)
     if (forceApprox) isExactMode = false
+    clearErrorState()
 
     // Handle non-CALC_LINE states first
     when (lcdState) {
@@ -1128,20 +1345,37 @@ internal fun ScientificCalculatorScreen(
         return
       }
       EsLcdScreenState.TABLE_PROMPT_FX -> {
-        if (exprText.isBlank()) {
+        if (rootMathContainer.nodes.isEmpty()) {
           statusToast = "Enter f(X) first"
           return
         }
-        tableFx = exprText.trim()
-        exprText = tableGx
-        cursorPos = exprText.length
+        val emptySlot = findFirstEmptySlot(rootMathContainer)
+        if (emptySlot != null) {
+          cursorLocation = CursorLocation(emptySlot, 0)
+          statusToast = "Fill empty box [ ] in f(X)"
+          return
+        }
+        tableFxTree = cloneMathContainer(rootMathContainer)
+        tableFx = rootMathContainer.toCanonicalString().trim()
+        loadTreeIntoRoot(tableGxTree)
         lcdState = EsLcdScreenState.TABLE_PROMPT_GX
         return
       }
       EsLcdScreenState.TABLE_PROMPT_GX -> {
-        tableGx = exprText.trim()
-        exprText = ""
-        cursorPos = 0
+        if (rootMathContainer.nodes.isEmpty()) {
+          tableGxTree = null
+          tableGx = ""
+        } else {
+          val emptySlot = findFirstEmptySlot(rootMathContainer)
+          if (emptySlot != null) {
+            cursorLocation = CursorLocation(emptySlot, 0)
+            statusToast = "Fill empty box [ ] in g(X)"
+            return
+          }
+          tableGxTree = cloneMathContainer(rootMathContainer)
+          tableGx = rootMathContainer.toCanonicalString().trim()
+        }
+        resetExpressionTree()
         cellEditBuffer = tableStart
         lcdState = EsLcdScreenState.TABLE_PROMPT_START
         return
@@ -1191,9 +1425,9 @@ internal fun ScientificCalculatorScreen(
             angleUnit = angleUnit
           )
           val pred = StatPredictionLogic.predict(statRows, statModel, statPredictTarget, argVal)
-          exprText = "$rawArg$statPredictTarget"
-          cursorPos = exprText.length
-          lastAutoStatExpr = exprText
+          val treeExpr = mathContainerOfText("$rawArg$statPredictTarget")
+          loadTreeIntoRoot(treeExpr)
+          lastAutoStatExpr = "$rawArg$statPredictTarget"
           cellEditBuffer = ""
           lcdState = EsLcdScreenState.CALC_LINE
           isExactMode = false
@@ -1203,11 +1437,10 @@ internal fun ScientificCalculatorScreen(
           } else {
             "$statPredictTarget at Y=${formatDecimalCompact(argVal)}"
           }
-          pushHistory(exprText, displayResult, pred)
+          pushHistory(lastAutoStatExpr!!, displayResult, pred, rootMathContainer)
         } catch (e: Throwable) {
           lcdState = EsLcdScreenState.CALC_LINE
-          exprText = "$rawArg$statPredictTarget"
-          cursorPos = exprText.length
+          loadTreeIntoRoot(mathContainerOfText("$rawArg$statPredictTarget"))
           cellEditBuffer = ""
           displayResult = e.message?.take(34) ?: "Math ERROR"
         }
@@ -1218,10 +1451,7 @@ internal fun ScientificCalculatorScreen(
         val item = ES_PLUS_CONSTANTS.firstOrNull { it.code == codeStr }
         if (item != null) {
           lcdState = EsLcdScreenState.CALC_LINE
-          val safeCursor = cursorPos.coerceIn(0, exprText.length)
-          val tok = item.value.toString()
-          exprText = exprText.substring(0, safeCursor) + tok + exprText.substring(safeCursor)
-          cursorPos = safeCursor + tok.length
+          cursorLocation = insertTokenIntoTree(rootMathContainer, cursorLocation, item.value.toString())
           statusToast = "${item.symbol} (${item.unit})"
         }
         return
@@ -1230,10 +1460,13 @@ internal fun ScientificCalculatorScreen(
         val codeStr = codePromptBuffer.padStart(2, '0')
         val item = ES_PLUS_CONVERSIONS.firstOrNull { it.code == codeStr }
         if (item != null) {
-          val baseVal = if (exprText.isNotBlank()) {
-            runCatching { evaluateScalar(exprText, variables + ("Ans" to lastNumericAns), angleUnit) }.getOrElse { lastNumericAns }
+          val baseVal = if (rootMathContainer.nodes.isNotEmpty()) {
+            runCatching {
+              evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit)
+            }.getOrElse { lastNumericAns }
           } else lastNumericAns
           val outVal = item.convert(baseVal)
+          preserveAnswerOnNextCalcLine = true
           lcdState = EsLcdScreenState.CALC_LINE
           refreshCompDisplayFromNumeric(outVal)
           statusToast = "${item.label} (${item.toUnit})"
@@ -1246,79 +1479,95 @@ internal fun ScientificCalculatorScreen(
 
     engShift = 0
     isDmsOutput = false
-    val raw = exprText.trim()
-    if (raw.isEmpty()) {
-      displayResult = if (currentMode == ClassWizMode.BASE_N) {
-        BaseNLogic.formatForRadix(lastBaseInt, baseRadix)
-      } else "0"
+    if (rootMathContainer.nodes.isEmpty()) {
+      hasCustomTextAnswer = false
+      if (currentMode == ClassWizMode.BASE_N) {
+        displayResult = BaseNLogic.formatForRadix(lastBaseInt, baseRadix)
+        answerMathTree = mathContainerOfText(displayResult)
+      } else {
+        activeDisplayNumeric = 0.0
+        displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
+      }
       return
     }
+    val emptySlot = findFirstEmptySlot(rootMathContainer)
+    if (emptySlot != null) {
+      triggerAstError("Syntax ERROR", CursorLocation(emptySlot, 0))
+      return
+    }
+
+    val raw = rootMathContainer.toCanonicalString().trim()
     try {
       when (currentMode) {
         ClassWizMode.COMP, ClassWizMode.STAT -> {
-          val statements = raw.split(":").map { it.trim() }.filter { it.isNotEmpty() }
+          val statements = splitStatementsAtColon(rootMathContainer.nodes)
           var latestRes = lastNumericAns
           var customDisp: String? = null
-          for (stmt in statements) {
+          for (stmtNodes in statements) {
             customDisp = null
-            if (stmt.contains("=")) {
-              val (rootX, _) = solveEquationForX(stmt, variables + ("Ans" to latestRes), angleUnit)
+            val eqIdx = stmtNodes.indexOfFirst { it is MathNode.TextNode && it.text == "=" }
+            val polPair = splitTopLevelTwoArgs(stmtNodes, "Pol(")
+            val recPair = splitTopLevelTwoArgs(stmtNodes, "Rec(")
+            if (eqIdx >= 0) {
+              val lhs = stmtNodes.subList(0, eqIdx)
+              val rhs = stmtNodes.subList(eqIdx + 1, stmtNodes.size)
+              if (lhs.isEmpty() || rhs.isEmpty()) {
+                throw AstEvalException("Syntax ERROR", CursorLocation(rootMathContainer, rootMathContainer.nodes.size))
+              }
+              val rootX = solveAstEquationForX(lhs, rhs, rootMathContainer, variables + ("Ans" to latestRes), angleUnit)
               variables["X"] = cleanZero(rootX)
               latestRes = rootX
               customDisp = "X = ${formatDecimalCompact(rootX, numberFormat, fixDigits)}"
-            } else if (stmt.startsWith("Pol(") && stmt.endsWith(")") && stmt.contains(",")) {
-              val args = stmt.removePrefix("Pol(").removeSuffix(")").split(",")
-              if (args.size == 2) {
-                val x = evaluateScalar(args[0], variables + ("Ans" to latestRes), angleUnit)
-                val y = evaluateScalar(args[1], variables + ("Ans" to latestRes), angleUnit)
-                val r = hypot(x, y)
-                val th = angleUnit.fromRadians(atan2(y, x))
-                variables["X"] = cleanZero(r)
-                variables["Y"] = cleanZero(th)
-                latestRes = r
-                customDisp = "r=${formatDecimalCompact(r, numberFormat, fixDigits)}, θ=${formatDecimalCompact(th, numberFormat, fixDigits)}"
-              } else {
-                latestRes = evaluateScalar(stmt, variables + ("Ans" to latestRes), angleUnit)
-              }
-            } else if (stmt.startsWith("Rec(") && stmt.endsWith(")") && stmt.contains(",")) {
-              val args = stmt.removePrefix("Rec(").removeSuffix(")").split(",")
-              if (args.size == 2) {
-                val r = evaluateScalar(args[0], variables + ("Ans" to latestRes), angleUnit)
-                val th = evaluateScalar(args[1], variables + ("Ans" to latestRes), angleUnit)
-                val rad = angleUnit.toRadians(th)
-                val x = r * cos(rad)
-                val y = r * sin(rad)
-                variables["X"] = cleanZero(x)
-                variables["Y"] = cleanZero(y)
-                latestRes = x
-                customDisp = "x=${formatDecimalCompact(x, numberFormat, fixDigits)}, y=${formatDecimalCompact(y, numberFormat, fixDigits)}"
-              } else {
-                latestRes = evaluateScalar(stmt, variables + ("Ans" to latestRes), angleUnit)
-              }
+            } else if (polPair != null) {
+              val x = evaluateNodeListAst(rootMathContainer, polPair.first, variables + ("Ans" to latestRes), angleUnit)
+              val y = evaluateNodeListAst(rootMathContainer, polPair.second, variables + ("Ans" to latestRes), angleUnit)
+              val r = hypot(x, y)
+              val th = angleUnit.fromRadians(atan2(y, x))
+              variables["X"] = cleanZero(r)
+              variables["Y"] = cleanZero(th)
+              latestRes = r
+              customDisp = "r=${formatDecimalCompact(r, numberFormat, fixDigits)}, θ=${formatDecimalCompact(th, numberFormat, fixDigits)}"
+            } else if (recPair != null) {
+              val r = evaluateNodeListAst(rootMathContainer, recPair.first, variables + ("Ans" to latestRes), angleUnit)
+              val th = evaluateNodeListAst(rootMathContainer, recPair.second, variables + ("Ans" to latestRes), angleUnit)
+              val rad = angleUnit.toRadians(th)
+              val x = r * cos(rad)
+              val y = r * sin(rad)
+              variables["X"] = cleanZero(x)
+              variables["Y"] = cleanZero(y)
+              latestRes = x
+              customDisp = "x=${formatDecimalCompact(x, numberFormat, fixDigits)}, y=${formatDecimalCompact(y, numberFormat, fixDigits)}"
+            } else if (currentMode == ClassWizMode.STAT) {
+              latestRes = StatPredictionLogic.evaluateStatExpression(
+                rawExpr = stmtNodes.toCanonicalString(),
+                rows = statRows,
+                model = statModel,
+                vars = variables + ("Ans" to latestRes),
+                angleUnit = angleUnit
+              )
             } else {
-              latestRes = if (currentMode == ClassWizMode.STAT) {
-                StatPredictionLogic.evaluateStatExpression(
-                  rawExpr = stmt,
-                  rows = statRows,
-                  model = statModel,
-                  vars = variables + ("Ans" to latestRes),
-                  angleUnit = angleUnit
-                )
-              } else {
-                evaluateScalar(stmt, variables + ("Ans" to latestRes), angleUnit)
-              }
+              latestRes = evaluateNodeListAst(
+                ownerContainer = rootMathContainer,
+                nodes = stmtNodes,
+                vars = variables + ("Ans" to latestRes),
+                angleUnit = angleUnit
+              )
             }
           }
           if (customDisp != null) {
+            activeDisplayNumeric = cleanZero(latestRes)
             lastNumericAns = cleanZero(latestRes)
+            hasCustomTextAnswer = true
             displayResult = customDisp
+            answerMathTree = mathContainerOfText(customDisp)
           } else {
             if (currentMode == ClassWizMode.STAT && !forceApprox) {
               isExactMode = false
             }
             refreshCompDisplayFromNumeric(latestRes)
           }
-          pushHistory(raw, displayResult, latestRes)
+          pushHistory(raw, displayResult, latestRes, rootMathContainer)
           if (currentMode == ClassWizMode.STAT && StatPredictionLogic.isStandaloneStatToken(raw)) {
             lastAutoStatExpr = raw
           } else {
@@ -1327,16 +1576,19 @@ internal fun ScientificCalculatorScreen(
         }
         ClassWizMode.CMPLX -> {
           val cVars = variables.mapValues { ComplexNum(it.value, 0.0) } + ("Ans" to lastComplexAns)
-          val z = evaluateComplex(raw, cVars, angleUnit)
-          refreshComplexDisplay(z)
-          pushHistory(raw, displayResult, z.re)
+          val (z, effPolar) = evalComplexTreeAware(raw, cVars)
+          refreshComplexDisplay(z, polar = effPolar)
+          pushHistory(raw, displayResult, z.re, rootMathContainer)
         }
         ClassWizMode.BASE_N -> {
           val bVal = BaseNLogic.evaluateBaseN(raw, baseRadix)
           lastBaseInt = bVal
+          activeDisplayNumeric = bVal.toDouble()
           lastNumericAns = bVal.toDouble()
+          hasCustomTextAnswer = false
           displayResult = BaseNLogic.formatForRadix(bVal, baseRadix)
-          pushHistory(raw, "${baseRadix.label}: $displayResult", bVal.toDouble())
+          answerMathTree = mathContainerOfText(displayResult)
+          pushHistory(raw, "${baseRadix.label}: $displayResult", bVal.toDouble(), rootMathContainer)
         }
         ClassWizMode.MATRIX -> {
           val mat = evaluateMatrixExpression(raw, matrices, variables + ("Ans" to lastNumericAns), angleUnit)
@@ -1345,7 +1597,9 @@ internal fun ScientificCalculatorScreen(
             refreshCompDisplayFromNumeric(mat.get(0, 0))
           } else {
             lastMatrixResult = mat
+            hasCustomTextAnswer = true
             displayResult = "MatAns (${mat.rows}×${mat.cols})"
+            answerMathTree = mathContainerOfText(displayResult)
           }
         }
         ClassWizMode.VECTOR -> {
@@ -1356,19 +1610,29 @@ internal fun ScientificCalculatorScreen(
           } else if (vRes.first != null) {
             lastVectorResult = vRes.first
             val vec = vRes.first!!
+            hasCustomTextAnswer = true
             displayResult = "[ " + (0 until vec.dim).joinToString(", ") {
               formatDecimalCompact(vec.get(it), numberFormat, fixDigits)
             } + " ]"
+            answerMathTree = mathContainerOfText(displayResult)
           }
         }
         else -> {
-          val res = evaluateScalar(raw, variables + ("Ans" to lastNumericAns), angleUnit)
+          val res = evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit)
           refreshCompDisplayFromNumeric(res)
-          pushHistory(raw, displayResult, res)
+          pushHistory(raw, displayResult, res, rootMathContainer)
         }
       }
+    } catch (astErr: AstEvalException) {
+      triggerAstError(astErr.errorTitle, astErr.gotoLocation)
     } catch (e: Throwable) {
-      displayResult = e.message?.take(34) ?: "Math ERROR"
+      val msg = e.message?.take(34) ?: "Math ERROR"
+      val title = when {
+        msg.contains("Syntax", ignoreCase = true) -> "Syntax ERROR"
+        msg.contains("Math", ignoreCase = true) -> msg
+        else -> msg
+      }
+      triggerAstError(title, CursorLocation(rootMathContainer, rootMathContainer.nodes.size))
     }
   }
 
@@ -1379,8 +1643,10 @@ internal fun ScientificCalculatorScreen(
     cellEditBuffer = ""
     statusToast = null
     lastAutoStatExpr = null
+    clearErrorState()
     when (lcdState) {
       EsLcdScreenState.MODE_MENU,
+      EsLcdScreenState.CMPLX_OPS,
       EsLcdScreenState.STAT_SHIFT_MENU,
       EsLcdScreenState.STAT_SUM_MENU,
       EsLcdScreenState.STAT_VAR_MENU,
@@ -1398,9 +1664,11 @@ internal fun ScientificCalculatorScreen(
       EsLcdScreenState.MATRIX_EDITOR,
       EsLcdScreenState.VECTOR_EDITOR -> {
         lcdState = EsLcdScreenState.CALC_LINE
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
+        hasCustomTextAnswer = false
+        activeDisplayNumeric = 0.0
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
       }
       EsLcdScreenState.EQN_SOLUTIONS -> {
         lcdState = EsLcdScreenState.EQN_COEFF_GRID
@@ -1410,16 +1678,17 @@ internal fun ScientificCalculatorScreen(
       EsLcdScreenState.TABLE_PROMPT_END,
       EsLcdScreenState.TABLE_PROMPT_STEP,
       EsLcdScreenState.TABLE_VIEW -> {
-        exprText = tableFx
-        cursorPos = exprText.length
+        loadTreeIntoRoot(tableFxTree)
         lcdState = EsLcdScreenState.TABLE_PROMPT_FX
       }
       else -> {
-        exprText = ""
-        cursorPos = 0
+        resetExpressionTree()
         lastMatrixResult = null
         lastVectorResult = null
+        hasCustomTextAnswer = false
+        activeDisplayNumeric = 0.0
         displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
         engShift = 0
         isDmsOutput = false
       }
@@ -1429,34 +1698,187 @@ internal fun ScientificCalculatorScreen(
   fun handleVariableKey(varName: String) {
     if (isStoPending) {
       isStoPending = false
-      val valToStore = if (exprText.isNotBlank()) {
-        runCatching { evaluateScalar(exprText, variables + ("Ans" to lastNumericAns), angleUnit) }
+      val valToStore = if (rootMathContainer.nodes.isNotEmpty()) {
+        runCatching { evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit) }
           .getOrElse { lastNumericAns }
       } else lastNumericAns
       variables[varName] = cleanZero(valToStore)
+      activeDisplayNumeric = cleanZero(valToStore)
       lastNumericAns = cleanZero(valToStore)
+      hasCustomTextAnswer = true
       displayResult = "$varName ← ${formatDecimalCompact(valToStore, numberFormat, fixDigits)}"
+      answerMathTree = mathContainerOfText(displayResult)
       statusToast = "Stored in $varName"
     } else {
       insertToken(varName)
     }
   }
 
+  // Automatic Live Evaluation (MathO 2D Natural Display Preview as user edits expression)
+  val liveCanonicalKey = rootMathContainer.toCanonicalString()
+  LaunchedEffect(
+    lcdState,
+    currentMode,
+    liveCanonicalKey,
+    isExactMode,
+    isMixedFraction,
+    isDmsOutput,
+    complexPolarOutput,
+    angleUnit,
+    numberFormat,
+    fixDigits,
+    engShift,
+    baseRadix,
+    isErrorActive
+  ) {
+    if (lcdState != EsLcdScreenState.CALC_LINE || isErrorActive) return@LaunchedEffect
+    if (preserveAnswerOnNextCalcLine) {
+      preserveAnswerOnNextCalcLine = false
+      return@LaunchedEffect
+    }
+    if (rootMathContainer.nodes.isEmpty()) {
+      hasCustomTextAnswer = false
+      lastMatrixResult = null
+      lastVectorResult = null
+      if (currentMode == ClassWizMode.BASE_N) {
+        displayResult = BaseNLogic.formatForRadix(lastBaseInt, baseRadix)
+        answerMathTree = mathContainerOfText(displayResult)
+      } else {
+        activeDisplayNumeric = 0.0
+        displayResult = "0"
+        answerMathTree = mathContainerOfText("0")
+      }
+      return@LaunchedEffect
+    }
+    if (findFirstEmptySlot(rootMathContainer) != null) {
+      hasCustomTextAnswer = false
+      lastMatrixResult = null
+      lastVectorResult = null
+      displayResult = ""
+      answerMathTree = MathContainer()
+      return@LaunchedEffect
+    }
+    val raw = liveCanonicalKey.trim()
+    if (raw.contains("Ran#") || raw.contains("RanInt")) {
+      hasCustomTextAnswer = false
+      lastMatrixResult = null
+      lastVectorResult = null
+      displayResult = ""
+      answerMathTree = MathContainer()
+      return@LaunchedEffect
+    }
+    runCatching {
+      when (currentMode) {
+        ClassWizMode.COMP -> {
+          val statements = splitStatementsAtColon(rootMathContainer.nodes)
+          val hasSpecialStmt = statements.any { st ->
+            st.any { it is MathNode.TextNode && it.text == "=" } ||
+              splitTopLevelTwoArgs(st, "Pol(") != null ||
+              splitTopLevelTwoArgs(st, "Rec(") != null
+          }
+          if (hasSpecialStmt) {
+            hasCustomTextAnswer = false
+            displayResult = ""
+            answerMathTree = MathContainer()
+          } else {
+            var latestRes = lastNumericAns
+            for (stmtNodes in statements) {
+              latestRes = evaluateNodeListAst(
+                ownerContainer = rootMathContainer,
+                nodes = stmtNodes,
+                vars = variables + ("Ans" to latestRes),
+                angleUnit = angleUnit
+              )
+            }
+            lastMatrixResult = null
+            lastVectorResult = null
+            refreshCompDisplayFromNumeric(latestRes, isCommit = false)
+          }
+        }
+        ClassWizMode.STAT -> {
+          val res = StatPredictionLogic.evaluateStatExpression(
+            rawExpr = raw,
+            rows = statRows,
+            model = statModel,
+            vars = variables + ("Ans" to lastNumericAns),
+            angleUnit = angleUnit
+          )
+          lastMatrixResult = null
+          lastVectorResult = null
+          refreshCompDisplayFromNumeric(res, isCommit = false)
+        }
+        ClassWizMode.CMPLX -> {
+          val cVars = variables.mapValues { ComplexNum(it.value, 0.0) } + ("Ans" to lastComplexAns)
+          val (z, effPolar) = evalComplexTreeAware(raw, cVars)
+          lastMatrixResult = null
+          lastVectorResult = null
+          refreshComplexDisplay(z, polar = effPolar, isCommit = false)
+        }
+        ClassWizMode.BASE_N -> {
+          val bVal = BaseNLogic.evaluateBaseN(raw, baseRadix)
+          hasCustomTextAnswer = false
+          displayResult = BaseNLogic.formatForRadix(bVal, baseRadix)
+          answerMathTree = mathContainerOfText(displayResult)
+        }
+        ClassWizMode.MATRIX -> {
+          val mat = evaluateMatrixExpression(raw, matrices, variables + ("Ans" to lastNumericAns), angleUnit)
+          if (mat.rows == 1 && mat.cols == 1 && raw.startsWith("Det(")) {
+            lastMatrixResult = null
+            refreshCompDisplayFromNumeric(mat.get(0, 0), isCommit = false)
+          } else {
+            lastMatrixResult = mat
+            hasCustomTextAnswer = true
+            displayResult = "MatAns (${mat.rows}×${mat.cols})"
+            answerMathTree = mathContainerOfText(displayResult)
+          }
+        }
+        ClassWizMode.VECTOR -> {
+          val vRes = evaluateVectorExpression(raw, vectors, variables + ("Ans" to lastNumericAns), angleUnit)
+          if (vRes.second != null) {
+            lastVectorResult = null
+            refreshCompDisplayFromNumeric(vRes.second!!, isCommit = false)
+          } else if (vRes.first != null) {
+            lastVectorResult = vRes.first
+            val vec = vRes.first!!
+            hasCustomTextAnswer = true
+            displayResult = "[ " + (0 until vec.dim).joinToString(", ") {
+              formatDecimalCompact(vec.get(it), numberFormat, fixDigits)
+            } + " ]"
+            answerMathTree = mathContainerOfText(displayResult)
+          }
+        }
+        else -> {
+          val res = evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit)
+          lastMatrixResult = null
+          lastVectorResult = null
+          refreshCompDisplayFromNumeric(res, isCommit = false)
+        }
+      }
+    }.onFailure {
+      hasCustomTextAnswer = false
+      lastMatrixResult = null
+      lastVectorResult = null
+      displayResult = ""
+      answerMathTree = MathContainer()
+    }
+  }
+
   val accentCyan = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val orientation = rememberScreenOrientationState()
 
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
-      .padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 6.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
+      .padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = if (orientation.isCompactLandscape) 4.dp else 6.dp)
       .testTag("classwiz_calculator_screen"),
-    verticalArrangement = Arrangement.spacedBy(4.dp)
+    verticalArrangement = Arrangement.spacedBy(if (orientation.isCompactLandscape) 3.dp else 4.dp)
   ) {
-    // 1. ULTRA-COMPACT TOP HEADER (height = 42.dp, padding(horizontal = 12.dp))
+    // 1. ULTRA-COMPACT TOP HEADER
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .height(42.dp)
+        .height(if (orientation.isCompactLandscape) 36.dp else 42.dp)
         .padding(horizontal = 12.dp),
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
@@ -1565,35 +1987,60 @@ internal fun ScientificCalculatorScreen(
         .weight(1f)
         .fillMaxWidth()
     ) {
+      val isLandscapeSplit = maxWidth > maxHeight
+      val ultraCompactHeight = maxHeight < 420.dp
       val compactHeight = maxHeight < 580.dp
-      val sciSp: TextUnit = if (compactHeight) 11.sp else 12.sp
-      val numSp: TextUnit = if (compactHeight) 14.sp else 15.5.sp
-      val subSp: TextUnit = 8.5.sp
-      val exprSp: TextUnit = if (compactHeight) 14.sp else 16.5.sp
-      val resSp: TextUnit = if (compactHeight) 20.sp else 23.sp
+      val sciSp: TextUnit = when {
+        ultraCompactHeight -> 10.sp
+        compactHeight -> 11.sp
+        else -> 12.sp
+      }
+      val numSp: TextUnit = when {
+        ultraCompactHeight -> 12.5.sp
+        compactHeight -> 14.sp
+        else -> 15.5.sp
+      }
+      val subSp: TextUnit = if (ultraCompactHeight) 7.5.sp else 8.5.sp
+      val subRowHeight: Dp = if (ultraCompactHeight) 11.dp else 15.dp
+      val subGap: Dp = if (ultraCompactHeight) 1.dp else 2.dp
+      val keypadRowGap: Dp = if (ultraCompactHeight) 2.dp else 3.dp
+      val keypadPadV: Dp = if (ultraCompactHeight) 3.dp else 5.dp
+      val dpadBtnSize: Dp = if (ultraCompactHeight) 22.dp else 26.dp
+      val dpadIconSize: Dp = if (ultraCompactHeight) 14.dp else 16.dp
+      val exprSp: TextUnit = when {
+        ultraCompactHeight -> 13.5.sp
+        compactHeight -> 14.sp
+        else -> 16.5.sp
+      }
+      val resSp: TextUnit = when {
+        ultraCompactHeight -> 18.sp
+        compactHeight -> 20.sp
+        else -> 23.sp
+      }
 
-      Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(5.dp)
+      val bezelFill = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.92f) else Color(0xFF1E293B).copy(alpha = 0.95f)
+      val lcdBrush = Brush.verticalGradient(
+        colors = listOf(Color(0xFFE8F0E6), Color(0xFFDCE7DA))
+      )
+      val lcdInk = Color(0xFF0F172A)
+
+      CompositionLocalProvider(
+        LocalEsCalcSubRowHeight provides subRowHeight,
+        LocalEsCalcSubGap provides subGap
       ) {
-        // ====================================================================
-        // A. NATURAL-V.P.A.M. BACKLIT LCD DISPLAY (Modifier.weight(0.28f))
-        // ====================================================================
-        val bezelFill = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.92f) else Color(0xFF1E293B).copy(alpha = 0.95f)
-        val lcdBrush = Brush.verticalGradient(
-          colors = listOf(Color(0xFFE8F0E6), Color(0xFFDCE7DA))
-        )
-        val lcdInk = Color(0xFF0F172A)
-
-        Surface(
-          shape = RoundedCornerShape(14.dp),
-          color = bezelFill,
-          border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.22f)),
-          shadowElevation = 6.dp,
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(0.28f)
-        ) {
+        Layout(
+          modifier = Modifier.fillMaxSize(),
+          content = {
+            // ====================================================================
+            // A. NATURAL-V.P.A.M. BACKLIT LCD DISPLAY
+            // ====================================================================
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = bezelFill,
+              border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.22f)),
+              shadowElevation = 6.dp,
+              modifier = Modifier.fillMaxSize()
+            ) {
           Box(
             modifier = Modifier
               .fillMaxSize()
@@ -1702,6 +2149,18 @@ internal fun ScientificCalculatorScreen(
                   .padding(top = 2.dp)
               ) {
                 when (lcdState) {
+                  EsLcdScreenState.CMPLX_OPS -> {
+                    InLcdTwoColumnMenu(
+                      title = "CMPLX • Complex Operations (1–4)",
+                      items = listOf(
+                        "1" to "arg(",
+                        "2" to "Conjg(",
+                        "3" to "▶r∠θ",
+                        "4" to "▶a+bi"
+                      ),
+                      onSelectIndex = { idx -> handleMenuChoice(idx + 1) }
+                    )
+                  }
                   EsLcdScreenState.MODE_MENU -> {
                     InLcdTwoColumnMenu(
                       title = "SELECT MODE (Press 1–8)",
@@ -1965,7 +2424,8 @@ internal fun ScientificCalculatorScreen(
                   }
                   EsLcdScreenState.TABLE_PROMPT_FX -> {
                     val blinkOn = rememberLcdBlinkOn()
-                    val cursorGlyph = if (blinkOn) "│" else " "
+                    val hScroll = rememberScrollState()
+                    val vScroll = rememberScrollState()
                     Column(
                       modifier = Modifier.fillMaxSize(),
                       verticalArrangement = Arrangement.SpaceBetween
@@ -1977,14 +2437,34 @@ internal fun ScientificCalculatorScreen(
                         fontWeight = FontWeight.ExtraBold,
                         color = Color(0xFF334155)
                       )
-                      Text(
-                        text = "f(X) = ${toNaturalDisplayText(exprText)}$cursorGlyph",
-                        fontFamily = JetBrainsMonoFamily,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = lcdInk,
-                        maxLines = 1
-                      )
+                      Row(
+                        modifier = Modifier
+                          .weight(1f)
+                          .fillMaxWidth()
+                          .verticalScroll(vScroll)
+                          .horizontalScroll(hScroll),
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        Text(
+                          text = "f(X) = ",
+                          fontFamily = JetBrainsMonoFamily,
+                          fontSize = exprSp * 0.92f,
+                          fontWeight = FontWeight.Bold,
+                          color = lcdInk
+                        )
+                        MathContainerView(
+                          container = rootMathContainer,
+                          cursor = cursorLocation,
+                          blinkOn = blinkOn,
+                          fontSize = exprSp * 0.92f,
+                          isRoot = true,
+                          inkColor = lcdInk,
+                          onSelectCursor = { loc ->
+                            clearErrorState()
+                            cursorLocation = loc
+                          }
+                        )
+                      }
                       Text(
                         text = "Tip: Use ALPHA + ) for X",
                         fontFamily = JetBrainsMonoFamily,
@@ -1995,7 +2475,8 @@ internal fun ScientificCalculatorScreen(
                   }
                   EsLcdScreenState.TABLE_PROMPT_GX -> {
                     val blinkOn = rememberLcdBlinkOn()
-                    val cursorGlyph = if (blinkOn) "│" else " "
+                    val hScroll = rememberScrollState()
+                    val vScroll = rememberScrollState()
                     Column(
                       modifier = Modifier.fillMaxSize(),
                       verticalArrangement = Arrangement.SpaceBetween
@@ -2016,14 +2497,34 @@ internal fun ScientificCalculatorScreen(
                         color = Color(0xFF334155),
                         maxLines = 1
                       )
-                      Text(
-                        text = "g(X) = ${toNaturalDisplayText(exprText)}$cursorGlyph",
-                        fontFamily = JetBrainsMonoFamily,
-                        fontSize = 15.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = lcdInk,
-                        maxLines = 1
-                      )
+                      Row(
+                        modifier = Modifier
+                          .weight(1f)
+                          .fillMaxWidth()
+                          .verticalScroll(vScroll)
+                          .horizontalScroll(hScroll),
+                        verticalAlignment = Alignment.CenterVertically
+                      ) {
+                        Text(
+                          text = "g(X) = ",
+                          fontFamily = JetBrainsMonoFamily,
+                          fontSize = exprSp * 0.90f,
+                          fontWeight = FontWeight.Bold,
+                          color = lcdInk
+                        )
+                        MathContainerView(
+                          container = rootMathContainer,
+                          cursor = cursorLocation,
+                          blinkOn = blinkOn,
+                          fontSize = exprSp * 0.90f,
+                          isRoot = true,
+                          inkColor = lcdInk,
+                          onSelectCursor = { loc ->
+                            clearErrorState()
+                            cursorLocation = loc
+                          }
+                        )
+                      }
                     }
                   }
                   EsLcdScreenState.TABLE_PROMPT_START,
@@ -2147,33 +2648,40 @@ internal fun ScientificCalculatorScreen(
                     )
                   }
                   EsLcdScreenState.CALC_LINE -> {
-                    // Standard Natural-V.P.A.M. Expression + Output (or Matrix/Vector result grid)
+                    // Standard 2D Natural-V.P.A.M. (MathO) Expression + Output (or Matrix/Vector result grid)
                     Column(
                       modifier = Modifier.fillMaxSize(),
                       verticalArrangement = Arrangement.SpaceBetween
                     ) {
                       val blinkOn = rememberLcdBlinkOn()
-                      val cursorGlyph = if (blinkOn) "│" else " "
-                      val displayExpr = remember(exprText, cursorPos, cursorGlyph) {
-                        val safe = cursorPos.coerceIn(0, exprText.length)
-                        val left = toNaturalDisplayText(exprText.substring(0, safe))
-                        val right = toNaturalDisplayText(exprText.substring(safe))
-                        if (exprText.isEmpty()) cursorGlyph else "$left$cursorGlyph$right"
+                      val hScroll = rememberScrollState()
+                      val vScroll = rememberScrollState()
+                      LaunchedEffect(rootMathContainer.nodes.size, cursorLocation) {
+                        if (cursorLocation.container === rootMathContainer &&
+                          cursorLocation.index == rootMathContainer.nodes.size
+                        ) {
+                          hScroll.animateScrollTo(hScroll.maxValue)
+                        }
                       }
-                      Row(
+                      Box(
                         modifier = Modifier
+                          .weight(1f)
                           .fillMaxWidth()
-                          .horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically
+                          .verticalScroll(vScroll)
+                          .horizontalScroll(hScroll),
+                        contentAlignment = Alignment.CenterStart
                       ) {
-                        Text(
-                          text = displayExpr,
-                          fontFamily = JetBrainsMonoFamily,
+                        MathContainerView(
+                          container = rootMathContainer,
+                          cursor = cursorLocation,
+                          blinkOn = blinkOn,
                           fontSize = exprSp,
-                          fontWeight = FontWeight.SemiBold,
-                          color = lcdInk,
-                          maxLines = 1,
-                          softWrap = false,
+                          isRoot = true,
+                          inkColor = lcdInk,
+                          onSelectCursor = { loc ->
+                            clearErrorState()
+                            cursorLocation = loc
+                          },
                           modifier = Modifier.testTag("classwiz_lcd_expression")
                         )
                       }
@@ -2220,7 +2728,7 @@ internal fun ScientificCalculatorScreen(
                             maxLines = 1
                           )
                         }
-                      } else {
+                      } else if (isErrorActive || hasCustomTextAnswer) {
                         Text(
                           text = displayResult,
                           style = MaterialTheme.typography.titleLarge.copy(
@@ -2238,6 +2746,26 @@ internal fun ScientificCalculatorScreen(
                             .fillMaxWidth()
                             .testTag("classwiz_lcd_result")
                         )
+                      } else {
+                        val resHScroll = rememberScrollState()
+                        Row(
+                          modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(resHScroll)
+                            .testTag("classwiz_lcd_result"),
+                          horizontalArrangement = Arrangement.End,
+                          verticalAlignment = Alignment.CenterVertically
+                        ) {
+                          MathContainerView(
+                            container = answerMathTree,
+                            cursor = CursorLocation(answerMathTree, 0),
+                            blinkOn = false,
+                            fontSize = resSp * 0.84f,
+                            isRoot = true,
+                            isEditable = false,
+                            inkColor = lcdInk
+                          )
+                        }
                       }
                     }
                   }
@@ -2248,21 +2776,19 @@ internal fun ScientificCalculatorScreen(
         }
 
         // ====================================================================
-        // B. UNIFORM 9-ROW CASIO fx-570ES PLUS KEYPAD (Modifier.weight(0.72f))
+        // B. UNIFORM 9-ROW CASIO fx-570ES PLUS KEYPAD
         // ====================================================================
         Surface(
           shape = RoundedCornerShape(16.dp),
           color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.90f) else Color(0xFF1E293B).copy(alpha = 0.95f),
           border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(0.72f)
+          modifier = Modifier.fillMaxSize()
         ) {
           Column(
             modifier = Modifier
               .fillMaxSize()
-              .padding(horizontal = 6.dp, vertical = 5.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
+              .padding(horizontal = 6.dp, vertical = keypadPadV),
+            verticalArrangement = Arrangement.spacedBy(keypadRowGap)
           ) {
             // UPPER CONTROL CLUSTER (Rows 1 & 2 + Symmetric Circular REPLAY Pad): weight(2.15f)
             Row(
@@ -2331,8 +2857,10 @@ internal fun ScientificCalculatorScreen(
                       }
                       isAlphaActive -> insertToken("=")
                       else -> {
+                        val varsSet = linkedSetOf<String>()
+                        collectVariablesInTree(rootMathContainer, varsSet)
                         val varsFound = listOf("A", "B", "C", "D", "E", "F", "X", "Y", "M")
-                          .filter { Regex("\\b$it\\b").containsMatchIn(exprText) }
+                          .filter { it in varsSet }
                         if (varsFound.isEmpty()) executeEvaluation()
                         else {
                           calcPromptVars = varsFound
@@ -2354,8 +2882,8 @@ internal fun ScientificCalculatorScreen(
                   ) {
                     when {
                       isAlphaActive -> insertToken(":")
-                      isShiftActive -> insertToken("deriv(,0)")
-                      else -> insertToken("integral(,0,1)")
+                      isShiftActive -> insertToken("deriv(")
+                      else -> insertToken("integral(")
                     }
                   }
                 }
@@ -2381,31 +2909,31 @@ internal fun ScientificCalculatorScreen(
                   Box(modifier = Modifier.fillMaxSize()) {
                     IconButton(
                       onClick = { handleReplayDpad("UP") },
-                      modifier = Modifier.size(26.dp).align(Alignment.TopCenter).testTag("cw_dpad_up")
+                      modifier = Modifier.size(dpadBtnSize).align(Alignment.TopCenter).testTag("cw_dpad_up")
                     ) {
-                      Icon(Icons.Filled.KeyboardArrowUp, "Replay Up", tint = Color.White, modifier = Modifier.size(16.dp))
+                      Icon(Icons.Filled.KeyboardArrowUp, "Replay Up", tint = Color.White, modifier = Modifier.size(dpadIconSize))
                     }
                     IconButton(
                       onClick = { handleReplayDpad("DOWN") },
-                      modifier = Modifier.size(26.dp).align(Alignment.BottomCenter).testTag("cw_dpad_down")
+                      modifier = Modifier.size(dpadBtnSize).align(Alignment.BottomCenter).testTag("cw_dpad_down")
                     ) {
-                      Icon(Icons.Filled.KeyboardArrowDown, "Replay Down", tint = Color.White, modifier = Modifier.size(16.dp))
+                      Icon(Icons.Filled.KeyboardArrowDown, "Replay Down", tint = Color.White, modifier = Modifier.size(dpadIconSize))
                     }
                     IconButton(
                       onClick = { handleReplayDpad("LEFT") },
-                      modifier = Modifier.size(26.dp).align(Alignment.CenterStart).testTag("cw_dpad_left")
+                      modifier = Modifier.size(dpadBtnSize).align(Alignment.CenterStart).testTag("cw_dpad_left")
                     ) {
-                      Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Replay Left", tint = Color.White, modifier = Modifier.size(16.dp))
+                      Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Replay Left", tint = Color.White, modifier = Modifier.size(dpadIconSize))
                     }
                     IconButton(
                       onClick = { handleReplayDpad("RIGHT") },
-                      modifier = Modifier.size(26.dp).align(Alignment.CenterEnd).testTag("cw_dpad_right")
+                      modifier = Modifier.size(dpadBtnSize).align(Alignment.CenterEnd).testTag("cw_dpad_right")
                     ) {
-                      Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Replay Right", tint = Color.White, modifier = Modifier.size(16.dp))
+                      Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Replay Right", tint = Color.White, modifier = Modifier.size(dpadIconSize))
                     }
                     Text(
                       text = "REPLAY",
-                      fontSize = 6.5.sp,
+                      fontSize = if (ultraCompactHeight) 5.5.sp else 6.5.sp,
                       fontWeight = FontWeight.Bold,
                       color = Color(0xFFCBD5E1),
                       maxLines = 1,
@@ -2483,7 +3011,7 @@ internal fun ScientificCalculatorScreen(
                     subSp = subSp,
                     modifier = Modifier.weight(1f).fillMaxHeight().testTag("cw_key_logbase")
                   ) {
-                    if (isShiftActive) insertToken("sum(,1,5)") else insertToken("logBase(")
+                    if (isShiftActive) insertToken("sum(") else insertToken("logBase(")
                   }
                 }
               }
@@ -2493,9 +3021,13 @@ internal fun ScientificCalculatorScreen(
             Row(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
               CalcKeyCell("■/□", "a b/c", "", Color(0xFF1E293B), Color.White, sciSp, subSp, Modifier.weight(1f).fillMaxHeight().testTag("cw_key_frac")) {
                 if (isShiftActive) {
-                  isMixedFraction = !isMixedFraction
+                  playCardHapticSound(context, localView)
+                  clearErrorState()
+                  lastAutoStatExpr = null
+                  cursorLocation = insertSmartMixedFraction(rootMathContainer, cursorLocation)
                   isShiftActive = false
-                  refreshCompDisplayFromNumeric(lastNumericAns)
+                  isAlphaActive = false
+                  isHypPending = false
                 } else insertToken("/")
               }
               CalcKeyCell("√■", "³√■", "", Color(0xFF1E293B), Color.White, sciSp, subSp, Modifier.weight(1f).fillMaxHeight().testTag("cw_key_sqrt")) {
@@ -2546,12 +3078,14 @@ internal fun ScientificCalculatorScreen(
                   isShiftActive -> {
                     isShiftActive = false
                     isDmsOutput = !isDmsOutput
-                    refreshCompDisplayFromNumeric(lastNumericAns)
+                    val targetVal = if (rootMathContainer.nodes.isEmpty() && activeDisplayNumeric == 0.0) lastNumericAns else activeDisplayNumeric
+                    refreshCompDisplayFromNumeric(targetVal, isCommit = false)
                   }
                   else -> {
-                    if (exprText.isEmpty() && lastNumericAns != 0.0) {
+                    if (rootMathContainer.nodes.isEmpty() && (lastNumericAns != 0.0 || activeDisplayNumeric != 0.0)) {
                       isDmsOutput = !isDmsOutput
-                      refreshCompDisplayFromNumeric(lastNumericAns)
+                      val targetVal = if (activeDisplayNumeric != 0.0) activeDisplayNumeric else lastNumericAns
+                      refreshCompDisplayFromNumeric(targetVal, isCommit = false)
                     } else insertToken("°")
                   }
                 }
@@ -2612,12 +3146,14 @@ internal fun ScientificCalculatorScreen(
                     isShiftActive = false
                     engShift -= 1
                     isExactMode = false
-                    refreshCompDisplayFromNumeric(lastNumericAns)
+                    val targetVal = if (rootMathContainer.nodes.isEmpty() && activeDisplayNumeric == 0.0) lastNumericAns else activeDisplayNumeric
+                    refreshCompDisplayFromNumeric(targetVal, isCommit = false)
                   }
                   else -> {
                     engShift += 1
                     isExactMode = false
-                    refreshCompDisplayFromNumeric(lastNumericAns)
+                    val targetVal = if (rootMathContainer.nodes.isEmpty() && activeDisplayNumeric == 0.0) lastNumericAns else activeDisplayNumeric
+                    refreshCompDisplayFromNumeric(targetVal, isCommit = false)
                   }
                 }
               }
@@ -2638,13 +3174,20 @@ internal fun ScientificCalculatorScreen(
                     isMixedFraction = !isMixedFraction
                     isExactMode = true
                     isShiftActive = false
-                    refreshCompDisplayFromNumeric(lastNumericAns)
+                    if (currentMode == ClassWizMode.CMPLX) {
+                      refreshComplexDisplay(activeDisplayComplex, polar = activeComplexPolar, isCommit = false)
+                    } else {
+                      refreshCompDisplayFromNumeric(activeDisplayNumeric, isCommit = false)
+                    }
                   }
                   else -> {
                     isExactMode = !isExactMode
                     engShift = 0
-                    if (currentMode == ClassWizMode.CMPLX) refreshComplexDisplay(lastComplexAns)
-                    else refreshCompDisplayFromNumeric(lastNumericAns)
+                    if (currentMode == ClassWizMode.CMPLX) {
+                      refreshComplexDisplay(activeDisplayComplex, polar = activeComplexPolar, isCommit = false)
+                    } else {
+                      refreshCompDisplayFromNumeric(activeDisplayNumeric, isCommit = false)
+                    }
                   }
                 }
               }
@@ -2653,15 +3196,15 @@ internal fun ScientificCalculatorScreen(
                   isAlphaActive -> handleVariableKey("M")
                   isShiftActive -> {
                     isShiftActive = false
-                    val cur = if (exprText.isNotBlank()) {
-                      runCatching { evaluateScalar(exprText, variables + ("Ans" to lastNumericAns), angleUnit) }.getOrElse { lastNumericAns }
+                    val cur = if (rootMathContainer.nodes.isNotEmpty()) {
+                      runCatching { evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit) }.getOrElse { lastNumericAns }
                     } else lastNumericAns
                     variables["M"] = cleanZero((variables["M"] ?: 0.0) - cur)
                     statusToast = "M = ${formatDecimalCompact(variables["M"] ?: 0.0)}"
                   }
                   else -> {
-                    val cur = if (exprText.isNotBlank()) {
-                      runCatching { evaluateScalar(exprText, variables + ("Ans" to lastNumericAns), angleUnit) }.getOrElse { lastNumericAns }
+                    val cur = if (rootMathContainer.nodes.isNotEmpty()) {
+                      runCatching { evaluateMathAst(rootMathContainer, variables + ("Ans" to lastNumericAns), angleUnit) }.getOrElse { lastNumericAns }
                     } else lastNumericAns
                     variables["M"] = cleanZero((variables["M"] ?: 0.0) + cur)
                     statusToast = "M = ${formatDecimalCompact(variables["M"] ?: 0.0)}"
@@ -2742,7 +3285,7 @@ internal fun ScientificCalculatorScreen(
                 if (isShiftActive) {
                   isShiftActive = false
                   currentMode = ClassWizMode.CMPLX
-                  showOptnModal = true
+                  lcdState = EsLcdScreenState.CMPLX_OPS
                 } else insertToken("2")
               }
               CalcKeyCell("3", "BASE", "", Color(0xFFF8FAFC), Color(0xFF0F172A), numSp, subSp, Modifier.weight(1f).fillMaxHeight().testTag("cw_key_3")) {
@@ -2791,28 +3334,43 @@ internal fun ScientificCalculatorScreen(
             }
           }
         }
-      }
-    }
-  }
-
-  // ============================================================================
-  // AUXILIARY DIALOGS (CMPLX OPTN, SETUP, VARS, HISTORY, CLR, DRG, CALC)
-  // ============================================================================
-
-  if (showOptnModal) {
-    Dialog(onDismissRequest = { showOptnModal = false }) {
-      Surface(shape = RoundedCornerShape(22.dp), color = palette.dialogSurface, border = palette.glassBorder, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          Text("CMPLX • Complex Operations", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = palette.textPrimary)
-          OptnActionRow("1: arg( — Argument", palette) { insertToken("arg("); showOptnModal = false }
-          OptnActionRow("2: Conjg( — Conjugate", palette) { insertToken("Conjg("); showOptnModal = false }
-          OptnActionRow("3: ►r∠θ — Polar Form", palette) { complexPolarOutput = true; refreshComplexDisplay(lastComplexAns); showOptnModal = false }
-          OptnActionRow("4: ►a+bi — Rectangular Form", palette) { complexPolarOutput = false; refreshComplexDisplay(lastComplexAns); showOptnModal = false }
-          TextButton(onClick = { showOptnModal = false }, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+          }
+        ) { measurables, constraints ->
+          val lcdMeasurable = measurables[0]
+          val keypadMeasurable = measurables[1]
+          val maxW = constraints.maxWidth
+          val maxH = constraints.maxHeight
+          if (isLandscapeSplit) {
+            val gapPx = 8.dp.roundToPx()
+            val availW = (maxW - gapPx).coerceAtLeast(0)
+            val lcdW = (availW * 0.38f).toInt()
+            val keypadW = availW - lcdW
+            val lcdPlaceable = lcdMeasurable.measure(Constraints.fixed(lcdW, maxH))
+            val keypadPlaceable = keypadMeasurable.measure(Constraints.fixed(keypadW, maxH))
+            layout(maxW, maxH) {
+              lcdPlaceable.placeRelative(0, 0)
+              keypadPlaceable.placeRelative(lcdW + gapPx, 0)
+            }
+          } else {
+            val gapPx = 5.dp.roundToPx()
+            val availH = (maxH - gapPx).coerceAtLeast(0)
+            val lcdH = (availH * 0.28f).toInt()
+            val keypadH = availH - lcdH
+            val lcdPlaceable = lcdMeasurable.measure(Constraints.fixed(maxW, lcdH))
+            val keypadPlaceable = keypadMeasurable.measure(Constraints.fixed(maxW, keypadH))
+            layout(maxW, maxH) {
+              lcdPlaceable.placeRelative(0, 0)
+              keypadPlaceable.placeRelative(0, lcdH + gapPx)
+            }
+          }
         }
       }
     }
   }
+
+  // ============================================================================
+  // AUXILIARY DIALOGS (SETUP, VARS, HISTORY, DRG, CALC)
+  // ============================================================================
 
   if (showSetupModal) {
     Dialog(onDismissRequest = { showSetupModal = false }) {
@@ -2833,7 +3391,7 @@ internal fun ScientificCalculatorScreen(
           Text("Number Format", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = palette.textSecondary)
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ClassWizNumberFormat.entries.forEach { f ->
-              RecessedGlassPill(isDarkMode = isDarkMode, fillColor = if (numberFormat == f) accentCyan.copy(alpha = 0.25f) else null, borderColor = if (numberFormat == f) accentCyan else null, onClick = { numberFormat = f; refreshCompDisplayFromNumeric(lastNumericAns) }) {
+              RecessedGlassPill(isDarkMode = isDarkMode, fillColor = if (numberFormat == f) accentCyan.copy(alpha = 0.25f) else null, borderColor = if (numberFormat == f) accentCyan else null, onClick = { numberFormat = f; refreshCompDisplayFromNumeric(activeDisplayNumeric, isCommit = false) }) {
                 Text(f.name, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = palette.textPrimary)
               }
             }
@@ -2888,7 +3446,23 @@ internal fun ScientificCalculatorScreen(
       onClearHistory = { history.clear() },
       onSelectEntry = { entry, useResult ->
         lcdState = EsLcdScreenState.CALC_LINE
-        insertToken(if (useResult) entry.exactOrDisplay else entry.expression)
+        if (useResult) {
+          insertToken(entry.exactOrDisplay)
+        } else if (entry.treeSnapshot != null && rootMathContainer.nodes.isEmpty()) {
+          loadTreeIntoRoot(entry.treeSnapshot)
+        } else if (entry.treeSnapshot != null) {
+          clearErrorState()
+          val cloned = cloneMathContainer(entry.treeSnapshot)
+          val targetC = if (containsContainer(rootMathContainer, cursorLocation.container)) cursorLocation.container else rootMathContainer
+          var insertAt = cursorLocation.index.coerceIn(0, targetC.nodes.size)
+          cloned.nodes.forEach { n ->
+            targetC.nodes.add(insertAt, n)
+            insertAt++
+          }
+          cursorLocation = CursorLocation(targetC, insertAt)
+        } else {
+          insertToken(entry.expression)
+        }
         showHistoryModal = false
       },
       accentCyan = accentCyan
@@ -2968,6 +3542,9 @@ private fun EsLcdBadge(text: String, active: Boolean, bg: Color, fg: Color) {
   }
 }
 
+private val LocalEsCalcSubRowHeight = staticCompositionLocalOf { 15.dp }
+private val LocalEsCalcSubGap = staticCompositionLocalOf { 2.dp }
+
 @Composable
 private fun CalcKeyCell(
   primary: String,
@@ -2980,22 +3557,24 @@ private fun CalcKeyCell(
   modifier: Modifier = Modifier,
   onClick: () -> Unit
 ) {
+  val subRowHeight = LocalEsCalcSubRowHeight.current
+  val subGap = LocalEsCalcSubGap.current
   val subLabelStyle = TextStyle(
     fontFamily = JetBrainsMonoFamily,
     fontSize = subSp,
     fontWeight = FontWeight.Bold,
-    lineHeight = 9.5.sp,
+    lineHeight = (subSp.value + 1f).sp,
     platformStyle = PlatformTextStyle(includeFontPadding = false)
   )
   Column(
     modifier = modifier,
     horizontalAlignment = Alignment.CenterHorizontally
   ) {
-    // Mandatory fixed 15.dp sub-label row on every single key (zero font-padding clipping)
+    // Fixed sub-label row on every single key (scales proportionally in compact landscape)
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .height(15.dp)
+        .height(subRowHeight)
         .padding(horizontal = 2.dp),
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
@@ -3018,7 +3597,7 @@ private fun CalcKeyCell(
       )
     }
 
-    Spacer(modifier = Modifier.height(2.dp))
+    Spacer(modifier = Modifier.height(subGap))
 
     // Physical Key Surface (occupies exact remaining height of the row)
     Surface(

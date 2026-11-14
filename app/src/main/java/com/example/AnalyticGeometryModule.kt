@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -455,10 +456,12 @@ internal fun MsteAnalyticGeometrySheet(
     )
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .testTag("analytic_geometry_sheet"),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
@@ -1210,6 +1213,7 @@ private fun AnalyticBlueprintCard(
   val activeHotspotSpec = remember(config, selectedHotspotId) {
     config.hotspots.firstOrNull { it.id == selectedHotspotId }
   }
+  val orientation = rememberScreenOrientationState()
 
   Column(
     modifier = Modifier
@@ -1262,23 +1266,23 @@ private fun AnalyticBlueprintCard(
       }
     }
 
-    // 2. Interactive 240.dp CAD Blueprint Canvas
-    Surface(
-      shape = RoundedCornerShape(16.dp),
-      color = canvasBg,
-      border = BorderStroke(
-        width = 1.dp,
-        brush = Brush.linearGradient(
-          listOf(
-            accentColor.copy(alpha = 0.45f),
-            cyanGlow.copy(alpha = 0.30f)
+    val renderCanvasSurface: @Composable () -> Unit = {
+      Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = canvasBg,
+        border = BorderStroke(
+          width = 1.dp,
+          brush = Brush.linearGradient(
+            listOf(
+              accentColor.copy(alpha = 0.45f),
+              cyanGlow.copy(alpha = 0.30f)
+            )
           )
-        )
-      ),
-      modifier = Modifier
-        .fillMaxWidth()
-        .height(240.dp)
-    ) {
+        ),
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(if (orientation.isCompactLandscape) 200.dp else 240.dp)
+      ) {
       Box(modifier = Modifier.fillMaxSize()) {
         Canvas(
           modifier = Modifier
@@ -1352,8 +1356,14 @@ private fun AnalyticBlueprintCard(
         }
       }
     }
+    }
 
-    // 3. Tappable Landmark Hotspot Pill Chips (accessible alternative + clear legend)
+    val renderHotspotLegendAndReadout: @Composable () -> Unit = {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        // 3. Tappable Landmark Hotspot Pill Chips (accessible alternative + clear legend)
     if (config.hotspots.isNotEmpty()) {
       Row(
         modifier = Modifier
@@ -1434,6 +1444,22 @@ private fun AnalyticBlueprintCard(
           color = if (activeHotspotSpec != null) amberHotspot else palette.textSecondary
         )
       }
+    }
+      }
+    }
+
+    if (orientation.isLandscape) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+      ) {
+        Box(modifier = Modifier.weight(0.52f)) { renderCanvasSurface() }
+        Box(modifier = Modifier.weight(0.48f)) { renderHotspotLegendAndReadout() }
+      }
+    } else {
+      renderCanvasSurface()
+      renderHotspotLegendAndReadout()
     }
   }
 }
@@ -1929,12 +1955,14 @@ private fun AnalyticSectionDetailGlassModal(
         .padding(horizontal = 16.dp, vertical = 28.dp),
       contentAlignment = Alignment.Center
     ) {
+      val modalOrientation = rememberScreenOrientationState()
       LiquidGlassCard(
         cornerRadius = 26.dp,
         elevation = 16.dp,
         modifier = Modifier
           .fillMaxWidth()
-          .widthIn(max = 640.dp)
+          .widthIn(max = if (modalOrientation.isLandscape) 860.dp else 640.dp)
+          .heightIn(max = if (modalOrientation.isCompactLandscape) 380.dp else 680.dp)
           .testTag("analytic_section_detail_modal_$sectionNumber")
       ) {
         Column(

@@ -1313,6 +1313,10 @@ data class ResponsiveMetrics(
     get() = screenWidthDp >= 600
   val isTabletLandscape: Boolean
     get() = screenWidthDp >= 720 && isLandscape
+  val isCompactLandscape: Boolean
+    get() = isLandscape && screenHeightDp < 480
+  val landscapeWideMaxWidth: Dp
+    get() = if (isLandscape) 1140.dp else maxContentWidth
 
   fun scaledDp(baseDp: Int): Dp = (baseDp * scaleMultiplier).dp
   fun scaledSp(baseSp: Int): TextUnit = (baseSp * scaleMultiplier).sp
@@ -1336,6 +1340,32 @@ private fun rememberResponsiveMetrics(): ResponsiveMetrics {
       scaleMultiplier = scaleMultiplier,
       maxContentWidth = maxContentWidth,
       screenHeightDp = screenHeight,
+      isLandscape = isLandscape
+    )
+  }
+}
+
+internal data class ScreenOrientationState(
+  val screenWidthDp: Int,
+  val screenHeightDp: Int,
+  val isLandscape: Boolean
+) {
+  val isCompactLandscape: Boolean
+    get() = isLandscape && screenHeightDp < 480
+  val wideMaxContentWidth: Dp
+    get() = if (isLandscape) 1140.dp else 680.dp
+}
+
+@Composable
+internal fun rememberScreenOrientationState(): ScreenOrientationState {
+  val configuration = LocalConfiguration.current
+  val widthDp = configuration.screenWidthDp
+  val heightDp = configuration.screenHeightDp
+  val isLandscape = widthDp > heightDp
+  return remember(widthDp, heightDp, isLandscape) {
+    ScreenOrientationState(
+      screenWidthDp = widthDp,
+      screenHeightDp = heightDp,
       isLandscape = isLandscape
     )
   }
@@ -9461,6 +9491,7 @@ private fun MainProductivityScaffold(
   var pomodoroUnlockPin by rememberSaveable { mutableStateOf("") }
   var showPinUnlockDialog by remember { mutableStateOf(false) }
   var isCalculatorOpen by rememberSaveable { mutableStateOf(false) }
+  var isUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
 
   // Intercept system Back button when Pomodoro Focus Lock is active
   BackHandler(enabled = isPomodoroLockActive) {
@@ -9554,7 +9585,8 @@ private fun MainProductivityScaffold(
       },
       bottomBar = {
         val isFullScreenCalculator = selectedTab == CeNavTab.EXTRAS && isCalculatorOpen
-        if (!isCompactTaskNoteOpen && !isPomodoroLockActive && !isFullScreenCalculator) {
+        val isFullScreenUnitConverter = selectedTab == CeNavTab.EXTRAS && isUnitConverterOpen
+        if (!isCompactTaskNoteOpen && !isPomodoroLockActive && !isFullScreenCalculator && !isFullScreenUnitConverter) {
           CustomDockedBottomTaskBar(
             selectedTab = selectedTab,
             onSelectTab = { selectedTab = it },
@@ -9602,15 +9634,17 @@ private fun MainProductivityScaffold(
             },
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = if (metrics.isTabletLandscape) 1080.dp else metrics.maxContentWidth)
+              .widthIn(max = metrics.landscapeWideMaxWidth)
           )
           CeNavTab.EXTRAS -> ExtrasScreen(
             viewModel = taskViewModel,
             isCalculatorOpen = isCalculatorOpen,
             onCalculatorOpenChange = { isCalculatorOpen = it },
+            isUnitConverterOpen = isUnitConverterOpen,
+            onUnitConverterOpenChange = { isUnitConverterOpen = it },
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = metrics.maxContentWidth)
+              .widthIn(max = metrics.landscapeWideMaxWidth)
           )
           CeNavTab.DASHBOARD -> DashboardScreen(
             viewModel = taskViewModel,
@@ -9627,7 +9661,7 @@ private fun MainProductivityScaffold(
             },
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = if (metrics.isTabletLandscape) 1140.dp else metrics.maxContentWidth)
+              .widthIn(max = metrics.landscapeWideMaxWidth)
           )
           CeNavTab.SCHEDULE -> ClassTimetableScheduleScreen(
             viewModel = taskViewModel,
@@ -9640,7 +9674,7 @@ private fun MainProductivityScaffold(
             onNavigateToTab = { selectedTab = it },
             modifier = Modifier
               .fillMaxSize()
-              .widthIn(max = metrics.maxContentWidth)
+              .widthIn(max = metrics.landscapeWideMaxWidth)
           )
         }
       }
@@ -9859,7 +9893,7 @@ private fun CustomDockedBottomTaskBar(
     modifier = modifier
       .fillMaxWidth()
       .navigationBarsPadding()
-      .padding(horizontal = 20.dp, vertical = 10.dp)
+      .padding(horizontal = 20.dp, vertical = if (metrics.isLandscape) 4.dp else 10.dp)
       .testTag("bottom_navigation_bar"),
     contentAlignment = Alignment.BottomCenter
   ) {
@@ -9868,7 +9902,7 @@ private fun CustomDockedBottomTaskBar(
       modifier = Modifier
         .fillMaxWidth()
         .widthIn(max = metrics.maxContentWidth)
-        .padding(top = 16.dp)
+        .padding(top = if (metrics.isLandscape) 4.dp else 16.dp)
         .let { mod ->
           if (!palette.isDark) {
             mod.shadow(
@@ -10327,17 +10361,17 @@ fun DashboardScreen(
       }
     }
 
-    // Single, static vertical scrolling Dashboard Content
+    // Single, static vertical scrolling Dashboard Content (adaptive multi-pane in landscape)
     LazyColumn(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = 680.dp)
+        .widthIn(max = if (metrics.isLandscape) 1140.dp else 680.dp)
         .align(Alignment.TopCenter)
         .testTag("academic_dashboard_list"),
       contentPadding = PaddingValues(
         start = metrics.scaledDp(16),
         end = metrics.scaledDp(16),
-        top = 12.dp,
+        top = if (metrics.isLandscape) 8.dp else 12.dp,
         bottom = 88.dp
       ),
       verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -10353,17 +10387,9 @@ fun DashboardScreen(
           else -> Color(0xFFEF4444)              // Unhealthy (Red accent)
         }
 
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 680.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          // Header & Greeting Bar: SibilCeAppIconBadge + Username/DateTime + Sync Pill + Glass Action Buttons
+        val renderGreetingHeaderBar: @Composable (Modifier) -> Unit = { barMod ->
           Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 4.dp),
+            modifier = barMod.padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
@@ -10459,8 +10485,9 @@ fun DashboardScreen(
               }
             }
           }
+        }
 
-          // Compact Dashboard Weather & Environmental Widget (16.dp corner radius, padding(12.dp))
+        val renderWeatherWidgetCard: @Composable (Modifier) -> Unit = { cardMod ->
           LiquidGlassCard(
             cornerRadius = 16.dp,
             elevation = 6.dp,
@@ -10470,11 +10497,7 @@ fun DashboardScreen(
                 viewModel.fetchWeather(latitude = lat, longitude = lon)
               }
             },
-            modifier = Modifier
-              .fillMaxWidth()
-              .widthIn(max = 680.dp)
-              .align(Alignment.CenterHorizontally)
-              .testTag("dashboard_compact_weather_card")
+            modifier = cardMod.testTag("dashboard_compact_weather_card")
           ) {
             Column(
               modifier = Modifier
@@ -10482,8 +10505,6 @@ fun DashboardScreen(
                 .padding(12.dp),
               verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-              // Row 1 (Condition & Temperature):
-              // Weather icon (18.dp), Condition description (13.sp, FontWeight.Medium), and Current Temp (14.sp, FontWeight.Bold)
               Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -10540,9 +10561,6 @@ fun DashboardScreen(
 
               GlassHairlineDivider(isDarkMode = palette.isDark)
 
-              // Row 2 (Environmental Metrics - Recessed glass pills directly underneath):
-              // 1. Heat Index pill: "🌡️ Heat Index: 33°C" (11.sp, FontWeight.SemiBold)
-              // 2. Air Quality pill: "🍃 AQI: 42 • Good" (11.sp, FontWeight.SemiBold)
               Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -10585,63 +10603,116 @@ fun DashboardScreen(
             }
           }
         }
+
+        if (metrics.isLandscape) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            renderGreetingHeaderBar(Modifier.weight(0.50f))
+            renderWeatherWidgetCard(Modifier.weight(0.50f))
+          }
+        } else {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .widthIn(max = 680.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            renderGreetingHeaderBar(Modifier.fillMaxWidth())
+            renderWeatherWidgetCard(
+              Modifier
+                .fillMaxWidth()
+                .widthIn(max = 680.dp)
+                .align(Alignment.CenterHorizontally)
+            )
+          }
+        }
       }
 
-      // 2. Middle Section (Side-by-Side): Frosted Glass Daily Progress Pod + Today's Schedule Pod
+      // 2. Middle + Bottom Section: Side-by-Side 2-Column Split in Landscape, Stacked in Portrait
       item {
-        val middleRowHeight = metrics.scaledDp(278)
+        val middleRowHeight = if (metrics.isLandscape) 244.dp else metrics.scaledDp(278)
         val todayAbbreviation = remember { resolveTodayCorDayAbbreviation() }
         val schedulesSnapshot = viewModel.classSchedules.toList()
         val todaysFilteredClasses = remember(schedulesSnapshot, todayAbbreviation) {
           viewModel.getSchedulesForDayAbbreviation(todayAbbreviation)
         }
 
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(middleRowHeight),
-          horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12)),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          CompactDailyProgressCard(
-            completedCount = completedTasks,
-            totalCount = totalTasks,
-            progressRatio = progressRatio,
-            onResetProgress = {
-              viewModel.resetTaskProgress()
-              Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
-            },
-            metrics = metrics,
-            modifier = Modifier
-              .weight(0.95f)
-              .fillMaxHeight()
-          )
+        val renderPodsRow: @Composable (Modifier) -> Unit = { rowMod ->
+          Row(
+            modifier = rowMod.height(middleRowHeight),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(12)),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            CompactDailyProgressCard(
+              completedCount = completedTasks,
+              totalCount = totalTasks,
+              progressRatio = progressRatio,
+              onResetProgress = {
+                viewModel.resetTaskProgress()
+                Toast.makeText(context, "Progress reset for new study block", Toast.LENGTH_SHORT).show()
+              },
+              metrics = metrics,
+              modifier = Modifier
+                .weight(0.95f)
+                .fillMaxHeight()
+            )
 
-          TodaysScheduleInteractiveCard(
-            todaysClasses = todaysFilteredClasses,
-            todayAbbreviation = todayAbbreviation,
-            metrics = metrics,
-            modifier = Modifier
-              .weight(1.15f)
-              .fillMaxHeight()
-          )
+            TodaysScheduleInteractiveCard(
+              todaysClasses = todaysFilteredClasses,
+              todayAbbreviation = todayAbbreviation,
+              metrics = metrics,
+              modifier = Modifier
+                .weight(1.15f)
+                .fillMaxHeight()
+            )
+          }
         }
-      }
 
-      // 3. Bottom Section: Dynamic "Upcoming Deadlines" Task List in Frosted Glass
-      item {
-        UpcomingDeadlinesSectionCard(
-          upcomingItems = dueTasks,
-          metrics = metrics,
-          onToggleComplete = { itemId ->
-            viewModel.toggleTaskCompletion(itemId)
-          },
-          onItemClick = { clickedItem ->
-            viewModel.openTaskDetail(clickedItem.id)
-            onNavigateToTab(CeNavTab.TASKS)
-          },
-          onAddTaskClick = onAddTaskClick
-        )
+        if (metrics.isLandscape) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+          ) {
+            renderPodsRow(Modifier.weight(0.55f))
+            Box(modifier = Modifier.weight(0.45f)) {
+              UpcomingDeadlinesSectionCard(
+                upcomingItems = dueTasks,
+                metrics = metrics,
+                onToggleComplete = { itemId ->
+                  viewModel.toggleTaskCompletion(itemId)
+                },
+                onItemClick = { clickedItem ->
+                  viewModel.openTaskDetail(clickedItem.id)
+                  onNavigateToTab(CeNavTab.TASKS)
+                },
+                onAddTaskClick = onAddTaskClick
+              )
+            }
+          }
+        } else {
+          Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            renderPodsRow(Modifier.fillMaxWidth())
+            UpcomingDeadlinesSectionCard(
+              upcomingItems = dueTasks,
+              metrics = metrics,
+              onToggleComplete = { itemId ->
+                viewModel.toggleTaskCompletion(itemId)
+              },
+              onItemClick = { clickedItem ->
+                viewModel.openTaskDetail(clickedItem.id)
+                onNavigateToTab(CeNavTab.TASKS)
+              },
+              onAddTaskClick = onAddTaskClick
+            )
+          }
+        }
       }
     }
 
@@ -13446,7 +13517,9 @@ fun ExtrasScreen(
   modifier: Modifier = Modifier,
   viewModel: TaskViewModel = viewModel(),
   isCalculatorOpen: Boolean = false,
-  onCalculatorOpenChange: (Boolean) -> Unit = {}
+  onCalculatorOpenChange: (Boolean) -> Unit = {},
+  isUnitConverterOpen: Boolean = false,
+  onUnitConverterOpenChange: (Boolean) -> Unit = {}
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
@@ -13461,7 +13534,8 @@ fun ExtrasScreen(
   val palette = currentGlassPalette()
   var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
   var isFormulaVaultOpen by rememberSaveable { mutableStateOf(false) }
-  var isUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
+  var localUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
+  val effectiveUnitConverterOpen = isUnitConverterOpen || localUnitConverterOpen
   var isEstimateOpen by rememberSaveable { mutableStateOf(false) }
   var isSurveyingSolverOpen by rememberSaveable { mutableStateOf(false) }
   var localClassWizOpen by rememberSaveable { mutableStateOf(false) }
@@ -13482,10 +13556,13 @@ fun ExtrasScreen(
     return
   }
 
-  if (isUnitConverterOpen) {
+  if (effectiveUnitConverterOpen) {
     UnitConverterScreen(
       metrics = metrics,
-      onBackToExtras = { isUnitConverterOpen = false },
+      onBackToExtras = {
+        localUnitConverterOpen = false
+        onUnitConverterOpenChange(false)
+      },
       modifier = modifier
     )
     return
@@ -13559,17 +13636,17 @@ fun ExtrasScreen(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = 680.dp)
+        .widthIn(max = metrics.landscapeWideMaxWidth)
         .align(Alignment.TopCenter)
         .verticalScroll(rememberScrollState())
         .padding(
           start = metrics.scaledDp(20),
           end = metrics.scaledDp(20),
-          top = metrics.scaledDp(24),
+          top = if (metrics.isLandscape) 12.dp else metrics.scaledDp(24),
           bottom = metrics.scaledDp(116)
         )
         .testTag("extras_tools_page"),
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(18)),
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
       // Top Header
@@ -13600,7 +13677,7 @@ fun ExtrasScreen(
         borderStroke = BorderStroke(1.5.dp, palette.accentIndigo.copy(alpha = 0.55f)),
         modifier = Modifier
           .fillMaxWidth()
-          .widthIn(max = 680.dp)
+          .widthIn(max = metrics.landscapeWideMaxWidth)
           .align(Alignment.CenterHorizontally)
           .testTag("extra_tool_card_smart_flashcards")
       ) {
@@ -13746,106 +13823,91 @@ fun ExtrasScreen(
       }
     }
 
-      // 2. Active Companion Module: Casio fx-570ES PLUS / CalcES Scientific Calculator
-      ExtraToolPlaceholderCard(
-        tool = ExtraToolItem(
+      val toolEntries: List<Pair<ExtraToolItem, () -> Unit>> = listOf(
+        ExtraToolItem(
           id = "scientific_calculator",
           title = "Scientific Calculator (fx-570ES PLUS)",
           subtitle = "Natural-V.P.A.M. • 8 Modes, CONST/CONV & CalcES History",
           icon = Icons.Filled.Calculate
-        ),
-        metrics = metrics,
-        isComingSoon = false,
-        onClick = {
+        ) to {
           playCardHapticSound(context, localView)
           localClassWizOpen = true
           onCalculatorOpenChange(true)
         },
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .align(Alignment.CenterHorizontally)
-      )
-
-      // 2A. Active Companion Module: CE Formula Vault
-      ExtraToolPlaceholderCard(
-        tool = ExtraToolItem(
+        ExtraToolItem(
           id = "ce_formula_vault",
           title = "CE Formula Vault",
           subtitle = "Algebra, Trigonometry, Plane & Solid Geometry Blueprints",
           icon = Icons.Filled.Functions
-        ),
-        metrics = metrics,
-        isComingSoon = false,
-        onClick = {
+        ) to {
           playCardHapticSound(context, localView)
           isFormulaVaultOpen = true
         },
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .align(Alignment.CenterHorizontally)
-      )
-
-      // 2B. Active Companion Module: CE Engineering Unit Converter
-      ExtraToolPlaceholderCard(
-        tool = ExtraToolItem(
+        ExtraToolItem(
           id = "unit_converter",
           title = "Unit Converter",
           subtitle = "12 CE categories • SI & USCS live multi-unit converter",
           icon = Icons.Filled.SwapHoriz
-        ),
-        metrics = metrics,
-        isComingSoon = false,
-        onClick = {
+        ) to {
           playCardHapticSound(context, localView)
-          isUnitConverterOpen = true
+          localUnitConverterOpen = true
+          onUnitConverterOpenChange(true)
         },
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .align(Alignment.CenterHorizontally)
-      )
-
-      // 2C. Active Companion Module: Construction Estimate (Max Fajardo Quantity Take-Off + BOQ)
-      ExtraToolPlaceholderCard(
-        tool = ExtraToolItem(
+        ExtraToolItem(
           id = "construction_estimate",
           title = "Estimate",
           subtitle = "Max Fajardo Quantity Take-Off & Project BOQ",
           icon = Icons.Filled.RequestQuote
-        ),
-        metrics = metrics,
-        isComingSoon = false,
-        onClick = {
+        ) to {
           playCardHapticSound(context, localView)
           isEstimateOpen = true
         },
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .align(Alignment.CenterHorizontally)
-      )
-
-      // 2D. Active Companion Module: Surveying & Curve Solver (CELE MSTE)
-      ExtraToolPlaceholderCard(
-        tool = ExtraToolItem(
+        ExtraToolItem(
           id = "surveying_curve_solver",
           title = "Surveying & Curve Solver",
           subtitle = "Traverse, DMD Area, Horizontal & Vertical Curves",
           icon = Icons.Filled.Explore
-        ),
-        metrics = metrics,
-        isComingSoon = false,
-        onClick = {
+        ) to {
           playCardHapticSound(context, localView)
           isSurveyingSolverOpen = true
-        },
-        modifier = Modifier
-          .fillMaxWidth()
-          .widthIn(max = 680.dp)
-          .align(Alignment.CenterHorizontally)
+        }
       )
+
+      if (metrics.isLandscape) {
+        toolEntries.chunked(2).forEach { pair ->
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
+            verticalAlignment = Alignment.Top
+          ) {
+            pair.forEach { (item, action) ->
+              ExtraToolPlaceholderCard(
+                tool = item,
+                metrics = metrics,
+                isComingSoon = false,
+                onClick = action,
+                modifier = Modifier.weight(1f)
+              )
+            }
+            if (pair.size == 1) {
+              Spacer(modifier = Modifier.weight(1f))
+            }
+          }
+        }
+      } else {
+        toolEntries.forEach { (item, action) ->
+          ExtraToolPlaceholderCard(
+            tool = item,
+            metrics = metrics,
+            isComingSoon = false,
+            onClick = action,
+            modifier = Modifier
+              .fillMaxWidth()
+              .widthIn(max = 680.dp)
+              .align(Alignment.CenterHorizontally)
+          )
+        }
+      }
     }
   }
 }
@@ -14413,122 +14475,23 @@ private fun UnitConverterScreen(
     BorderStroke(1.2.dp, Color.White)
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 760.dp)
-      .padding(
-        top = metrics.scaledDp(14),
-        bottom = metrics.scaledDp(92)
-      )
+      .widthIn(max = if (orientation.isLandscape) 1140.dp else 760.dp)
+      .padding(top = if (orientation.isLandscape) 4.dp else metrics.scaledDp(8))
       .testTag("unit_converter_screen"),
-    verticalArrangement = Arrangement.spacedBy(10.dp)
+    verticalArrangement = Arrangement.spacedBy(if (orientation.isLandscape) 6.dp else 8.dp)
   ) {
-    // 1. STICKY TOP HEADER BAR + TACTILE 3-WAY SEGMENTED CONTROL
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 16.dp),
-      verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-          modifier = Modifier.weight(1f)
-        ) {
-          IconButton(
-            onClick = onBackToExtras,
-            modifier = Modifier
-              .size(40.dp)
-              .clip(CircleShape)
-              .background(
-                if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.72f)
-                else Color.White.copy(alpha = 0.88f)
-              )
-              .border(
-                1.dp,
-                if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color(0xFFCBD5E1),
-                CircleShape
-              )
-              .testTag("unit_converter_back_button")
-          ) {
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-              contentDescription = "Back to Extras",
-              tint = titleColor,
-              modifier = Modifier.size(20.dp)
-            )
-          }
-
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = "CE Unit Converter",
-              style = MaterialTheme.typography.headlineMedium.copy(
-                fontFamily = AppleSansFamily,
-                fontSize = metrics.scaledSp(20),
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.4).sp
-              ),
-              color = titleColor,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-            Text(
-              text = "${selectedCategory.fullTitle} • ${selectedCategory.boardTag}",
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontFamily = AppleSansFamily,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = accentCyan,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          }
-        }
-
-        IconButton(
-          onClick = {
-            isSearchVisible = !isSearchVisible
-            if (!isSearchVisible) searchQuery = ""
-          },
-          modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(
-              if (isSearchVisible) accentCyan.copy(alpha = 0.22f)
-              else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f)
-              else Color.White.copy(alpha = 0.86f)
-            )
-            .border(
-              1.dp,
-              if (isSearchVisible) accentCyan else if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1),
-              CircleShape
-            )
-            .testTag("unit_converter_search_toggle")
-        ) {
-          Icon(
-            imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search,
-            contentDescription = "Toggle Unit Search",
-            tint = if (isSearchVisible) accentCyan else titleColor,
-            modifier = Modifier.size(19.dp)
-          )
-        }
-      }
-
-      // Tactile 3-Way All | SI | USCS Segmented Control
+    val renderSegmentedControl: @Composable (Modifier) -> Unit = { segMod ->
       Surface(
         shape = RoundedCornerShape(12.dp),
         color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFE2E8F0).copy(alpha = 0.85f),
         border = BorderStroke(1.dp, if (isDarkMode) Color.White.copy(alpha = 0.14f) else Color.White),
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(38.dp)
+        modifier = segMod
+          .height(36.dp)
           .testTag("unit_converter_system_segmented")
       ) {
         Row(
@@ -14568,6 +14531,112 @@ private fun UnitConverterScreen(
             }
           }
         }
+      }
+    }
+
+    // 1. STICKY TOP HEADER BAR + TACTILE 3-WAY SEGMENTED CONTROL
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp),
+      verticalArrangement = Arrangement.spacedBy(if (orientation.isLandscape) 6.dp else 8.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          modifier = Modifier.weight(1f)
+        ) {
+          IconButton(
+            onClick = onBackToExtras,
+            modifier = Modifier
+              .size(40.dp)
+              .clip(CircleShape)
+              .background(
+                if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.72f)
+                else Color.White.copy(alpha = 0.88f)
+              )
+              .border(
+                1.dp,
+                if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color(0xFFCBD5E1),
+                CircleShape
+              )
+              .testTag("unit_converter_back_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+              contentDescription = "Back to Extras",
+              tint = titleColor,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "CE Unit Converter",
+              style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = metrics.scaledSp(if (orientation.isLandscape) 18 else 20),
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.4).sp
+              ),
+              color = titleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = "${selectedCategory.fullTitle} • ${selectedCategory.boardTag}",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = accentCyan,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+
+        if (orientation.isLandscape) {
+          renderSegmentedControl(Modifier.widthIn(min = 190.dp, max = 250.dp))
+        }
+
+        IconButton(
+          onClick = {
+            isSearchVisible = !isSearchVisible
+            if (!isSearchVisible) searchQuery = ""
+          },
+          modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(
+              if (isSearchVisible) accentCyan.copy(alpha = 0.22f)
+              else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f)
+              else Color.White.copy(alpha = 0.86f)
+            )
+            .border(
+              1.dp,
+              if (isSearchVisible) accentCyan else if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1),
+              CircleShape
+            )
+            .testTag("unit_converter_search_toggle")
+        ) {
+          Icon(
+            imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search,
+            contentDescription = "Toggle Unit Search",
+            tint = if (isSearchVisible) accentCyan else titleColor,
+            modifier = Modifier.size(19.dp)
+          )
+        }
+      }
+
+      if (!orientation.isLandscape) {
+        renderSegmentedControl(Modifier.fillMaxWidth())
       }
 
       AnimatedVisibility(
@@ -14726,497 +14795,546 @@ private fun UnitConverterScreen(
       }
     }
 
-    // 4. SCROLLABLE CONVERSION CARDS + SINGLE-COLUMN ALL UNIT EQUIVALENTS LIST
-    LazyColumn(
-      modifier = Modifier
-        .weight(1f)
-        .fillMaxWidth()
-        .testTag("unit_converter_equivalents_list"),
-      contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-      // Stacked Ergonomic FROM + SWAP + TO Cards
-      item(key = "converter_io_cards") {
-        Box(modifier = Modifier.fillMaxWidth()) {
-          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // FROM CARD
-            Box(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
-                .border(cardBorder, RoundedCornerShape(22.dp))
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-            ) {
-              Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  // Tappable Unit Selector Button
-                  Surface(
-                    onClick = {
-                      playCardHapticSound(context, localView)
-                      pickerTargetSide = "FROM"
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
-                    border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
-                    modifier = Modifier
-                      .weight(1f, fill = false)
-                      .height(40.dp)
-                      .testTag("unit_converter_from_selector")
-                  ) {
-                    Row(
-                      modifier = Modifier.padding(horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                      Text(
-                        text = "${activeFromUnit.name.replace(" (Base)", "")} (${activeFromUnit.symbol})",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                          fontFamily = AppleSansFamily,
-                          fontSize = 15.sp,
-                          fontWeight = FontWeight.Bold
-                        ),
-                        color = titleColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                      )
-                      Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Select From Unit",
-                        tint = accentCyan,
-                        modifier = Modifier.size(18.dp)
-                      )
-                    }
-                  }
-
-                  Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(start = 8.dp)
-                  ) {
-                    Surface(
-                      shape = RoundedCornerShape(8.dp),
-                      color = accentCyan.copy(alpha = 0.14f),
-                      modifier = Modifier.height(28.dp)
-                    ) {
-                      Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
-                        Text(
-                          text = activeFromUnit.system,
-                          fontSize = 11.sp,
-                          fontWeight = FontWeight.Bold,
-                          color = accentCyan
-                        )
-                      }
-                    }
-
-                    if (inputExpression.isNotEmpty()) {
-                      IconButton(
-                        onClick = { inputExpression = "" },
-                        modifier = Modifier
-                          .size(34.dp)
-                          .testTag("unit_converter_clear_input_button")
-                      ) {
-                        Icon(
-                          imageVector = Icons.Default.Close,
-                          contentDescription = "Clear Input",
-                          tint = subtitleColor,
-                          modifier = Modifier.size(17.dp)
-                        )
-                      }
-                    }
-                  }
-                }
-
-                // Bottom Row: Large Editable Numeric/Expression Input (28.sp Bold tnum)
-                BasicTextField(
-                  value = inputExpression,
-                  onValueChange = { inputExpression = it },
-                  singleLine = true,
-                  textStyle = ComposeTextStyle(
-                    fontFamily = AppleSansFamily,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.5).sp,
-                    fontFeatureSettings = "tnum",
-                    color = titleColor
-                  ),
-                  cursorBrush = SolidColor(accentCyan),
-                  keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Done
-                  ),
-                  decorationBox = { innerTextField ->
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                      if (inputExpression.isEmpty()) {
-                        Text(
-                          text = "Enter value or e.g. 25 * 4",
-                          style = MaterialTheme.typography.headlineSmall.copy(
-                            fontFamily = AppleSansFamily,
-                            fontSize = 22.sp,
-                            fontFeatureSettings = "tnum"
-                          ),
-                          color = subtitleColor.copy(alpha = 0.55f)
-                        )
-                      }
-                      innerTextField()
-                    }
-                  },
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("unit_converter_from_input")
-                )
-              }
-            }
-
-            // TO CARD
-            Box(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
-                .border(cardBorder, RoundedCornerShape(22.dp))
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-            ) {
-              Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  // Tappable Target Unit Selector Button
-                  Surface(
-                    onClick = {
-                      playCardHapticSound(context, localView)
-                      pickerTargetSide = "TO"
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
-                    border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
-                    modifier = Modifier
-                      .weight(1f, fill = false)
-                      .height(40.dp)
-                      .testTag("unit_converter_to_selector")
-                  ) {
-                    Row(
-                      modifier = Modifier.padding(horizontal = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                      Text(
-                        text = "${activeToUnit.name.replace(" (Base)", "")} (${activeToUnit.symbol})",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                          fontFamily = AppleSansFamily,
-                          fontSize = 15.sp,
-                          fontWeight = FontWeight.Bold
-                        ),
-                        color = titleColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                      )
-                      Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = "Select Target Unit",
-                        tint = accentCyan,
-                        modifier = Modifier.size(18.dp)
-                      )
-                    }
-                  }
-
-                  Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(start = 8.dp)
-                  ) {
-                    Surface(
-                      onClick = {
-                        precisionMode = when (precisionMode) {
-                          UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
-                          UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
-                          UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
-                        }
-                      },
-                      shape = RoundedCornerShape(10.dp),
-                      color = accentCyan.copy(alpha = 0.16f),
-                      border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.40f)),
-                      modifier = Modifier
-                        .height(34.dp)
-                        .testTag("unit_converter_precision_toggle")
-                    ) {
-                      Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
-                        Text(
-                          text = precisionMode.label,
-                          fontSize = 12.sp,
-                          fontWeight = FontWeight.Bold,
-                          color = accentCyan
-                        )
-                      }
-                    }
-
-                    IconButton(
-                      onClick = {
-                        clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
-                        Toast.makeText(
-                          context,
-                          "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
-                          Toast.LENGTH_SHORT
-                        ).show()
-                      },
-                      modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(accentCyan.copy(alpha = 0.14f))
-                        .testTag("unit_converter_copy_result_button")
-                    ) {
-                      Icon(
-                        imageVector = Icons.Filled.ContentCopy,
-                        contentDescription = "Copy Converted Result",
-                        tint = accentCyan,
-                        modifier = Modifier.size(16.dp)
-                      )
-                    }
-                  }
-                }
-
-                // Bottom Row: Large Converted Output Readout (28.sp Bold cyan-blue)
-                Text(
-                  text = "$formattedPrimaryOutput ${activeToUnit.symbol}",
-                  style = MaterialTheme.typography.headlineMedium.copy(
-                    fontFamily = AppleSansFamily,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.5).sp,
-                    fontFeatureSettings = "tnum"
-                  ),
-                  color = accentCyan,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("unit_converter_to_output")
-                )
-              }
-            }
-          }
-
-          // Prominent Circular 44.dp Swap Button Centered Between FROM & TO Cards
+    // 4. CONVERSION CARDS + EQUIVALENTS LIST (2-Pane Split in Landscape, Single LazyColumn in Portrait)
+    val renderConverterIoCards: @Composable () -> Unit = {
+      Box(modifier = Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          // FROM CARD
           Box(
             modifier = Modifier
-              .align(Alignment.CenterEnd)
-              .padding(end = 24.dp)
-              .size(44.dp)
-              .shadow(
-                elevation = 10.dp,
-                shape = CircleShape,
-                ambientColor = activeSegBlue.copy(alpha = 0.40f),
-                spotColor = activeSegBlue.copy(alpha = 0.40f)
-              )
-              .clip(CircleShape)
-              .background(
-                Brush.linearGradient(
-                  listOf(Color(0xFF0284C7), Color(0xFF2563EB))
-                )
-              )
-              .border(1.5.dp, Color.White, CircleShape)
-              .clickable {
-                playCardHapticSound(context, localView)
-                val prevFrom = activeFromUnit.symbol
-                fromSymbol = activeToUnit.symbol
-                toSymbol = prevFrom
-              }
-              .testTag("unit_converter_swap_button"),
-            contentAlignment = Alignment.Center
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(22.dp))
+              .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
+              .border(cardBorder, RoundedCornerShape(22.dp))
+              .padding(horizontal = 16.dp, vertical = 12.dp)
           ) {
-            Icon(
-              imageVector = Icons.Filled.SwapVert,
-              contentDescription = "Swap From and To Units",
-              tint = Color.White,
-              modifier = Modifier.size(22.dp)
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                // Tappable Unit Selector Button
+                Surface(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    pickerTargetSide = "FROM"
+                  },
+                  shape = RoundedCornerShape(12.dp),
+                  color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
+                  border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
+                  modifier = Modifier
+                    .weight(1f, fill = false)
+                    .height(40.dp)
+                    .testTag("unit_converter_from_selector")
+                ) {
+                  Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Text(
+                      text = "${activeFromUnit.name.replace(" (Base)", "")} (${activeFromUnit.symbol})",
+                      style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = AppleSansFamily,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = titleColor,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Icon(
+                      imageVector = Icons.Filled.KeyboardArrowDown,
+                      contentDescription = "Select From Unit",
+                      tint = accentCyan,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+
+                Row(
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier = Modifier.padding(start = 8.dp)
+                ) {
+                  Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = accentCyan.copy(alpha = 0.14f),
+                    modifier = Modifier.height(28.dp)
+                  ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                      Text(
+                        text = activeFromUnit.system,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = accentCyan
+                      )
+                    }
+                  }
+
+                  if (inputExpression.isNotEmpty()) {
+                    IconButton(
+                      onClick = { inputExpression = "" },
+                      modifier = Modifier
+                        .size(34.dp)
+                        .testTag("unit_converter_clear_input_button")
+                    ) {
+                      Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Clear Input",
+                        tint = subtitleColor,
+                        modifier = Modifier.size(17.dp)
+                      )
+                    }
+                  }
+                }
+              }
+
+              // Bottom Row: Large Editable Numeric/Expression Input (28.sp Bold tnum)
+              BasicTextField(
+                value = inputExpression,
+                onValueChange = { inputExpression = it },
+                singleLine = true,
+                textStyle = ComposeTextStyle(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 28.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = (-0.5).sp,
+                  fontFeatureSettings = "tnum",
+                  color = titleColor
+                ),
+                cursorBrush = SolidColor(accentCyan),
+                keyboardOptions = KeyboardOptions(
+                  keyboardType = KeyboardType.Text,
+                  imeAction = ImeAction.Done
+                ),
+                decorationBox = { innerTextField ->
+                  Box(modifier = Modifier.fillMaxWidth()) {
+                    if (inputExpression.isEmpty()) {
+                      Text(
+                        text = "Enter value or e.g. 25 * 4",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                          fontFamily = AppleSansFamily,
+                          fontSize = 22.sp,
+                          fontFeatureSettings = "tnum"
+                        ),
+                        color = subtitleColor.copy(alpha = 0.55f)
+                      )
+                    }
+                    innerTextField()
+                  }
+                },
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("unit_converter_from_input")
+              )
+            }
+          }
+
+          // TO CARD
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(22.dp))
+              .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
+              .border(cardBorder, RoundedCornerShape(22.dp))
+              .padding(horizontal = 16.dp, vertical = 12.dp)
+          ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                // Tappable Target Unit Selector Button
+                Surface(
+                  onClick = {
+                    playCardHapticSound(context, localView)
+                    pickerTargetSide = "TO"
+                  },
+                  shape = RoundedCornerShape(12.dp),
+                  color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
+                  border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
+                  modifier = Modifier
+                    .weight(1f, fill = false)
+                    .height(40.dp)
+                    .testTag("unit_converter_to_selector")
+                ) {
+                  Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                  ) {
+                    Text(
+                      text = "${activeToUnit.name.replace(" (Base)", "")} (${activeToUnit.symbol})",
+                      style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = AppleSansFamily,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = titleColor,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Icon(
+                      imageVector = Icons.Filled.KeyboardArrowDown,
+                      contentDescription = "Select Target Unit",
+                      tint = accentCyan,
+                      modifier = Modifier.size(18.dp)
+                    )
+                  }
+                }
+
+                Row(
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier = Modifier.padding(start = 8.dp)
+                ) {
+                  Surface(
+                    onClick = {
+                      precisionMode = when (precisionMode) {
+                        UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
+                        UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
+                        UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
+                      }
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    color = accentCyan.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.40f)),
+                    modifier = Modifier
+                      .height(34.dp)
+                      .testTag("unit_converter_precision_toggle")
+                  ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                      Text(
+                        text = precisionMode.label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = accentCyan
+                      )
+                    }
+                  }
+
+                  IconButton(
+                    onClick = {
+                      clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
+                      Toast.makeText(
+                        context,
+                        "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                    },
+                    modifier = Modifier
+                      .size(36.dp)
+                      .clip(CircleShape)
+                      .background(accentCyan.copy(alpha = 0.14f))
+                      .testTag("unit_converter_copy_result_button")
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.ContentCopy,
+                      contentDescription = "Copy Converted Result",
+                      tint = accentCyan,
+                      modifier = Modifier.size(16.dp)
+                    )
+                  }
+                }
+              }
+
+              // Bottom Row: Large Converted Output Readout (28.sp Bold cyan-blue)
+              Text(
+                text = "$formattedPrimaryOutput ${activeToUnit.symbol}",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 28.sp,
+                  fontWeight = FontWeight.Bold,
+                  letterSpacing = (-0.5).sp,
+                  fontFeatureSettings = "tnum"
+                ),
+                color = accentCyan,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("unit_converter_to_output")
+              )
+            }
           }
         }
-      }
 
-      // Formula & Conversion Factor Capsule
-      item(key = "formula_capsule") {
-        MathFormulaCapsule(
-          label = "${selectedCategory.shortLabel} Conversion",
-          equation = liveEquationText,
-          secondaryEquation = unitScaleFactorText,
-          accentColor = accentCyan,
-          testTag = "unit_converter_formula_capsule"
+        // Prominent Circular 44.dp Swap Button Centered Between FROM & TO Cards
+        Box(
+          modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .padding(end = 24.dp)
+            .size(44.dp)
+            .shadow(
+              elevation = 10.dp,
+              shape = CircleShape,
+              ambientColor = activeSegBlue.copy(alpha = 0.40f),
+              spotColor = activeSegBlue.copy(alpha = 0.40f)
+            )
+            .clip(CircleShape)
+            .background(
+              Brush.linearGradient(
+                listOf(Color(0xFF0284C7), Color(0xFF2563EB))
+              )
+            )
+            .border(1.5.dp, Color.White, CircleShape)
+            .clickable {
+              playCardHapticSound(context, localView)
+              val prevFrom = activeFromUnit.symbol
+              fromSymbol = activeToUnit.symbol
+              toSymbol = prevFrom
+            }
+            .testTag("unit_converter_swap_button"),
+          contentAlignment = Alignment.Center
+        ) {
+          Icon(
+            imageVector = Icons.Filled.SwapVert,
+            contentDescription = "Swap From and To Units",
+            tint = Color.White,
+            modifier = Modifier.size(22.dp)
+          )
+        }
+      }
+    }
+
+    val renderFormulaCapsule: @Composable () -> Unit = {
+      MathFormulaCapsule(
+        label = "${selectedCategory.shortLabel} Conversion",
+        equation = liveEquationText,
+        secondaryEquation = unitScaleFactorText,
+        accentColor = accentCyan,
+        testTag = "unit_converter_formula_capsule"
+      )
+    }
+
+    val renderEquivalentsHeader: @Composable () -> Unit = {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(top = 6.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = "ALL UNIT EQUIVALENTS",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.8.sp
+          ),
+          color = subtitleColor
+        )
+        Text(
+          text = "${filteredDisplayUnits.size} units",
+          style = MaterialTheme.typography.labelSmall.copy(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+          ),
+          color = accentCyan
         )
       }
+    }
 
-      // Single-Column Section Header
-      item(key = "all_equivalents_header") {
+    val renderEquivalentRow: @Composable (CeUnitDefinition) -> Unit = { unit ->
+      val isSelected = unit.symbol == activeToUnit.symbol
+      val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
+        evaluatedInput?.let {
+          val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
+          formatConvertedValue(conv, precisionMode)
+        } ?: "—"
+      }
+
+      Surface(
+        onClick = {
+          playCardHapticSound(context, localView)
+          toSymbol = unit.symbol
+        },
+        shape = RoundedCornerShape(16.dp),
+        color = if (isSelected) {
+          if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.24f) else Color(0xFFE0F2FE).copy(alpha = 0.92f)
+        } else {
+          if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.62f) else Color.White.copy(alpha = 0.86f)
+        },
+        border = if (isSelected) {
+          BorderStroke(1.3.dp, accentCyan)
+        } else {
+          cardBorder
+        },
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(min = 56.dp)
+          .testTag("to_unit_row_${unit.symbol}")
+      ) {
         Row(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-          Text(
-            text = "ALL UNIT EQUIVALENTS",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontSize = 11.5.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 0.8.sp
-            ),
-            color = subtitleColor
-          )
-          Text(
-            text = "${filteredDisplayUnits.size} units",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontSize = 11.sp,
-              fontWeight = FontWeight.Bold
-            ),
-            color = accentCyan
-          )
-        }
-      }
-
-      // Clean Single-Column "All Unit Equivalents" Rows (minHeight = 56.dp)
-      items(
-        items = filteredDisplayUnits,
-        key = { "equiv_${it.symbol}" }
-      ) { unit ->
-        val isSelected = unit.symbol == activeToUnit.symbol
-        val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
-          evaluatedInput?.let {
-            val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
-            formatConvertedValue(conv, precisionMode)
-          } ?: "—"
-        }
-
-        Surface(
-          onClick = {
-            playCardHapticSound(context, localView)
-            toSymbol = unit.symbol
-          },
-          shape = RoundedCornerShape(16.dp),
-          color = if (isSelected) {
-            if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.24f) else Color(0xFFE0F2FE).copy(alpha = 0.92f)
-          } else {
-            if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.62f) else Color.White.copy(alpha = 0.86f)
-          },
-          border = if (isSelected) {
-            BorderStroke(1.3.dp, accentCyan)
-          } else {
-            cardBorder
-          },
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .testTag("to_unit_row_${unit.symbol}")
-        ) {
-          Row(
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (isSelected) activeSegBlue else if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
             modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+              .widthIn(min = 42.dp)
+              .height(36.dp)
           ) {
-            // Left: Symbol Badge + Unit Name + SI/USCS Sub-label
-            Surface(
-              shape = RoundedCornerShape(10.dp),
-              color = if (isSelected) activeSegBlue else if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
-              modifier = Modifier
-                .widthIn(min = 42.dp)
-                .height(36.dp)
-            ) {
-              Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.padding(horizontal = 8.dp)
-              ) {
-                Text(
-                  text = unit.symbol,
-                  style = MaterialTheme.typography.labelMedium.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = if (isSelected) Color.White else titleColor,
-                  maxLines = 1,
-                  softWrap = false
-                )
-              }
-            }
-
-            Column(
-              modifier = Modifier.weight(1f),
-              verticalArrangement = Arrangement.spacedBy(2.dp)
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier = Modifier.padding(horizontal = 8.dp)
             ) {
               Text(
-                text = unit.name.replace(" (Base)", ""),
-                style = MaterialTheme.typography.titleSmall.copy(
-                  fontFamily = AppleSansFamily,
-                  fontSize = 15.sp,
-                  fontWeight = FontWeight.SemiBold
+                text = unit.symbol,
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.Bold
                 ),
-                color = titleColor,
+                color = if (isSelected) Color.White else titleColor,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                softWrap = false
               )
-              Text(
-                text = unit.system,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontFamily = AppleSansFamily,
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.Medium
-                ),
-                color = subtitleColor
-              )
-            }
-
-            // Right: Live Converted Value (16.sp Bold tnum) + Copy Button
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-              Text(
-                text = livePreviewText,
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontFamily = AppleSansFamily,
-                  fontSize = 16.sp,
-                  fontWeight = FontWeight.Bold,
-                  fontFeatureSettings = "tnum"
-                ),
-                color = if (isSelected) accentCyan else titleColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-
-              IconButton(
-                onClick = {
-                  clipboardManager.setText(AnnotatedString("$livePreviewText ${unit.symbol}"))
-                  Toast.makeText(
-                    context,
-                    "Copied: $livePreviewText ${unit.symbol}",
-                    Toast.LENGTH_SHORT
-                  ).show()
-                },
-                modifier = Modifier
-                  .size(34.dp)
-                  .testTag("copy_equiv_${unit.symbol}")
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.ContentCopy,
-                  contentDescription = "Copy ${unit.name} equivalent",
-                  tint = subtitleColor,
-                  modifier = Modifier.size(16.dp)
-                )
-              }
             }
           }
+
+          Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+          ) {
+            Text(
+              text = unit.name.replace(" (Base)", ""),
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = titleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = unit.system,
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+              ),
+              color = subtitleColor
+            )
+          }
+
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Text(
+              text = livePreviewText,
+              style = MaterialTheme.typography.titleMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                fontFeatureSettings = "tnum"
+              ),
+              color = if (isSelected) accentCyan else titleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+
+            IconButton(
+              onClick = {
+                clipboardManager.setText(AnnotatedString("$livePreviewText ${unit.symbol}"))
+                Toast.makeText(
+                  context,
+                  "Copied: $livePreviewText ${unit.symbol}",
+                  Toast.LENGTH_SHORT
+                ).show()
+              },
+              modifier = Modifier
+                .size(34.dp)
+                .testTag("copy_equiv_${unit.symbol}")
+            ) {
+              Icon(
+                imageVector = Icons.Filled.ContentCopy,
+                contentDescription = "Copy ${unit.name} equivalent",
+                tint = subtitleColor,
+                modifier = Modifier.size(16.dp)
+              )
+            }
+          }
+        }
+      }
+    }
+
+    if (orientation.isLandscape) {
+      Row(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+          .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Top
+      ) {
+        Column(
+          modifier = Modifier
+            .weight(0.47f)
+            .fillMaxHeight()
+            .verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          renderConverterIoCards()
+          renderFormulaCapsule()
+          Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        LazyColumn(
+          modifier = Modifier
+            .weight(0.53f)
+            .fillMaxHeight()
+            .testTag("unit_converter_equivalents_list"),
+          contentPadding = PaddingValues(top = 2.dp, bottom = 20.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          item(key = "all_equivalents_header") {
+            renderEquivalentsHeader()
+          }
+          items(
+            items = filteredDisplayUnits,
+            key = { "equiv_${it.symbol}" }
+          ) { unit ->
+            renderEquivalentRow(unit)
+          }
+        }
+      }
+    } else {
+      LazyColumn(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+          .testTag("unit_converter_equivalents_list"),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        item(key = "converter_io_cards") {
+          renderConverterIoCards()
+        }
+        item(key = "formula_capsule") {
+          renderFormulaCapsule()
+        }
+        item(key = "all_equivalents_header") {
+          renderEquivalentsHeader()
+        }
+        items(
+          items = filteredDisplayUnits,
+          key = { "equiv_${it.symbol}" }
+        ) { unit ->
+          renderEquivalentRow(unit)
         }
       }
     }
@@ -16112,6 +16230,8 @@ fun FormulaVaultMainView(
   val isShowingAlgebraSheet = !isShowingAnalyticSheet && !isShowingTrigSheet &&
     (currentTier == FormulaVaultTier.ALGEBRA_A4_SHEET || showAlgebraDirectlyFromSearch)
 
+  val orientation = rememberScreenOrientationState()
+
   Box(
     modifier = modifier
       .fillMaxSize()
@@ -16120,7 +16240,7 @@ fun FormulaVaultMainView(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .widthIn(max = metrics.maxContentWidth)
+        .widthIn(max = orientation.wideMaxContentWidth)
         .align(Alignment.TopCenter)
         .padding(
           start = metrics.scaledDp(18),
@@ -17111,14 +17231,16 @@ private fun NotebookShelfLibraryView(
     }
   }
 
+  val orientation = rememberScreenOrientationState()
+
   LazyVerticalGrid(
-    columns = if (metrics.screenWidthDp >= 600) {
-      GridCells.Adaptive(minSize = 300.dp)
+    columns = if (metrics.screenWidthDp >= 600 || orientation.isLandscape) {
+      GridCells.Adaptive(minSize = 260.dp)
     } else {
       GridCells.Fixed(1)
-    } ,
+    },
     modifier = modifier
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .padding(bottom = 96.dp),
     horizontalArrangement = Arrangement.spacedBy(14.dp),
     verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -17679,10 +17801,12 @@ private fun GeometryVolumesScreen(
     }
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .verticalScroll(rememberScrollState())
       .padding(bottom = 96.dp)
       .testTag("geometry_volumes_screen"),
@@ -17953,10 +18077,12 @@ private fun PlaneGeometryScreen(
     }
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .testTag("plane_geometry_screen"),
     verticalArrangement = Arrangement.spacedBy(12.dp)
   ) {
@@ -18007,9 +18133,13 @@ private fun PlaneGeometryScreen(
       )
     }
 
-    // 2-Column LazyVerticalGrid of 8 Upgraded CAD Preview Shape Cards
+    // Adaptive LazyVerticalGrid of 8 Upgraded CAD Preview Shape Cards (2-col Portrait, Multi-col Landscape)
     LazyVerticalGrid(
-      columns = GridCells.Fixed(2),
+      columns = if (orientation.isLandscape || metrics.screenWidthDp >= 600) {
+        GridCells.Adaptive(minSize = 180.dp)
+      } else {
+        GridCells.Fixed(2)
+      },
       contentPadding = PaddingValues(bottom = 110.dp),
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -18164,9 +18294,10 @@ private fun PlaneGeometryScreen(
             ),
             shadowElevation = 28.dp,
             modifier = Modifier
-              .fillMaxWidth(0.90f)
+              .fillMaxWidth(if (orientation.isLandscape) 0.92f else 0.90f)
+              .then(if (orientation.isLandscape) Modifier.widthIn(max = 880.dp) else Modifier)
               .wrapContentHeight()
-              .heightIn(max = 600.dp)
+              .heightIn(max = if (orientation.isLandscape) 460.dp else 600.dp)
               .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -18178,7 +18309,7 @@ private fun PlaneGeometryScreen(
               modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(horizontal = 20.dp, vertical = if (orientation.isLandscape) 14.dp else 18.dp),
               verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
               // Dialog Header: Shape Name + "CAD BLUEPRINT" Badge + Close Button
@@ -18260,104 +18391,126 @@ private fun PlaneGeometryScreen(
                 }
               }
 
-              // Hero CAD Blueprint Stage (175.dp height with engineering grid + 120.dp visual scale diagram)
-              PlaneGeometryCadBlueprintStage(
-                shapeId = activeShape.id,
-                accentColor = activeShape.accentColor,
-                isDark = palette.isDark,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .height(175.dp)
-                  .padding(vertical = 8.dp)
-              )
-
-              // Upgraded Formula Capsules with Tap-to-Copy UX (Zero descriptive paragraphs)
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .weight(1f, fill = false)
-                  .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-              ) {
-                activeShape.formulas.forEach { item ->
-                  Surface(
-                    onClick = {
-                      playCardHapticSound(context, localView)
-                      clipboardManager.setText(AnnotatedString(item.formula))
-                      Toast.makeText(
-                        context,
-                        "Formula copied to clipboard",
-                        Toast.LENGTH_SHORT
-                      ).show()
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    color = formulaCardFill,
-                    border = BorderStroke(1.dp, formulaCardBorder),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.fillMaxWidth()
-                  ) {
-                    Row(
-                      modifier = Modifier
-                        .fillMaxWidth()
-                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
-                      verticalAlignment = Alignment.CenterVertically
+              val renderFormulaCapsulesList: @Composable (Modifier) -> Unit = { listMod ->
+                Column(
+                  modifier = listMod.verticalScroll(rememberScrollState()),
+                  verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  activeShape.formulas.forEach { item ->
+                    Surface(
+                      onClick = {
+                        playCardHapticSound(context, localView)
+                        clipboardManager.setText(AnnotatedString(item.formula))
+                        Toast.makeText(
+                          context,
+                          "Formula copied to clipboard",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      },
+                      shape = RoundedCornerShape(14.dp),
+                      color = formulaCardFill,
+                      border = BorderStroke(1.dp, formulaCardBorder),
+                      shadowElevation = 2.dp,
+                      modifier = Modifier.fillMaxWidth()
                     ) {
-                      // Left Accent Stripe
-                      Box(
+                      Row(
                         modifier = Modifier
-                          .width(4.dp)
-                          .fillMaxHeight()
-                          .background(
-                            brush = Brush.verticalGradient(
-                              listOf(microLabelAccent, activeShape.accentColor)
-                            )
-                          )
-                      )
-
-                      Column(
-                        modifier = Modifier
-                          .weight(1f)
-                          .padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                          .fillMaxWidth()
+                          .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+                        verticalAlignment = Alignment.CenterVertically
                       ) {
-                        Text(
-                          text = item.title.uppercase(Locale.ROOT),
-                          style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.6.sp
-                          ),
-                          color = microLabelAccent,
-                          softWrap = true
+                        Box(
+                          modifier = Modifier
+                            .width(4.dp)
+                            .fillMaxHeight()
+                            .background(
+                              brush = Brush.verticalGradient(
+                                listOf(microLabelAccent, activeShape.accentColor)
+                              )
+                            )
                         )
 
-                        Text(
-                          text = item.formula,
-                          fontFamily = FontFamily.Monospace,
-                          fontSize = 16.sp,
-                          softWrap = true,
-                          style = MaterialTheme.typography.titleMedium.copy(
+                        Column(
+                          modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                          verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                          Text(
+                            text = item.title.uppercase(Locale.ROOT),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                              fontSize = 11.sp,
+                              fontWeight = FontWeight.Bold,
+                              letterSpacing = 0.6.sp
+                            ),
+                            color = microLabelAccent,
+                            softWrap = true
+                          )
+
+                          Text(
+                            text = item.formula,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 16.sp,
-                            lineHeight = 22.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.15.sp
-                          ),
-                          color = formulaTextColor
+                            softWrap = true,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                              fontFamily = FontFamily.Monospace,
+                              fontSize = 16.sp,
+                              lineHeight = 22.sp,
+                              fontWeight = FontWeight.Bold,
+                              letterSpacing = 0.15.sp
+                            ),
+                            color = formulaTextColor
+                          )
+                        }
+
+                        Icon(
+                          imageVector = Icons.Default.ContentCopy,
+                          contentDescription = "Copy ${item.title}",
+                          tint = microLabelAccent.copy(alpha = 0.72f),
+                          modifier = Modifier
+                            .padding(end = 14.dp)
+                            .size(16.dp)
                         )
                       }
-
-                      Icon(
-                        imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "Copy ${item.title}",
-                        tint = microLabelAccent.copy(alpha = 0.72f),
-                        modifier = Modifier
-                          .padding(end = 14.dp)
-                          .size(16.dp)
-                      )
                     }
                   }
                 }
+              }
+
+              if (orientation.isLandscape) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                  horizontalArrangement = Arrangement.spacedBy(14.dp),
+                  verticalAlignment = Alignment.Top
+                ) {
+                  PlaneGeometryCadBlueprintStage(
+                    shapeId = activeShape.id,
+                    accentColor = activeShape.accentColor,
+                    isDark = palette.isDark,
+                    modifier = Modifier
+                      .weight(0.46f)
+                      .heightIn(min = 190.dp, max = 300.dp)
+                      .fillMaxHeight()
+                  )
+                  renderFormulaCapsulesList(Modifier.weight(0.54f))
+                }
+              } else {
+                PlaneGeometryCadBlueprintStage(
+                  shapeId = activeShape.id,
+                  accentColor = activeShape.accentColor,
+                  isDark = palette.isDark,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(175.dp)
+                    .padding(vertical = 8.dp)
+                )
+                renderFormulaCapsulesList(
+                  Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                )
               }
             }
           }
@@ -18500,7 +18653,7 @@ private fun PlaneGeometryCadBlueprintStage(
         )
       }
 
-      val scaleBox = 116.dp.toPx().coerceAtMost(h * 0.76f)
+      val scaleBox = 116.dp.toPx().coerceAtMost(minOf(w, h) * 0.76f)
       val halfH = scaleBox * 0.44f
       val halfW = scaleBox * 0.62f
 
@@ -19389,10 +19542,12 @@ private fun SolidGeometryScreen(
     }
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .testTag("solid_geometry_screen"),
     verticalArrangement = Arrangement.spacedBy(12.dp)
   ) {
@@ -19443,9 +19598,13 @@ private fun SolidGeometryScreen(
       )
     }
 
-    // 2-Column LazyVerticalGrid of 11 3D Isometric CAD Preview Solid Cards
+    // Adaptive LazyVerticalGrid of 11 3D Isometric CAD Preview Solid Cards
     LazyVerticalGrid(
-      columns = GridCells.Fixed(2),
+      columns = if (orientation.isLandscape || metrics.screenWidthDp >= 600) {
+        GridCells.Adaptive(minSize = 180.dp)
+      } else {
+        GridCells.Fixed(2)
+      },
       contentPadding = PaddingValues(bottom = 110.dp),
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -19600,9 +19759,10 @@ private fun SolidGeometryScreen(
             ),
             shadowElevation = 28.dp,
             modifier = Modifier
-              .fillMaxWidth(0.90f)
+              .fillMaxWidth(if (orientation.isLandscape) 0.92f else 0.90f)
+              .then(if (orientation.isLandscape) Modifier.widthIn(max = 880.dp) else Modifier)
               .wrapContentHeight()
-              .heightIn(max = 620.dp)
+              .heightIn(max = if (orientation.isLandscape) 460.dp else 620.dp)
               .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -19614,7 +19774,7 @@ private fun SolidGeometryScreen(
               modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight()
-                .padding(horizontal = 20.dp, vertical = 18.dp),
+                .padding(horizontal = 20.dp, vertical = if (orientation.isLandscape) 14.dp else 18.dp),
               verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
               // Dialog Header: Solid Name + "3D CAD BLUEPRINT" Badge + Close Button
@@ -19698,124 +19858,146 @@ private fun SolidGeometryScreen(
                 }
               }
 
-              // Hero 3D CAD Blueprint Stage (175.dp height with engineering grid + 120.dp 3D isometric wireframe figure)
-              SolidGeometryCadBlueprintStage(
-                solidId = activeSolid.id,
-                accentColor = activeSolid.accentColor,
-                isDark = palette.isDark,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .height(175.dp)
-                  .padding(vertical = 8.dp)
-              )
-
-              // Upgraded Formula Capsules with Tap-to-Copy UX (Zero descriptive paragraphs)
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .weight(1f, fill = false)
-                  .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-              ) {
-                activeSolid.formulas.forEachIndexed { idx, formulaItem ->
-                  Surface(
-                    onClick = {
-                      playCardHapticSound(context, localView)
-                      val cleanFormula = formulaItem.formula
-                        .removePrefix("[")
-                        .removeSuffix("]")
-                        .trim()
-                      clipboardManager.setText(
-                        AnnotatedString("${formulaItem.title}: $cleanFormula")
-                      )
-                      Toast.makeText(
-                        context,
-                        "Formula copied to clipboard",
-                        Toast.LENGTH_SHORT
-                      ).show()
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    color = formulaCardFill,
-                    border = BorderStroke(1.dp, formulaCardBorder),
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .testTag("solid_formula_capsule_${activeSolid.id}_$idx")
-                  ) {
-                    Row(
+              val renderSolidFormulasList: @Composable (Modifier) -> Unit = { listMod ->
+                Column(
+                  modifier = listMod.verticalScroll(rememberScrollState()),
+                  verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  activeSolid.formulas.forEachIndexed { idx, formulaItem ->
+                    Surface(
+                      onClick = {
+                        playCardHapticSound(context, localView)
+                        val cleanFormula = formulaItem.formula
+                          .removePrefix("[")
+                          .removeSuffix("]")
+                          .trim()
+                        clipboardManager.setText(
+                          AnnotatedString("${formulaItem.title}: $cleanFormula")
+                        )
+                        Toast.makeText(
+                          context,
+                          "Formula copied to clipboard",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      },
+                      shape = RoundedCornerShape(14.dp),
+                      color = formulaCardFill,
+                      border = BorderStroke(1.dp, formulaCardBorder),
                       modifier = Modifier
                         .fillMaxWidth()
-                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
-                      verticalAlignment = Alignment.CenterVertically
+                        .testTag("solid_formula_capsule_${activeSolid.id}_$idx")
                     ) {
-                      // Left vertical glowing accent bar
-                      Box(
-                        modifier = Modifier
-                          .width(4.dp)
-                          .fillMaxHeight()
-                          .background(
-                            brush = Brush.verticalGradient(
-                              listOf(
-                                activeSolid.accentColor,
-                                microLabelAccent
-                              )
-                            )
-                          )
-                      )
-
                       Row(
                         modifier = Modifier
-                          .weight(1f)
-                          .padding(horizontal = 14.dp, vertical = 11.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                          .fillMaxWidth()
+                          .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
                         verticalAlignment = Alignment.CenterVertically
                       ) {
-                        Column(
+                        Box(
+                          modifier = Modifier
+                            .width(4.dp)
+                            .fillMaxHeight()
+                            .background(
+                              brush = Brush.verticalGradient(
+                                listOf(
+                                  activeSolid.accentColor,
+                                  microLabelAccent
+                                )
+                              )
+                            )
+                        )
+
+                        Row(
                           modifier = Modifier
                             .weight(1f)
-                            .padding(end = 10.dp),
-                          verticalArrangement = Arrangement.spacedBy(4.dp)
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                          horizontalArrangement = Arrangement.SpaceBetween,
+                          verticalAlignment = Alignment.CenterVertically
                         ) {
-                          Text(
-                            text = formulaItem.title.uppercase(Locale.ROOT),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                              fontSize = 11.sp,
-                              fontWeight = FontWeight.Bold,
-                              letterSpacing = 0.8.sp
-                            ),
-                            color = microLabelAccent
-                          )
-
-                          Text(
-                            text = formulaItem.formula,
-                            style = MaterialTheme.typography.bodyLarge.copy(
-                              fontFamily = FontFamily.Monospace,
-                              fontSize = 15.5.sp,
-                              fontWeight = FontWeight.Bold,
-                              lineHeight = 21.sp
-                            ),
-                            color = formulaTextColor
-                          )
-                        }
-
-                        Surface(
-                          shape = CircleShape,
-                          color = microLabelAccent.copy(alpha = 0.12f),
-                          border = BorderStroke(0.8.dp, microLabelAccent.copy(alpha = 0.30f)),
-                          modifier = Modifier.size(30.dp)
-                        ) {
-                          Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                              imageVector = Icons.Default.ContentCopy,
-                              contentDescription = "Copy ${formulaItem.title}",
-                              tint = microLabelAccent.copy(alpha = 0.85f),
-                              modifier = Modifier.size(14.dp)
+                          Column(
+                            modifier = Modifier
+                              .weight(1f)
+                              .padding(end = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                          ) {
+                            Text(
+                              text = formulaItem.title.uppercase(Locale.ROOT),
+                              style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp
+                              ),
+                              color = microLabelAccent
                             )
+
+                            Text(
+                              text = formulaItem.formula,
+                              style = MaterialTheme.typography.bodyLarge.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                lineHeight = 21.sp
+                              ),
+                              color = formulaTextColor
+                            )
+                          }
+
+                          Surface(
+                            shape = CircleShape,
+                            color = microLabelAccent.copy(alpha = 0.12f),
+                            border = BorderStroke(0.8.dp, microLabelAccent.copy(alpha = 0.30f)),
+                            modifier = Modifier.size(30.dp)
+                          ) {
+                            Box(contentAlignment = Alignment.Center) {
+                              Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy ${formulaItem.title}",
+                                tint = microLabelAccent.copy(alpha = 0.85f),
+                                modifier = Modifier.size(14.dp)
+                              )
+                            }
                           }
                         }
                       }
                     }
                   }
                 }
+              }
+
+              if (orientation.isLandscape) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                  horizontalArrangement = Arrangement.spacedBy(14.dp),
+                  verticalAlignment = Alignment.Top
+                ) {
+                  SolidGeometryCadBlueprintStage(
+                    solidId = activeSolid.id,
+                    accentColor = activeSolid.accentColor,
+                    isDark = palette.isDark,
+                    modifier = Modifier
+                      .weight(0.46f)
+                      .heightIn(min = 190.dp, max = 300.dp)
+                      .fillMaxHeight()
+                  )
+                  renderSolidFormulasList(Modifier.weight(0.54f))
+                }
+              } else {
+                SolidGeometryCadBlueprintStage(
+                  solidId = activeSolid.id,
+                  accentColor = activeSolid.accentColor,
+                  isDark = palette.isDark,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .height(175.dp)
+                    .padding(vertical = 8.dp)
+                )
+                renderSolidFormulasList(
+                  Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                )
               }
             }
           }
@@ -21891,7 +22073,7 @@ private fun MsteAlgebraSheet(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = rememberScreenOrientationState().wideMaxContentWidth)
       .testTag("algebra_a4_paper_sheet"),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
@@ -22645,7 +22827,7 @@ private fun MsteTrigonometrySheet(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = rememberScreenOrientationState().wideMaxContentWidth)
       .testTag("trigonometry_a4_paper_sheet"),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
@@ -23089,6 +23271,8 @@ private fun InteractiveMagicHexagonModal(
         ),
       contentAlignment = Alignment.Center
     ) {
+      val orientation = rememberScreenOrientationState()
+
       Surface(
         onClick = {},
         shape = RoundedCornerShape(28.dp),
@@ -23106,19 +23290,12 @@ private fun InteractiveMagicHexagonModal(
         shadowElevation = 28.dp,
         modifier = Modifier
           .fillMaxWidth(0.92f)
-          .widthIn(max = 580.dp)
+          .widthIn(max = if (orientation.isLandscape) 880.dp else 580.dp)
           .wrapContentHeight()
-          .heightIn(max = 760.dp)
+          .heightIn(max = if (orientation.isLandscape) 460.dp else 760.dp)
           .testTag("holographic_triangle_modal")
       ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-          // Header Row
+        val renderHexHeader: @Composable () -> Unit = {
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -23167,10 +23344,9 @@ private fun InteractiveMagicHexagonModal(
               }
             }
           }
+        }
 
-          // ==================================================================
-          // 1. MODE SELECTOR CHIPS (TOP OF MODAL)
-          // ==================================================================
+        val renderHexModeChips: @Composable () -> Unit = {
           Row(
             modifier = Modifier
               .fillMaxWidth()
@@ -23212,10 +23388,63 @@ private fun InteractiveMagicHexagonModal(
               }
             }
           }
+        }
 
-          // ==================================================================
-          // 2. INTERACTIVE 260.DP MAGIC HEXAGON CANVAS (CENTER OF MODAL)
-          // ==================================================================
+        val renderHexFormulaCard: @Composable () -> Unit = {
+          Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0xFF111827).copy(alpha = 0.95f),
+            border = BorderStroke(1.2.dp, selectedMode.accentColor.copy(alpha = 0.48f)),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("holographic_triangle_concept_card")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = selectedMode.accentColor.copy(alpha = 0.16f),
+                border = BorderStroke(0.9.dp, selectedMode.accentColor.copy(alpha = 0.45f))
+              ) {
+                Text(
+                  text = derivedRuleBadge,
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.5.sp
+                  ),
+                  color = selectedMode.accentColor,
+                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                )
+              }
+
+              Text(
+                text = derivedTitle,
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontSize = 14.5.sp,
+                  fontWeight = FontWeight.ExtraBold
+                ),
+                color = Color(0xFFF8FAFC)
+              )
+
+              derivedFormulas.forEachIndexed { idx, (label, formulaText) ->
+                MathFormulaCapsule(
+                  label = "${idx + 1}. $label",
+                  equation = formulaText,
+                  accentColor = selectedMode.accentColor,
+                  testTag = "magic_hex_formula_capsule_${idx + 1}"
+                )
+              }
+            }
+          }
+        }
+
+        val hexCanvasBox: @Composable (Modifier) -> Unit = { canvasSurfaceMod ->
           Surface(
             shape = RoundedCornerShape(20.dp),
             color = Color(0xFF0F172A),
@@ -23223,10 +23452,7 @@ private fun InteractiveMagicHexagonModal(
               width = 1.2.dp,
               color = selectedMode.accentColor.copy(alpha = 0.52f)
             ),
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(260.dp)
-              .testTag("holographic_triangle_canvas")
+            modifier = canvasSurfaceMod.testTag("holographic_triangle_canvas")
           ) {
             Box(modifier = Modifier.fillMaxSize()) {
               Canvas(
@@ -23670,61 +23896,53 @@ private fun InteractiveMagicHexagonModal(
               }
             }
           }
+        }
 
-          // ==================================================================
-          // 3. LIVE DERIVED FORMULA CARD (BOTTOM OF MODAL)
-          // ==================================================================
-          Surface(
-            shape = RoundedCornerShape(18.dp),
-            color = Color(0xFF111827).copy(alpha = 0.95f),
-            border = BorderStroke(1.2.dp, selectedMode.accentColor.copy(alpha = 0.48f)),
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("holographic_triangle_concept_card")
-          ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = if (orientation.isLandscape) 14.dp else 18.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+          renderHexHeader()
+          if (orientation.isLandscape) {
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false),
+              horizontalArrangement = Arrangement.spacedBy(14.dp),
+              verticalAlignment = Alignment.Top
+            ) {
+              hexCanvasBox(
+                Modifier
+                  .weight(0.46f)
+                  .heightIn(min = 210.dp, max = 330.dp)
+                  .fillMaxHeight()
+              )
+              Column(
+                modifier = Modifier
+                  .weight(0.54f)
+                  .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                renderHexModeChips()
+                renderHexFormulaCard()
+              }
+            }
+          } else {
             Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-              verticalArrangement = Arrangement.spacedBy(10.dp)
+                .verticalScroll(rememberScrollState()),
+              verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-              // Visual Rule Badge
-              Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = selectedMode.accentColor.copy(alpha = 0.16f),
-                border = BorderStroke(0.9.dp, selectedMode.accentColor.copy(alpha = 0.45f))
-              ) {
-                Text(
-                  text = derivedRuleBadge,
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 9.5.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.5.sp
-                  ),
-                  color = selectedMode.accentColor,
-                  modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
-                )
-              }
-
-              Text(
-                text = derivedTitle,
-                style = MaterialTheme.typography.titleSmall.copy(
-                  fontSize = 14.5.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = Color(0xFFF8FAFC)
+              renderHexModeChips()
+              hexCanvasBox(
+                Modifier
+                  .fillMaxWidth()
+                  .height(260.dp)
               )
-
-              // Derived Formula Capsules with one-tap copy support
-              derivedFormulas.forEachIndexed { idx, (label, formulaText) ->
-                MathFormulaCapsule(
-                  label = "${idx + 1}. $label",
-                  equation = formulaText,
-                  accentColor = selectedMode.accentColor,
-                  testTag = "magic_hex_formula_capsule_${idx + 1}"
-                )
-              }
+              renderHexFormulaCard()
             }
           }
         }
@@ -25089,7 +25307,7 @@ fun FlashcardMainView(
   LazyColumn(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = metrics.maxContentWidth)
+      .widthIn(max = metrics.landscapeWideMaxWidth)
       .testTag("flashcard_main_view"),
     contentPadding = PaddingValues(
       start = metrics.scaledDp(20),
@@ -27716,7 +27934,7 @@ fun FlashcardStudyScreen(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = metrics.maxContentWidth)
+      .widthIn(max = metrics.landscapeWideMaxWidth)
       .verticalScroll(rememberScrollState())
       .padding(
         horizontal = metrics.scaledDp(20),
@@ -29224,506 +29442,664 @@ fun ClassTimetableScheduleScreen(
   Box(
     modifier = modifier.fillMaxSize()
   ) {
-    LazyColumn(
-      modifier = Modifier
-        .fillMaxSize()
-        .testTag("schedule_screen_list"),
-      contentPadding = PaddingValues(
-        start = metrics.scaledDp(18),
-        end = metrics.scaledDp(18),
-        top = metrics.scaledDp(22),
-        bottom = metrics.scaledDp(108)
-      ),
-      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
-    ) {
-      // 1. Top Header Row: "Class Timetable" Title + Top-Right Grid/List View Toggle Button
-      item {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = stringResource(R.string.schedule_screen_title),
-            style = MaterialTheme.typography.headlineLarge.copy(
-              fontFamily = AppleSansFamily,
-              fontSize = metrics.scaledSp(26),
-              fontWeight = FontWeight.Bold,
-              letterSpacing = (-0.6).sp
-            ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+    val renderScheduleTopHeader: @Composable () -> Unit = {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = stringResource(R.string.schedule_screen_title),
+          style = MaterialTheme.typography.headlineLarge.copy(
+            fontFamily = AppleSansFamily,
+            fontSize = metrics.scaledSp(26),
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.6).sp
+          ),
+          color = palette.textPrimary,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier
+            .weight(1f)
+            .testTag("schedule_screen_title")
+        )
+
+        if (viewModel.isSyncingSchedule) {
+          CircularProgressIndicator(
             modifier = Modifier
-              .weight(1f)
-              .testTag("schedule_screen_title")
+              .size(18.dp)
+              .testTag("schedule_firestore_sync_indicator"),
+            strokeWidth = 2.dp,
+            color = palette.accentIndigo
           )
+        }
 
-          if (viewModel.isSyncingSchedule) {
-            CircularProgressIndicator(
-              modifier = Modifier
-                .size(18.dp)
-                .testTag("schedule_firestore_sync_indicator"),
-              strokeWidth = 2.dp,
-              color = palette.accentIndigo
-            )
-          }
-
-          val toggleContentColor = palette.accentIndigo
-          RecessedGlassPill(
-            isDarkMode = palette.isDark,
-            onClick = {
-              isGridView = !isGridView
-              if (!isGridView) focusedClass = null
+        val toggleContentColor = palette.accentIndigo
+        RecessedGlassPill(
+          isDarkMode = palette.isDark,
+          onClick = {
+            isGridView = !isGridView
+            if (!isGridView) focusedClass = null
+          },
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+          modifier = Modifier
+            .height(42.dp)
+            .testTag("schedule_view_toggle_button")
+        ) {
+          Icon(
+            imageVector = if (isGridView) {
+              Icons.AutoMirrored.Filled.ViewList
+            } else {
+              Icons.Filled.GridView
             },
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-            modifier = Modifier
-              .height(42.dp)
-              .testTag("schedule_view_toggle_button")
-          ) {
-            Icon(
-              imageVector = if (isGridView) {
-                Icons.AutoMirrored.Filled.ViewList
-              } else {
-                Icons.Filled.GridView
-              },
-              contentDescription = if (isGridView) {
-                stringResource(R.string.list_view_label)
-              } else {
-                stringResource(R.string.grid_view_label)
-              },
-              tint = toggleContentColor,
-              modifier = Modifier.size(18.dp)
-            )
-            Text(
-              text = if (isGridView) {
-                stringResource(R.string.list_view_label)
-              } else {
-                stringResource(R.string.grid_view_label)
-              },
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
-              ),
-              color = toggleContentColor,
-              maxLines = 1
-            )
-          }
+            contentDescription = if (isGridView) {
+              stringResource(R.string.list_view_label)
+            } else {
+              stringResource(R.string.grid_view_label)
+            },
+            tint = toggleContentColor,
+            modifier = Modifier.size(18.dp)
+          )
+          Text(
+            text = if (isGridView) {
+              stringResource(R.string.list_view_label)
+            } else {
+              stringResource(R.string.grid_view_label)
+            },
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = metrics.scaledSp(12),
+              fontWeight = FontWeight.Bold
+            ),
+            color = toggleContentColor,
+            maxLines = 1
+          )
         }
       }
+    }
 
-      if (isGridView) {
-        // Graphic Table (Grid View) Mode
-        item {
-          ScheduleTimetableGridView(
-            schedules = allSchedules,
-            selectedWeekDay = selectedWeekDay,
-            onSelectWeekDay = onSelectWeekDay,
-            onLongPressClass = { longPressedSchedule ->
-              focusedClass = longPressedSchedule
-            },
-            metrics = metrics
-          )
-        }
-      } else {
-        // 2. Week View Horizontal Row of Selectable Days (Mon, Tue, Wed, Thu, Fri, Sat)
-        item {
-          Row(
+    val renderWeekDaySelectorRow: @Composable () -> Unit = {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("schedule_week_day_selector"),
+        horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        ScheduleWeekDay.entries.forEach { day ->
+          val isSelected = selectedWeekDay == day
+          val countForDay = dayCountsMap[day] ?: 0
+          val dayPillShape = RoundedCornerShape(20.dp)
+          val dayPillBrush = if (isSelected) {
+            Brush.verticalGradient(
+              listOf(Color(0xFF38BDF8), Color(0xFF2563EB))
+            )
+          } else if (palette.isDark) {
+            Brush.verticalGradient(
+              listOf(
+                Color(0xFF1E293B).copy(alpha = 0.58f),
+                Color(0xFF0F172A).copy(alpha = 0.74f)
+              )
+            )
+          } else {
+            Brush.verticalGradient(
+              listOf(
+                Color.White.copy(alpha = 0.76f),
+                Color(0xFFF8FAFC).copy(alpha = 0.56f)
+              )
+            )
+          }
+          val dayPillBorder = if (isSelected) {
+            BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f))
+          } else {
+            palette.glassBorder
+          }
+
+          Box(
             modifier = Modifier
-              .fillMaxWidth()
-              .testTag("schedule_week_day_selector"),
-            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(6)),
-            verticalAlignment = Alignment.CenterVertically
+              .weight(1f)
+              .height(if (metrics.isLandscape) 64.dp else 76.dp)
+              .clip(dayPillShape)
+              .background(brush = dayPillBrush, shape = dayPillShape)
+              .border(border = dayPillBorder, shape = dayPillShape)
+              .clickable { onSelectWeekDay(day) }
+              .testTag("week_day_tab_${day.shortLabel.lowercase()}")
           ) {
-            ScheduleWeekDay.entries.forEach { day ->
-              val isSelected = selectedWeekDay == day
-              val countForDay = dayCountsMap[day] ?: 0
-              val dayPillShape = RoundedCornerShape(20.dp)
-              val dayPillBrush = if (isSelected) {
-                Brush.verticalGradient(
-                  listOf(Color(0xFF38BDF8), Color(0xFF2563EB))
-                )
-              } else if (palette.isDark) {
-                Brush.verticalGradient(
-                  listOf(
-                    Color(0xFF1E293B).copy(alpha = 0.58f),
-                    Color(0xFF0F172A).copy(alpha = 0.74f)
-                  )
-                )
-              } else {
-                Brush.verticalGradient(
-                  listOf(
-                    Color.White.copy(alpha = 0.76f),
-                    Color(0xFFF8FAFC).copy(alpha = 0.56f)
-                  )
-                )
-              }
-              val dayPillBorder = if (isSelected) {
-                BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f))
-              } else {
-                palette.glassBorder
-              }
+            Column(
+              modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = if (metrics.isLandscape) 6.dp else 10.dp, horizontal = 4.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+              verticalArrangement = Arrangement.SpaceBetween
+            ) {
+              Text(
+                text = day.shortLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontSize = 13.sp,
+                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                ),
+                color = if (isSelected) Color.White else palette.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
 
               Box(
                 modifier = Modifier
-                  .weight(1f)
-                  .height(76.dp)
-                  .clip(dayPillShape)
-                  .background(brush = dayPillBrush, shape = dayPillShape)
-                  .border(border = dayPillBorder, shape = dayPillShape)
-                  .clickable { onSelectWeekDay(day) }
-                  .testTag("week_day_tab_${day.shortLabel.lowercase()}")
-              ) {
-                Column(
-                  modifier = Modifier
-                    .fillMaxSize()
-                    .padding(vertical = 10.dp, horizontal = 4.dp),
-                  horizontalAlignment = Alignment.CenterHorizontally,
-                  verticalArrangement = Arrangement.SpaceBetween
-                ) {
-                  Text(
-                    text = day.shortLabel,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = 13.sp,
-                      fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
-                    ),
+                  .size(24.dp)
+                  .clip(CircleShape)
+                  .background(
                     color = if (isSelected) {
-                      Color.White
+                      Color.White.copy(alpha = 0.24f)
                     } else {
-                      palette.textPrimary
+                      Color(0xFF0EA5E9).copy(alpha = 0.16f)
                     },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
-
-                  Box(
-                    modifier = Modifier
-                      .size(24.dp)
-                      .clip(CircleShape)
-                      .background(
-                        color = if (isSelected) {
-                          Color.White.copy(alpha = 0.24f)
-                        } else {
-                          Color(0xFF0EA5E9).copy(alpha = 0.16f)
-                        },
-                        shape = CircleShape
-                      ),
-                    contentAlignment = Alignment.Center
-                  ) {
-                    Text(
-                      text = "$countForDay",
-                      style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
-                      ),
-                      color = if (isSelected) {
-                        Color.White
-                      } else {
-                        palette.accentIndigo
-                      },
-                      maxLines = 1
-                    )
-                  }
-                }
+                    shape = CircleShape
+                  ),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "$countForDay",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                  ),
+                  color = if (isSelected) Color.White else palette.accentIndigo,
+                  maxLines = 1
+                )
               }
             }
           }
         }
+      }
+    }
 
-        // 2B. COGNITIVE LOAD & BURNOUT FORECAST BAR (Directly below Day Selector)
-        item {
-          DailyCognitiveLoadForecastCard(
-            selectedWeekDay = selectedWeekDay,
-            cognitiveScore = cognitiveScore,
-            totalClassHours = totalClassHours,
-            freeStudyHours = freeStudyHours,
-            isDarkMode = palette.isDark,
-            metrics = metrics
+    val renderSelectedDaySubheader: @Composable () -> Unit = {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = "${selectedWeekDay.fullLabel} Classes",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontSize = metrics.scaledSp(18),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textPrimary,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f)
+        )
+
+        Text(
+          text = "${filteredSchedules.size} scheduled",
+          style = MaterialTheme.typography.labelMedium.copy(
+            fontSize = metrics.scaledSp(12),
+            fontWeight = FontWeight.Bold
+          ),
+          color = palette.textSecondary,
+          maxLines = 1
+        )
+      }
+    }
+
+    val renderTaskDeadlinesSection: @Composable () -> Unit = {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "${selectedWeekDay.fullLabel} Task Deadlines",
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontSize = metrics.scaledSp(16),
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.textPrimary
+          )
+          Text(
+            text = "${tasksForSelectedWeekDay.count { !it.isCompleted }} pending",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontSize = metrics.scaledSp(12),
+              fontWeight = FontWeight.Bold
+            ),
+            color = palette.accentIndigo
           )
         }
 
-        // Selected Day Subheader
-        item {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text(
-              text = "${selectedWeekDay.fullLabel} Classes",
-              style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = metrics.scaledSp(18),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.weight(1f)
-            )
-
-            Text(
-              text = "${filteredSchedules.size} scheduled",
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = metrics.scaledSp(12),
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textSecondary,
-              maxLines = 1
-            )
-          }
-        }
-
-        // 3. Visual Timetable Cards for the Selected Day + Dead-Time Opportunity Gap Hunter
-        if (filteredSchedules.isEmpty() && tasksForSelectedWeekDay.isEmpty()) {
-          item {
-            LiquidGlassCard(
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("empty_schedule_day_card"),
-              shape = RoundedCornerShape(24.dp),
-              elevation = 8.dp
-            ) {
-              Column(
+        LiquidGlassCard(
+          shape = RoundedCornerShape(22.dp),
+          elevation = 6.dp,
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.fillMaxWidth()) {
+            tasksForSelectedWeekDay.forEachIndexed { index, task ->
+              val pColor = taskPriorityColor(task.priority, palette.accentIndigo)
+              val resolvedIso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
+              val smartDateLabel = formatIsoDateSmartDisplay(resolvedIso, task.dueDate)
+              Row(
                 modifier = Modifier
                   .fillMaxWidth()
-                  .padding(metrics.scaledDp(28)),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                  .clickable { viewModel.toggleTaskCompletion(task.id) }
+                  .padding(horizontal = metrics.scaledDp(16), vertical = metrics.scaledDp(13))
+                  .testTag("schedule_task_deadline_card_${task.id}"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
               ) {
-                Icon(
-                  imageVector = Icons.Outlined.EventNote,
-                  contentDescription = null,
-                  tint = palette.accentIndigo,
-                  modifier = Modifier.size(36.dp)
-                )
-                Text(
-                  text = if (allSchedules.isEmpty()) {
-                    "No classes scheduled yet"
-                  } else {
-                    "No classes on ${selectedWeekDay.fullLabel}"
-                  },
-                  style = MaterialTheme.typography.titleLarge.copy(
-                    fontSize = metrics.scaledSp(18),
-                    fontWeight = FontWeight.Bold
-                  ),
-                  color = palette.textPrimary,
-                  textAlign = TextAlign.Center,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                  text = if (allSchedules.isEmpty()) {
-                    "Tap the + button below to add your Civil Engineering classes to the timetable."
-                  } else {
-                    "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
-                  },
-                  style = MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = metrics.scaledSp(14)
-                  ),
-                  color = palette.textSecondary,
-                  textAlign = TextAlign.Center,
-                  maxLines = 3,
-                  overflow = TextOverflow.Ellipsis
-                )
-              }
-            }
-          }
-        } else {
-          items(
-            items = filteredSchedules.indices.toList(),
-            key = { index -> "${selectedWeekDay.dayCode}_${filteredSchedules[index].id}" }
-          ) { index ->
-            val scheduleItem = filteredSchedules[index]
-            val gapAfterThisClass = gapAfterScheduleIndexMap[index]
-
-            Column(
-              modifier = Modifier.fillMaxWidth(),
-              verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
-            ) {
-              ColoredClassScheduleCard(
-                schedule = scheduleItem,
-                metrics = metrics,
-                onClick = { focusedClass = scheduleItem },
-                onEdit = { onEditSchedule(scheduleItem) },
-                onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
-              )
-
-              if (gapAfterThisClass != null) {
-                DeadTimeOpportunityGapCard(
-                  gapWindow = gapAfterThisClass,
-                  suggestedTask = topUncompletedTask,
-                  suggestedDeck = topFlashcardDeck,
-                  isDarkMode = palette.isDark,
-                  onStartFocusTimer = {
-                    Toast.makeText(
-                      context,
-                      "Focus Timer ready for your ${formatDurationHoursCompact(gapAfterThisClass.durationHours)} study gap!",
-                      Toast.LENGTH_SHORT
-                    ).show()
-                    onNavigateToTab(CeNavTab.CLOCK)
-                  },
-                  onOpenTaskOrRecall = {
-                    if (topUncompletedTask != null) {
-                      viewModel.selectedTaskIdForDetail = topUncompletedTask.id
-                      onNavigateToTab(CeNavTab.TASKS)
-                    } else {
-                      onNavigateToTab(CeNavTab.EXTRAS)
-                    }
-                  },
-                  onOpenFlashcardRecall = {
-                    onNavigateToTab(CeNavTab.EXTRAS)
+                Box(
+                  modifier = Modifier
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(
+                      if (task.isCompleted) pColor else pColor.copy(alpha = 0.12f)
+                    )
+                    .border(1.8.dp, pColor, RoundedCornerShape(7.dp))
+                    .clickable { viewModel.toggleTaskCompletion(task.id) }
+                    .testTag("schedule_task_checkbox_${task.id}"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  if (task.isCompleted) {
+                    Icon(
+                      imageVector = Icons.Default.Check,
+                      contentDescription = "Completed",
+                      tint = Color.White,
+                      modifier = Modifier.size(15.dp)
+                    )
                   }
-                )
-              }
-            }
-          }
-        }
+                }
 
-        // 4. Task Deadlines Due on Selected Weekday (Synced with Tasks Screen)
-        if (tasksForSelectedWeekDay.isNotEmpty()) {
-          item {
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Text(
-                text = "${selectedWeekDay.fullLabel} Task Deadlines",
-                style = MaterialTheme.typography.titleMedium.copy(
-                  fontSize = metrics.scaledSp(16),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.textPrimary
-              )
-              Text(
-                text = "${tasksForSelectedWeekDay.count { !it.isCompleted }} pending",
-                style = MaterialTheme.typography.labelMedium.copy(
-                  fontSize = metrics.scaledSp(12),
-                  fontWeight = FontWeight.Bold
-                ),
-                color = palette.accentIndigo
-              )
-            }
-          }
-
-          item {
-            LiquidGlassCard(
-              shape = RoundedCornerShape(22.dp),
-              elevation = 6.dp,
-              modifier = Modifier.fillMaxWidth()
-            ) {
-              Column(modifier = Modifier.fillMaxWidth()) {
-                tasksForSelectedWeekDay.forEachIndexed { index, task ->
-                  val pColor = taskPriorityColor(task.priority, palette.accentIndigo)
-                  val resolvedIso = task.dueDateIso.ifBlank { inferIsoDateFromLegacyText(task.dueDate) }
-                  val smartDateLabel = formatIsoDateSmartDisplay(resolvedIso, task.dueDate)
+                Column(
+                  modifier = Modifier.weight(1f),
+                  verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                   Row(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .clickable { viewModel.toggleTaskCompletion(task.id) }
-                      .padding(horizontal = metrics.scaledDp(16), vertical = metrics.scaledDp(13))
-                      .testTag("schedule_task_deadline_card_${task.id}"),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                   ) {
-                    Box(
-                      modifier = Modifier
-                        .size(24.dp)
-                        .clip(RoundedCornerShape(7.dp))
-                        .background(
-                          if (task.isCompleted) pColor else pColor.copy(alpha = 0.12f)
-                        )
-                        .border(1.8.dp, pColor, RoundedCornerShape(7.dp))
-                        .clickable { viewModel.toggleTaskCompletion(task.id) }
-                        .testTag("schedule_task_checkbox_${task.id}"),
-                      contentAlignment = Alignment.Center
+                    RecessedGlassPill(
+                      isDarkMode = palette.isDark,
+                      contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                      if (task.isCompleted) {
-                        Icon(
-                          imageVector = Icons.Default.Check,
-                          contentDescription = "Completed",
-                          tint = Color.White,
-                          modifier = Modifier.size(15.dp)
-                        )
-                      }
-                    }
-
-                    Column(
-                      modifier = Modifier.weight(1f),
-                      verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                      Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                      ) {
-                        RecessedGlassPill(
-                          isDarkMode = palette.isDark,
-                          contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                          Text(
-                            text = "TASK DEADLINE",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                              fontSize = 9.sp,
-                              fontWeight = FontWeight.ExtraBold,
-                              letterSpacing = 0.5.sp
-                            ),
-                            color = pColor
-                          )
-                        }
-
-                        RecessedGlassPill(
-                          isDarkMode = palette.isDark,
-                          contentPadding = PaddingValues(horizontal = 7.dp, vertical = 2.dp)
-                        ) {
-                          Text(
-                            text = task.categoryTag.ifBlank { task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY } },
-                            style = MaterialTheme.typography.labelSmall.copy(
-                              fontSize = 10.sp,
-                              fontWeight = FontWeight.Bold
-                            ),
-                            color = palette.accentIndigo
-                          )
-                        }
-                      }
-
                       Text(
-                        text = task.title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                          fontSize = metrics.scaledSp(15),
-                          fontWeight = FontWeight.SemiBold,
-                          textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+                        text = "TASK DEADLINE",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 9.sp,
+                          fontWeight = FontWeight.ExtraBold,
+                          letterSpacing = 0.5.sp
                         ),
-                        color = if (task.isCompleted) palette.textSecondary else palette.textPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                        color = pColor
                       )
                     }
 
                     RecessedGlassPill(
                       isDarkMode = palette.isDark,
-                      contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                      contentPadding = PaddingValues(horizontal = 7.dp, vertical = 2.dp)
                     ) {
                       Text(
-                        text = smartDateLabel,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                          fontSize = metrics.scaledSp(12),
+                        text = task.categoryTag.ifBlank { task.subjectCategory.ifBlank { DEFAULT_TASK_CATEGORY } },
+                        style = MaterialTheme.typography.labelSmall.copy(
+                          fontSize = 10.sp,
                           fontWeight = FontWeight.Bold
                         ),
-                        color = if (task.isCompleted) palette.textSecondary else pColor
+                        color = palette.accentIndigo
                       )
                     }
                   }
-                  if (index < tasksForSelectedWeekDay.lastIndex) {
-                    GlassHairlineDivider(
+
+                  Text(
+                    text = task.title,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                      fontSize = metrics.scaledSp(15),
+                      fontWeight = FontWeight.SemiBold,
+                      textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
+                    ),
+                    color = if (task.isCompleted) palette.textSecondary else palette.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+
+                RecessedGlassPill(
+                  isDarkMode = palette.isDark,
+                  contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                  Text(
+                    text = smartDateLabel,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                      fontSize = metrics.scaledSp(12),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = if (task.isCompleted) palette.textSecondary else pColor
+                  )
+                }
+              }
+              if (index < tasksForSelectedWeekDay.lastIndex) {
+                GlassHairlineDivider(
+                  isDarkMode = palette.isDark,
+                  modifier = Modifier.padding(horizontal = 16.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (metrics.isLandscape && !isGridView) {
+      Column(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(
+            start = metrics.scaledDp(16),
+            end = metrics.scaledDp(16),
+            top = 10.dp,
+            bottom = 8.dp
+          ),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        renderScheduleTopHeader()
+
+        Row(
+          modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(14.dp),
+          verticalAlignment = Alignment.Top
+        ) {
+          Column(
+            modifier = Modifier
+              .weight(0.44f)
+              .fillMaxHeight()
+              .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            renderWeekDaySelectorRow()
+            DailyCognitiveLoadForecastCard(
+              selectedWeekDay = selectedWeekDay,
+              cognitiveScore = cognitiveScore,
+              totalClassHours = totalClassHours,
+              freeStudyHours = freeStudyHours,
+              isDarkMode = palette.isDark,
+              metrics = metrics
+            )
+            if (tasksForSelectedWeekDay.isNotEmpty()) {
+              renderTaskDeadlinesSection()
+            }
+            Spacer(modifier = Modifier.height(76.dp))
+          }
+
+          LazyColumn(
+            modifier = Modifier
+              .weight(0.56f)
+              .fillMaxHeight()
+              .testTag("schedule_screen_list"),
+            contentPadding = PaddingValues(bottom = 96.dp),
+            verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+          ) {
+            item { renderSelectedDaySubheader() }
+
+            if (filteredSchedules.isEmpty() && tasksForSelectedWeekDay.isEmpty()) {
+              item {
+                LiquidGlassCard(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("empty_schedule_day_card"),
+                  shape = RoundedCornerShape(24.dp),
+                  elevation = 8.dp
+                ) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(metrics.scaledDp(24)),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Icon(
+                      imageVector = Icons.Outlined.EventNote,
+                      contentDescription = null,
+                      tint = palette.accentIndigo,
+                      modifier = Modifier.size(34.dp)
+                    )
+                    Text(
+                      text = if (allSchedules.isEmpty()) {
+                        "No classes scheduled yet"
+                      } else {
+                        "No classes on ${selectedWeekDay.fullLabel}"
+                      },
+                      style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = metrics.scaledSp(18),
+                        fontWeight = FontWeight.Bold
+                      ),
+                      color = palette.textPrimary,
+                      textAlign = TextAlign.Center,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                      text = if (allSchedules.isEmpty()) {
+                        "Tap the + button below to add your Civil Engineering classes to the timetable."
+                      } else {
+                        "Select another day of the week on the left or tap + to add a class for ${selectedWeekDay.fullLabel}."
+                      },
+                      style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = metrics.scaledSp(14)
+                      ),
+                      color = palette.textSecondary,
+                      textAlign = TextAlign.Center,
+                      maxLines = 3,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                }
+              }
+            } else {
+              items(
+                items = filteredSchedules.indices.toList(),
+                key = { index -> "${selectedWeekDay.dayCode}_${filteredSchedules[index].id}" }
+              ) { index ->
+                val scheduleItem = filteredSchedules[index]
+                val gapAfterThisClass = gapAfterScheduleIndexMap[index]
+
+                Column(
+                  modifier = Modifier.fillMaxWidth(),
+                  verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+                ) {
+                  ColoredClassScheduleCard(
+                    schedule = scheduleItem,
+                    metrics = metrics,
+                    onClick = { focusedClass = scheduleItem },
+                    onEdit = { onEditSchedule(scheduleItem) },
+                    onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
+                  )
+
+                  if (gapAfterThisClass != null) {
+                    DeadTimeOpportunityGapCard(
+                      gapWindow = gapAfterThisClass,
+                      suggestedTask = topUncompletedTask,
+                      suggestedDeck = topFlashcardDeck,
                       isDarkMode = palette.isDark,
-                      modifier = Modifier.padding(horizontal = 16.dp)
+                      onStartFocusTimer = {
+                        Toast.makeText(
+                          context,
+                          "Focus Timer ready for your ${formatDurationHoursCompact(gapAfterThisClass.durationHours)} study gap!",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                        onNavigateToTab(CeNavTab.CLOCK)
+                      },
+                      onOpenTaskOrRecall = {
+                        if (topUncompletedTask != null) {
+                          viewModel.selectedTaskIdForDetail = topUncompletedTask.id
+                          onNavigateToTab(CeNavTab.TASKS)
+                        } else {
+                          onNavigateToTab(CeNavTab.EXTRAS)
+                        }
+                      },
+                      onOpenFlashcardRecall = {
+                        onNavigateToTab(CeNavTab.EXTRAS)
+                      }
                     )
                   }
                 }
               }
             }
+          }
+        }
+      }
+    } else {
+      LazyColumn(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("schedule_screen_list"),
+        contentPadding = PaddingValues(
+          start = metrics.scaledDp(18),
+          end = metrics.scaledDp(18),
+          top = metrics.scaledDp(22),
+          bottom = metrics.scaledDp(108)
+        ),
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(16))
+      ) {
+        item { renderScheduleTopHeader() }
+
+        if (isGridView) {
+          item {
+            ScheduleTimetableGridView(
+              schedules = allSchedules,
+              selectedWeekDay = selectedWeekDay,
+              onSelectWeekDay = onSelectWeekDay,
+              onLongPressClass = { longPressedSchedule ->
+                focusedClass = longPressedSchedule
+              },
+              metrics = metrics
+            )
+          }
+        } else {
+          item { renderWeekDaySelectorRow() }
+
+          item {
+            DailyCognitiveLoadForecastCard(
+              selectedWeekDay = selectedWeekDay,
+              cognitiveScore = cognitiveScore,
+              totalClassHours = totalClassHours,
+              freeStudyHours = freeStudyHours,
+              isDarkMode = palette.isDark,
+              metrics = metrics
+            )
+          }
+
+          item { renderSelectedDaySubheader() }
+
+          if (filteredSchedules.isEmpty() && tasksForSelectedWeekDay.isEmpty()) {
+            item {
+              LiquidGlassCard(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .testTag("empty_schedule_day_card"),
+                shape = RoundedCornerShape(24.dp),
+                elevation = 8.dp
+              ) {
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(metrics.scaledDp(28)),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  Icon(
+                    imageVector = Icons.Outlined.EventNote,
+                    contentDescription = null,
+                    tint = palette.accentIndigo,
+                    modifier = Modifier.size(36.dp)
+                  )
+                  Text(
+                    text = if (allSchedules.isEmpty()) {
+                      "No classes scheduled yet"
+                    } else {
+                      "No classes on ${selectedWeekDay.fullLabel}"
+                    },
+                    style = MaterialTheme.typography.titleLarge.copy(
+                      fontSize = metrics.scaledSp(18),
+                      fontWeight = FontWeight.Bold
+                    ),
+                    color = palette.textPrimary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                  Text(
+                    text = if (allSchedules.isEmpty()) {
+                      "Tap the + button below to add your Civil Engineering classes to the timetable."
+                    } else {
+                      "Select another day of the week above or tap + to add a class for ${selectedWeekDay.fullLabel}."
+                    },
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontSize = metrics.scaledSp(14)
+                    ),
+                    color = palette.textSecondary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+              }
+            }
+          } else {
+            items(
+              items = filteredSchedules.indices.toList(),
+              key = { index -> "${selectedWeekDay.dayCode}_${filteredSchedules[index].id}" }
+            ) { index ->
+              val scheduleItem = filteredSchedules[index]
+              val gapAfterThisClass = gapAfterScheduleIndexMap[index]
+
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+              ) {
+                ColoredClassScheduleCard(
+                  schedule = scheduleItem,
+                  metrics = metrics,
+                  onClick = { focusedClass = scheduleItem },
+                  onEdit = { onEditSchedule(scheduleItem) },
+                  onDelete = { viewModel.deleteClassSchedule(scheduleItem.id) }
+                )
+
+                if (gapAfterThisClass != null) {
+                  DeadTimeOpportunityGapCard(
+                    gapWindow = gapAfterThisClass,
+                    suggestedTask = topUncompletedTask,
+                    suggestedDeck = topFlashcardDeck,
+                    isDarkMode = palette.isDark,
+                    onStartFocusTimer = {
+                      Toast.makeText(
+                        context,
+                        "Focus Timer ready for your ${formatDurationHoursCompact(gapAfterThisClass.durationHours)} study gap!",
+                        Toast.LENGTH_SHORT
+                      ).show()
+                      onNavigateToTab(CeNavTab.CLOCK)
+                    },
+                    onOpenTaskOrRecall = {
+                      if (topUncompletedTask != null) {
+                        viewModel.selectedTaskIdForDetail = topUncompletedTask.id
+                        onNavigateToTab(CeNavTab.TASKS)
+                      } else {
+                        onNavigateToTab(CeNavTab.EXTRAS)
+                      }
+                    },
+                    onOpenFlashcardRecall = {
+                      onNavigateToTab(CeNavTab.EXTRAS)
+                    }
+                  )
+                }
+              }
+            }
+          }
+
+          if (tasksForSelectedWeekDay.isNotEmpty()) {
+            item { renderTaskDeadlinesSection() }
           }
         }
       }
@@ -33505,7 +33881,7 @@ fun CourseworkTaskManagerScreen(
   BoxWithConstraints(
     modifier = modifier.fillMaxSize()
   ) {
-    val isSplitPaneCapable = maxWidth >= 680.dp
+    val isSplitPaneCapable = maxWidth >= 600.dp || rememberScreenOrientationState().isLandscape
 
     // In Expanded / Tablet & Landscape mode, automatically select the first active task if none is selected
     LaunchedEffect(isSplitPaneCapable, activeTasksList.firstOrNull()?.id, selectedDetailTaskId) {
@@ -38195,19 +38571,7 @@ private fun TimerSubScreen(
     formatKeypadDigitsPreview(digitInput)
   }
 
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(
-        horizontal = metrics.scaledDp(16),
-        vertical = metrics.scaledDp(14)
-      )
-      .testTag("timer_sub_screen"),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
-  ) {
-    // Massive Digital Timer Display Card with Luminous Gradient Circular Ring
+  val renderDisplayCard: @Composable () -> Unit = {
     LiquidGlassCard(
       shape = RoundedCornerShape(28.dp),
       elevation = 10.dp,
@@ -38219,10 +38583,10 @@ private fun TimerSubScreen(
           .fillMaxWidth()
           .padding(
             horizontal = metrics.scaledDp(18),
-            vertical = metrics.scaledDp(20)
+            vertical = if (metrics.isLandscape) 14.dp else metrics.scaledDp(20)
           ),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(12))
+        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
       ) {
         if (isPomodoroLockActive) {
           Surface(
@@ -38283,8 +38647,18 @@ private fun TimerSubScreen(
             animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
             label = "timer_luminous_ring"
           )
-          val dialDiameter = if (metrics.screenWidthDp >= 600) 280.dp else 220.dp
-          val timeFontSize = if (metrics.screenWidthDp >= 600) 36.sp else 30.sp
+          val dialDiameter = when {
+            metrics.isCompactLandscape -> 158.dp
+            metrics.isLandscape -> 200.dp
+            metrics.screenWidthDp >= 600 -> 280.dp
+            else -> 220.dp
+          }
+          val timeFontSize = when {
+            metrics.isCompactLandscape -> 26.sp
+            metrics.isLandscape -> 30.sp
+            metrics.screenWidthDp >= 600 -> 36.sp
+            else -> 30.sp
+          }
 
           Box(
             modifier = Modifier
@@ -38293,7 +38667,7 @@ private fun TimerSubScreen(
             contentAlignment = Alignment.Center
           ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-              val strokePx = 11.dp.toPx()
+              val strokePx = if (metrics.isCompactLandscape) 9.dp.toPx() else 11.dp.toPx()
               drawArc(
                 color = palette.progressTrack,
                 startAngle = 0f,
@@ -38324,7 +38698,7 @@ private fun TimerSubScreen(
                   fontFamily = AppleSansFamily,
                   fontWeight = FontWeight.Bold,
                   fontSize = timeFontSize,
-                  lineHeight = if (metrics.screenWidthDp >= 600) 42.sp else 36.sp,
+                  lineHeight = if (metrics.isCompactLandscape) 30.sp else if (metrics.screenWidthDp >= 600) 42.sp else 36.sp,
                   letterSpacing = (-1.1).sp,
                   fontFeatureSettings = "tnum"
                 ),
@@ -38355,7 +38729,6 @@ private fun TimerSubScreen(
               .height(8.dp)
           )
         } else {
-          // Keypad Digital Entry Display (00h 00m 00s)
           Row(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.Center,
@@ -38386,8 +38759,9 @@ private fun TimerSubScreen(
         }
       }
     }
+  }
 
-    // Active Session Security PIN Card (when Pomodoro Focus Lock is active)
+  val renderPinAndPresetsCards: @Composable () -> Unit = {
     if (isPomodoroLockActive) {
       LiquidGlassCard(
         shape = RoundedCornerShape(22.dp),
@@ -38462,7 +38836,6 @@ private fun TimerSubScreen(
       }
     }
 
-    // Strict Pomodoro Focus Lock Toggle & CE Focus Presets Section
     if (!isPomodoroLockActive) {
       LiquidGlassCard(
         shape = RoundedCornerShape(24.dp),
@@ -38477,7 +38850,6 @@ private fun TimerSubScreen(
             .padding(metrics.scaledDp(14)),
           verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(10))
         ) {
-          // Strict Pomodoro Focus Lock Toggle Row
           Row(
             modifier = Modifier
               .fillMaxWidth()
@@ -38496,7 +38868,7 @@ private fun TimerSubScreen(
               modifier = Modifier.weight(1f)
             ) {
               Icon(
-                imageVector = if (isStrictPomodoroLockEnabled) Icons.Filled.Lock else Icons.Filled.Lock,
+                imageVector = Icons.Filled.Lock,
                 contentDescription = "Strict Pomodoro Focus Lock",
                 tint = if (isStrictPomodoroLockEnabled) palette.accentIndigo else palette.textSecondary,
                 modifier = Modifier.size(20.dp)
@@ -38608,8 +38980,9 @@ private fun TimerSubScreen(
         }
       }
     }
+  }
 
-    // Standard Google Clock Number Pad when entering a custom timer
+  val renderKeypadSection: @Composable () -> Unit = {
     if (!isCountdownActive && !isPomodoroLockActive) {
       val keypadRows = remember {
         listOf(
@@ -38619,9 +38992,11 @@ private fun TimerSubScreen(
           listOf("00", "0", "C")
         )
       }
+      val keySize = if (metrics.isCompactLandscape) 46.dp else if (metrics.isLandscape) 54.dp else metrics.scaledDp(62)
+      val keyGap = if (metrics.isCompactLandscape) 8.dp else metrics.scaledDp(14)
 
       Column(
-        verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(8)),
+        verticalArrangement = Arrangement.spacedBy(if (metrics.isCompactLandscape) 6.dp else metrics.scaledDp(8)),
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
           .fillMaxWidth()
@@ -38629,7 +39004,7 @@ private fun TimerSubScreen(
       ) {
         keypadRows.forEach { rowDigits ->
           Row(
-            horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
+            horizontalArrangement = Arrangement.spacedBy(keyGap),
             verticalAlignment = Alignment.CenterVertically
           ) {
             rowDigits.forEach { keyLabel ->
@@ -38639,7 +39014,7 @@ private fun TimerSubScreen(
                 border = BorderStroke(1.1.dp, palette.cardBorder),
                 shadowElevation = 4.dp,
                 modifier = Modifier
-                  .size(metrics.scaledDp(62))
+                  .size(keySize)
                   .clip(CircleShape)
                   .clickable {
                     if (keyLabel == "C") {
@@ -38658,7 +39033,7 @@ private fun TimerSubScreen(
                     style = MaterialTheme.typography.titleLarge.copy(
                       fontFamily = AppleSansFamily,
                       fontWeight = FontWeight.SemiBold,
-                      fontSize = metrics.scaledSp(22),
+                      fontSize = if (metrics.isCompactLandscape) 18.sp else metrics.scaledSp(22),
                       letterSpacing = (-0.3).sp,
                       fontFeatureSettings = "tnum"
                     ),
@@ -38675,12 +39050,13 @@ private fun TimerSubScreen(
         }
       }
     }
+  }
 
-    // Liquid Floating Play/Pause and Reset Controls
+  val renderPlayResetControls: @Composable () -> Unit = {
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = 20.dp),
+        .padding(top = if (metrics.isLandscape) 8.dp else 20.dp),
       horizontalArrangement = Arrangement.Center,
       verticalAlignment = Alignment.CenterVertically
     ) {
@@ -38691,7 +39067,7 @@ private fun TimerSubScreen(
         border = BorderStroke(1.2.dp, palette.cardBorder),
         shadowElevation = if (canReset) 4.dp else 0.dp,
         modifier = Modifier
-          .size(56.dp)
+          .size(if (metrics.isCompactLandscape) 48.dp else 56.dp)
           .clip(CircleShape)
           .clickable(enabled = canReset) {
             if (isPomodoroLockActive) {
@@ -38713,7 +39089,7 @@ private fun TimerSubScreen(
         }
       }
 
-      Spacer(modifier = Modifier.width(32.dp))
+      Spacer(modifier = Modifier.width(if (metrics.isCompactLandscape) 22.dp else 32.dp))
 
       FloatingActionButton(
         onClick = onStartOrPause,
@@ -38722,7 +39098,7 @@ private fun TimerSubScreen(
         contentColor = Color.White,
         elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 10.dp),
         modifier = Modifier
-          .size(72.dp)
+          .size(if (metrics.isCompactLandscape) 60.dp else 72.dp)
           .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)), CircleShape)
           .testTag("timer_play_pause_fab")
       ) {
@@ -38741,9 +39117,67 @@ private fun TimerSubScreen(
           } else {
             "Start timer"
           },
-          modifier = Modifier.size(34.dp)
+          modifier = Modifier.size(if (metrics.isCompactLandscape) 28.dp else 34.dp)
         )
       }
+    }
+  }
+
+  if (metrics.isLandscape) {
+    Row(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(
+          horizontal = metrics.scaledDp(16),
+          vertical = 8.dp
+        )
+        .testTag("timer_sub_screen"),
+      horizontalArrangement = Arrangement.spacedBy(16.dp),
+      verticalAlignment = Alignment.Top
+    ) {
+      Column(
+        modifier = Modifier
+          .weight(0.46f)
+          .fillMaxHeight()
+          .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        renderDisplayCard()
+        renderPlayResetControls()
+        Spacer(modifier = Modifier.height(72.dp))
+      }
+
+      Column(
+        modifier = Modifier
+          .weight(0.54f)
+          .fillMaxHeight()
+          .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        renderPinAndPresetsCards()
+        renderKeypadSection()
+        Spacer(modifier = Modifier.height(72.dp))
+      }
+    }
+  } else {
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .verticalScroll(rememberScrollState())
+        .padding(
+          horizontal = metrics.scaledDp(16),
+          vertical = metrics.scaledDp(14)
+        )
+        .testTag("timer_sub_screen"),
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14))
+    ) {
+      renderDisplayCard()
+      renderPinAndPresetsCards()
+      renderKeypadSection()
+      renderPlayResetControls()
     }
   }
 }
@@ -39348,11 +39782,8 @@ private fun StopwatchSubScreen(
     }
   }
 
-  if (metrics.isTabletLandscape) {
-    // Tablet Landscape Layout (screenWidthDp >= 720.dp in landscape):
-    // Balanced two-column layout:
-    // Left column: Circular Dial, Mode Switcher, and Primary Control Buttons.
-    // Right column: Lap Splits list with its own dedicated scroll state.
+  if (metrics.isLandscape) {
+    // Landscape Layout: Balanced two-column workspace
     Row(
       modifier = Modifier
         .fillMaxSize()
@@ -39360,7 +39791,7 @@ private fun StopwatchSubScreen(
           start = metrics.scaledDp(16),
           end = metrics.scaledDp(16),
           top = metrics.scaledDp(8),
-          bottom = 96.dp
+          bottom = if (metrics.isCompactLandscape) 72.dp else 96.dp
         )
         .testTag("stopwatch_sub_screen"),
       horizontalArrangement = Arrangement.spacedBy(20.dp),

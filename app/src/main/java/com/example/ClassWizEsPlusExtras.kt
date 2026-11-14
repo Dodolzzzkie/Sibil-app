@@ -93,7 +93,8 @@ internal enum class EsLcdScreenState {
   TABLE_VIEW,
   CONST_PROMPT,
   CONV_PROMPT,
-  CLR_MENU
+  CLR_MENU,
+  CMPLX_OPS
 }
 
 internal data class StatTableRow(
@@ -146,7 +147,8 @@ internal data class EsConversionItem(
 internal data class ClassWizHistoryEntry(
   val expression: String,
   val exactOrDisplay: String,
-  val rawScalar: Double? = null
+  val rawScalar: Double? = null,
+  val treeSnapshot: MathContainer? = null
 )
 
 internal val ES_PLUS_CONSTANTS: List<EsConstantItem> = listOf(

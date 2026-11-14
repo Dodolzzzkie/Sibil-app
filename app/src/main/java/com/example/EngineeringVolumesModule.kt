@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -2428,15 +2429,16 @@ internal fun EngineeringSubVolumeHubView(
   }
 
   val headerAccent = if (pillar == EngineeringVolumePillar.PSAD) Color(0xFFF59E0B) else Color(0xFF06B6D4)
+  val orientation = rememberScreenOrientationState()
 
   LazyVerticalGrid(
-    columns = if (metrics.screenWidthDp >= 600) {
-      GridCells.Adaptive(minSize = 300.dp)
+    columns = if (metrics.screenWidthDp >= 600 || orientation.isLandscape) {
+      GridCells.Adaptive(minSize = 260.dp)
     } else {
       GridCells.Fixed(1)
     },
     modifier = modifier
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .padding(bottom = 96.dp)
       .testTag("${pillar.code.lowercase(Locale.ROOT)}_sub_hub_grid"),
     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -2790,10 +2792,12 @@ internal fun EngineeringSubVolumeSheet(
     }
   }
 
+  val orientation = rememberScreenOrientationState()
+
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 680.dp)
+      .widthIn(max = orientation.wideMaxContentWidth)
       .testTag("engineering_sub_volume_sheet_${spec.id}"),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
@@ -3109,6 +3113,7 @@ private fun EngineeringSectionDetailGlassModal(
         .clickable(onClick = onDismiss),
       contentAlignment = Alignment.Center
     ) {
+      val modalOrientation = rememberScreenOrientationState()
       Surface(
         onClick = {},
         shape = RoundedCornerShape(28.dp),
@@ -3122,7 +3127,8 @@ private fun EngineeringSectionDetailGlassModal(
         shadowElevation = 24.dp,
         modifier = Modifier
           .fillMaxWidth(0.92f)
-          .widthIn(max = 520.dp)
+          .widthIn(max = if (modalOrientation.isLandscape) 820.dp else 520.dp)
+          .heightIn(max = if (modalOrientation.isCompactLandscape) 380.dp else 680.dp)
           .testTag("${spec.id}_section_detail_modal")
       ) {
         Column(
