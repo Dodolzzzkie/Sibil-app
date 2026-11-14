@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Card background matching widget_bg_dark_glass -->
+    <item>
+        <shape android:shape="rectangle">
+            <size
+                android:width="240dp"
+                android:height="150dp" />
+            <gradient
+                android:angle="135"
+                android:endColor="#FF1E293B"
+                android:startColor="#FF0F172A"
+                android:type="linear" />
+            <corners android:radius="20dp" />
+            <stroke
+                android:width="1.5dp"
+                android:color="#5538BDF8" />
+        </shape>
+    </item>
+
+    <!-- Header accent pill ("Sibil CE • Tasks") -->
+    <item
+        android:top="16dp"
+        android:left="16dp"
+        android:right="110dp"
+        android:height="14dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#4038BDF8" />
+            <corners android:radius="7dp" />
+        </shape>
+    </item>
+
+    <!-- "+ Add" badge placeholder -->
+    <item
+        android:top="14dp"
+        android:left="182dp"
+        android:right="16dp"
+        android:height="18dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF0284C7" />
+            <corners android:radius="9dp" />
+        </shape>
+    </item>
+
+    <!-- Task row 1 card -->
+    <item
+        android:top="44dp"
+        android:left="16dp"
+        android:right="16dp"
+        android:height="26dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#CC1E293B" />
+            <corners android:radius="10dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#3338BDF8" />
+        </shape>
+    </item>
+
+    <!-- Task row 2 card -->
+    <item
+        android:top="78dp"
+        android:left="16dp"
+        android:right="16dp"
+        android:height="26dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#CC1E293B" />
+            <corners android:radius="10dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#3338BDF8" />
+        </shape>
+    </item>
+
+    <!-- Task row 3 card -->
+    <item
+        android:top="112dp"
+        android:left="16dp"
+        android:right="16dp"
+        android:height="26dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#CC1E293B" />
+            <corners android:radius="10dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#3338BDF8" />
+        </shape>
+    </item>
+</layer-list>

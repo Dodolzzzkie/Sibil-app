@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+    xmlns:tools="http://schemas.android.com/tools"
+    android:installLocation="internalOnly">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -39,26 +40,32 @@
 
         <receiver
             android:name=".SibilTasksWidgetProvider"
+            android:enabled="true"
             android:exported="true"
-            android:label="@string/widget_tasks_label">
+            android:label="Sibil CE • Tasks">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_sibil_tasks_info" />
+                android:resource="@xml/sibil_tasks_widget_info" />
         </receiver>
 
         <receiver
             android:name=".SibilScheduleWidgetProvider"
+            android:enabled="true"
             android:exported="true"
-            android:label="@string/widget_schedule_label">
+            android:label="Sibil CE • Schedule">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_sibil_schedule_info" />
+                android:resource="@xml/sibil_schedule_widget_info" />
         </receiver>
 
         <provider

@@ -7,8 +7,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
 import android.view.View
 import android.widget.RemoteViews
+import android.widget.Toast
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
@@ -97,20 +100,64 @@ object SibilWidgetSync {
       val appContext = context.applicationContext
       val appWidgetManager = AppWidgetManager.getInstance(appContext)
 
-      val taskIds = appWidgetManager.getAppWidgetIds(
-        ComponentName(appContext, SibilTasksWidgetProvider::class.java)
-      )
+      val tasksComponent = ComponentName(appContext, SibilTasksWidgetProvider::class.java)
+      val taskIds = appWidgetManager.getAppWidgetIds(tasksComponent)
       if (taskIds.isNotEmpty()) {
         SibilTasksWidgetProvider.updateWidgets(appContext, appWidgetManager, taskIds)
       }
-
-      val scheduleIds = appWidgetManager.getAppWidgetIds(
-        ComponentName(appContext, SibilScheduleWidgetProvider::class.java)
+      appContext.sendBroadcast(
+        Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE).apply {
+          component = tasksComponent
+          setPackage(appContext.packageName)
+          putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, taskIds)
+        }
       )
+
+      val scheduleComponent = ComponentName(appContext, SibilScheduleWidgetProvider::class.java)
+      val scheduleIds = appWidgetManager.getAppWidgetIds(scheduleComponent)
       if (scheduleIds.isNotEmpty()) {
         SibilScheduleWidgetProvider.updateWidgets(appContext, appWidgetManager, scheduleIds)
       }
+      appContext.sendBroadcast(
+        Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE).apply {
+          component = scheduleComponent
+          setPackage(appContext.packageName)
+          putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, scheduleIds)
+        }
+      )
     } catch (_: Throwable) {
+    }
+  }
+
+  fun requestPinWidget(
+    context: Context,
+    providerClass: Class<out AppWidgetProvider>
+  ) {
+    try {
+      val appWidgetManager = AppWidgetManager.getInstance(context)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && appWidgetManager.isRequestPinAppWidgetSupported) {
+        val providerComponent = ComponentName(context, providerClass)
+        val pinned = appWidgetManager.requestPinAppWidget(providerComponent, null, null)
+        if (!pinned) {
+          Toast.makeText(
+            context,
+            "Long-press Home Screen → Widgets → Sibil CE",
+            Toast.LENGTH_LONG
+          ).show()
+        }
+      } else {
+        Toast.makeText(
+          context,
+          "Long-press Home Screen → Widgets → Sibil CE",
+          Toast.LENGTH_LONG
+        ).show()
+      }
+    } catch (_: Throwable) {
+      Toast.makeText(
+        context,
+        "Long-press Home Screen → Widgets → Sibil CE",
+        Toast.LENGTH_LONG
+      ).show()
     }
   }
 
@@ -149,12 +196,47 @@ object SibilWidgetSync {
  */
 class SibilTasksWidgetProvider : AppWidgetProvider() {
 
+  override fun onEnabled(context: Context) {
+    super.onEnabled(context)
+    val appWidgetManager = AppWidgetManager.getInstance(context)
+    val ids = appWidgetManager.getAppWidgetIds(ComponentName(context, SibilTasksWidgetProvider::class.java))
+    if (ids.isNotEmpty()) {
+      updateWidgets(context, appWidgetManager, ids)
+    }
+  }
+
   override fun onUpdate(
     context: Context,
     appWidgetManager: AppWidgetManager,
     appWidgetIds: IntArray
   ) {
     updateWidgets(context, appWidgetManager, appWidgetIds)
+  }
+
+  override fun onAppWidgetOptionsChanged(
+    context: Context,
+    appWidgetManager: AppWidgetManager,
+    appWidgetId: Int,
+    newOptions: Bundle
+  ) {
+    super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
+    updateWidgets(context, appWidgetManager, intArrayOf(appWidgetId))
+  }
+
+  override fun onReceive(context: Context, intent: Intent) {
+    super.onReceive(context, intent)
+    val action = intent.action ?: return
+    if (
+      action == Intent.ACTION_BOOT_COMPLETED ||
+      action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+      action == AppWidgetManager.ACTION_APPWIDGET_UPDATE
+    ) {
+      val appWidgetManager = AppWidgetManager.getInstance(context)
+      val ids = appWidgetManager.getAppWidgetIds(ComponentName(context, SibilTasksWidgetProvider::class.java))
+      if (ids.isNotEmpty()) {
+        updateWidgets(context, appWidgetManager, ids)
+      }
+    }
   }
 
   companion object {
@@ -272,12 +354,47 @@ class SibilTasksWidgetProvider : AppWidgetProvider() {
  */
 class SibilScheduleWidgetProvider : AppWidgetProvider() {
 
+  override fun onEnabled(context: Context) {
+    super.onEnabled(context)
+    val appWidgetManager = AppWidgetManager.getInstance(context)
+    val ids = appWidgetManager.getAppWidgetIds(ComponentName(context, SibilScheduleWidgetProvider::class.java))
+    if (ids.isNotEmpty()) {
+      updateWidgets(context, appWidgetManager, ids)
+    }
+  }
+
   override fun onUpdate(
     context: Context,
     appWidgetManager: AppWidgetManager,
     appWidgetIds: IntArray
   ) {
     updateWidgets(context, appWidgetManager, appWidgetIds)
+  }
+
+  override fun onAppWidgetOptionsChanged(
+    context: Context,
+    appWidgetManager: AppWidgetManager,
+    appWidgetId: Int,
+    newOptions: Bundle
+  ) {
+    super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
+    updateWidgets(context, appWidgetManager, intArrayOf(appWidgetId))
+  }
+
+  override fun onReceive(context: Context, intent: Intent) {
+    super.onReceive(context, intent)
+    val action = intent.action ?: return
+    if (
+      action == Intent.ACTION_BOOT_COMPLETED ||
+      action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+      action == AppWidgetManager.ACTION_APPWIDGET_UPDATE
+    ) {
+      val appWidgetManager = AppWidgetManager.getInstance(context)
+      val ids = appWidgetManager.getAppWidgetIds(ComponentName(context, SibilScheduleWidgetProvider::class.java))
+      if (ids.isNotEmpty()) {
+        updateWidgets(context, appWidgetManager, ids)
+      }
+    }
   }
 
   companion object {

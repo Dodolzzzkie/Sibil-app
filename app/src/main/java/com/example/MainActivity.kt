@@ -118,6 +118,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13826,8 +13827,8 @@ fun ExtrasScreen(
       val toolEntries: List<Pair<ExtraToolItem, () -> Unit>> = listOf(
         ExtraToolItem(
           id = "scientific_calculator",
-          title = "Scientific Calculator (fx-570ES PLUS)",
-          subtitle = "Natural-V.P.A.M. • 8 Modes, CONST/CONV & CalcES History",
+          title = "Scientific Calculator",
+          subtitle = "",
           icon = Icons.Filled.Calculate
         ) to {
           playCardHapticSound(context, localView)
@@ -13837,7 +13838,7 @@ fun ExtrasScreen(
         ExtraToolItem(
           id = "ce_formula_vault",
           title = "CE Formula Vault",
-          subtitle = "Algebra, Trigonometry, Plane & Solid Geometry Blueprints",
+          subtitle = "",
           icon = Icons.Filled.Functions
         ) to {
           playCardHapticSound(context, localView)
@@ -13846,7 +13847,7 @@ fun ExtrasScreen(
         ExtraToolItem(
           id = "unit_converter",
           title = "Unit Converter",
-          subtitle = "12 CE categories • SI & USCS live multi-unit converter",
+          subtitle = "",
           icon = Icons.Filled.SwapHoriz
         ) to {
           playCardHapticSound(context, localView)
@@ -13856,7 +13857,7 @@ fun ExtrasScreen(
         ExtraToolItem(
           id = "construction_estimate",
           title = "Estimate",
-          subtitle = "Max Fajardo Quantity Take-Off & Project BOQ",
+          subtitle = "",
           icon = Icons.Filled.RequestQuote
         ) to {
           playCardHapticSound(context, localView)
@@ -13865,7 +13866,7 @@ fun ExtrasScreen(
         ExtraToolItem(
           id = "surveying_curve_solver",
           title = "Surveying & Curve Solver",
-          subtitle = "Traverse, DMD Area, Horizontal & Vertical Curves",
+          subtitle = "",
           icon = Icons.Filled.Explore
         ) to {
           playCardHapticSound(context, localView)
@@ -13906,6 +13907,126 @@ fun ExtrasScreen(
               .widthIn(max = 680.dp)
               .align(Alignment.CenterHorizontally)
           )
+        }
+      }
+
+      // 3. COMPACT HOME SCREEN WIDGETS UTILITY ROW (1-Tap OEM Pin Fallback for itel S23 / Tablets)
+      LiquidGlassCard(
+        shape = RoundedCornerShape(22.dp),
+        elevation = 4.dp,
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = metrics.landscapeWideMaxWidth)
+          .align(Alignment.CenterHorizontally)
+          .testTag("extras_home_screen_widgets_card")
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Filled.GridView,
+              contentDescription = null,
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(16.dp)
+            )
+            Text(
+              text = "Home Screen Widgets",
+              style = MaterialTheme.typography.titleSmall.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            RecessedGlassPill(
+              isDarkMode = palette.isDark,
+              onClick = {
+                playCardHapticSound(context, localView)
+                SibilWidgetSync.saveAndRefreshWidgets(
+                  context = context,
+                  tasks = viewModel.tasks.toList(),
+                  classes = viewModel.classSchedules.toList()
+                )
+                SibilWidgetSync.requestPinWidget(context, SibilTasksWidgetProvider::class.java)
+              },
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+              modifier = Modifier
+                .weight(1f)
+                .minimumInteractiveComponentSize()
+                .testTag("pin_tasks_widget_button")
+            ) {
+              Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "+ Pin Tasks Widget",
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = AppleSansFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 1,
+                  softWrap = false,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+            }
+
+            RecessedGlassPill(
+              isDarkMode = palette.isDark,
+              onClick = {
+                playCardHapticSound(context, localView)
+                SibilWidgetSync.saveAndRefreshWidgets(
+                  context = context,
+                  tasks = viewModel.tasks.toList(),
+                  classes = viewModel.classSchedules.toList()
+                )
+                SibilWidgetSync.requestPinWidget(context, SibilScheduleWidgetProvider::class.java)
+              },
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+              modifier = Modifier
+                .weight(1f)
+                .minimumInteractiveComponentSize()
+                .testTag("pin_schedule_widget_button")
+            ) {
+              Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "+ Pin Schedule Widget",
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = AppleSansFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary,
+                  maxLines = 1,
+                  softWrap = false,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+            }
+          }
         }
       }
     }
@@ -28954,31 +29075,33 @@ private fun ExtraToolPlaceholderCard(
   } else {
     LiquidGlassCard(
       onClick = onClick,
-      shape = RoundedCornerShape(26.dp),
+      shape = RoundedCornerShape(24.dp),
       elevation = 8.dp,
-      modifier = modifier.testTag("extra_tool_card_${tool.id}")
+      modifier = modifier
+        .defaultMinSize(minHeight = 68.dp)
+        .testTag("extra_tool_card_${tool.id}")
     ) {
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(metrics.scaledDp(18)),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
+          .defaultMinSize(minHeight = 68.dp)
+          .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
         Box(
           modifier = Modifier
-            .size(50.dp)
+            .size(44.dp)
             .shadow(
-              elevation = 8.dp,
-              shape = RoundedCornerShape(16.dp),
+              elevation = 6.dp,
+              shape = RoundedCornerShape(12.dp),
               ambientColor = LiquidDeepIndigo.copy(alpha = 0.30f),
               spotColor = LiquidElectricViolet.copy(alpha = 0.30f)
             )
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(brush = LiquidOrbBrush)
             .border(
               BorderStroke(1.2.dp, Color.White.copy(alpha = 0.65f)),
-              RoundedCornerShape(16.dp)
+              RoundedCornerShape(12.dp)
             ),
           contentAlignment = Alignment.Center
         ) {
@@ -28986,55 +29109,46 @@ private fun ExtraToolPlaceholderCard(
             imageVector = tool.icon,
             contentDescription = tool.title,
             tint = Color.White,
-            modifier = Modifier.size(26.dp)
+            modifier = Modifier.size(22.dp)
           )
         }
 
-        Column(
-          modifier = Modifier.weight(1f),
-          verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-          Text(
-            text = tool.title,
-            style = MaterialTheme.typography.titleMedium.copy(
-              fontSize = metrics.scaledSp(16),
-              fontWeight = FontWeight.Bold
-            ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-          if (tool.subtitle.isNotBlank()) {
-            Text(
-              text = tool.subtitle,
-              style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = metrics.scaledSp(13),
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = palette.textSecondary,
-              maxLines = 2,
-              overflow = TextOverflow.Ellipsis
-            )
-          }
-        }
+        Text(
+          text = tool.title,
+          style = MaterialTheme.typography.titleMedium.copy(
+            fontFamily = AppleSansFamily,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold
+          ),
+          color = palette.textPrimary,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier
+            .weight(1f)
+            .padding(horizontal = 14.dp)
+        )
 
         RecessedGlassPill(
           isDarkMode = palette.isDark,
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+          modifier = Modifier.height(34.dp)
         ) {
           Text(
             text = "Open",
             style = MaterialTheme.typography.labelMedium.copy(
+              fontFamily = AppleSansFamily,
               fontSize = 12.sp,
               fontWeight = FontWeight.Bold
             ),
-            color = palette.textPrimary
+            color = palette.textPrimary,
+            maxLines = 1,
+            softWrap = false
           )
           Icon(
-            imageVector = Icons.Filled.ArrowForward,
+            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
             contentDescription = null,
             tint = palette.accentIndigo,
-            modifier = Modifier.size(16.dp)
+            modifier = Modifier.size(15.dp)
           )
         }
       }

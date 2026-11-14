@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_schedule_description"
+    android:initialLayout="@layout/widget_sibil_schedule"
+    android:minWidth="140dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="72dp"
+    android:maxResizeWidth="520dp"
+    android:maxResizeHeight="480dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:previewImage="@drawable/widget_preview_schedule"
+    android:previewLayout="@layout/widget_sibil_schedule"
+    android:widgetCategory="home_screen" />
