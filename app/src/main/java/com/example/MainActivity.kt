@@ -184,6 +184,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
@@ -207,6 +208,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -248,6 +250,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -255,6 +258,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -274,6 +278,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
@@ -382,7 +387,8 @@ import androidx.compose.material.icons.filled.Functions
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Shape
-import com.example.ui.theme.Typography
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle as ComposeTextStyle
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.FirebaseOptions
@@ -6495,6 +6501,119 @@ private fun resolveDeviceCoordinatesOrFallback(context: Context): Pair<Double, D
   }
 }
 
+val AppleSansFamily = FontFamily.SansSerif
+
+val SibilAppleTypography = Typography(
+  displayLarge = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 48.sp,
+    lineHeight = 54.sp,
+    letterSpacing = (-1.2).sp,
+    fontFeatureSettings = "tnum"
+  ),
+  displayMedium = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 32.sp,
+    lineHeight = 38.sp,
+    letterSpacing = (-0.8).sp,
+    fontFeatureSettings = "tnum"
+  ),
+  displaySmall = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 28.sp,
+    lineHeight = 34.sp,
+    letterSpacing = (-0.6).sp,
+    fontFeatureSettings = "tnum"
+  ),
+  headlineLarge = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 26.sp,
+    lineHeight = 32.sp,
+    letterSpacing = (-0.6).sp
+  ),
+  headlineMedium = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 20.sp,
+    lineHeight = 26.sp,
+    letterSpacing = (-0.4).sp
+  ),
+  headlineSmall = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 18.sp,
+    lineHeight = 24.sp,
+    letterSpacing = (-0.35).sp
+  ),
+  titleLarge = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Bold,
+    fontSize = 22.sp,
+    lineHeight = 28.sp,
+    letterSpacing = (-0.45).sp
+  ),
+  titleMedium = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 16.sp,
+    lineHeight = 22.sp,
+    letterSpacing = (-0.25).sp
+  ),
+  titleSmall = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Medium,
+    fontSize = 14.sp,
+    lineHeight = 19.sp,
+    letterSpacing = (-0.15).sp
+  ),
+  bodyLarge = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Normal,
+    fontSize = 16.sp,
+    lineHeight = 23.sp,
+    letterSpacing = (-0.1).sp
+  ),
+  bodyMedium = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Normal,
+    fontSize = 14.sp,
+    lineHeight = 20.sp,
+    letterSpacing = (-0.05).sp
+  ),
+  bodySmall = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Normal,
+    fontSize = 12.sp,
+    lineHeight = 16.sp,
+    letterSpacing = 0.sp
+  ),
+  labelLarge = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 14.sp,
+    lineHeight = 18.sp,
+    letterSpacing = (-0.1).sp
+  ),
+  labelMedium = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = 12.sp,
+    lineHeight = 16.sp,
+    letterSpacing = 0.sp
+  ),
+  labelSmall = ComposeTextStyle(
+    fontFamily = AppleSansFamily,
+    fontWeight = FontWeight.Medium,
+    fontSize = 11.sp,
+    lineHeight = 14.sp,
+    letterSpacing = 0.1.sp
+  )
+)
+
 @Composable
 fun CivilEngineeringProductivityApp(
   taskViewModel: TaskViewModel? = null
@@ -6523,7 +6642,7 @@ fun CivilEngineeringProductivityApp(
   CompositionLocalProvider(LocalGlassPalette provides animatedGlassPalette) {
     MaterialTheme(
       colorScheme = dynamicColorScheme,
-      typography = Typography
+      typography = SibilAppleTypography
     ) {
       // Cross-Device Persistence & Auto-Login:
       // 1. On app launch, check val user = FirebaseAuth.getInstance().currentUser.
@@ -7147,11 +7266,12 @@ fun StartupLoginScreen(
         ) {
           Text(
             text = "Sibil CE",
-            style = MaterialTheme.typography.headlineMedium.copy(
+            style = MaterialTheme.typography.headlineLarge.copy(
+              fontFamily = AppleSansFamily,
               fontSize = 27.sp,
               lineHeight = 32.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = (-0.4).sp
+              fontWeight = FontWeight.Bold,
+              letterSpacing = (-0.6).sp
             ),
             color = titleTextColor,
             maxLines = 1,
@@ -7162,9 +7282,10 @@ fun StartupLoginScreen(
           Text(
             text = "Civil Engineering Board Companion",
             style = MaterialTheme.typography.bodyMedium.copy(
+              fontFamily = AppleSansFamily,
               fontSize = 13.5.sp,
-              fontWeight = FontWeight.SemiBold,
-              letterSpacing = 0.1.sp
+              fontWeight = FontWeight.Medium,
+              letterSpacing = (-0.1).sp
             ),
             color = subtitleTextColor,
             maxLines = 1,
@@ -7543,9 +7664,11 @@ fun StartupLoginScreen(
               }
               Text(
                 text = if (isSignUpMode) "Create Account" else "Sign In",
-                style = MaterialTheme.typography.titleMedium.copy(
+                style = MaterialTheme.typography.labelLarge.copy(
+                  fontFamily = AppleSansFamily,
                   fontSize = 15.5.sp,
-                  fontWeight = FontWeight.ExtraBold
+                  fontWeight = FontWeight.SemiBold,
+                  letterSpacing = (-0.2).sp
                 ),
                 color = Color.White,
                 maxLines = 1,
@@ -9337,6 +9460,7 @@ private fun MainProductivityScaffold(
   var isPomodoroLockActive by rememberSaveable { mutableStateOf(false) }
   var pomodoroUnlockPin by rememberSaveable { mutableStateOf("") }
   var showPinUnlockDialog by remember { mutableStateOf(false) }
+  var isCalculatorOpen by rememberSaveable { mutableStateOf(false) }
 
   // Intercept system Back button when Pomodoro Focus Lock is active
   BackHandler(enabled = isPomodoroLockActive) {
@@ -9429,7 +9553,8 @@ private fun MainProductivityScaffold(
         }
       },
       bottomBar = {
-        if (!isCompactTaskNoteOpen && !isPomodoroLockActive) {
+        val isFullScreenCalculator = selectedTab == CeNavTab.EXTRAS && isCalculatorOpen
+        if (!isCompactTaskNoteOpen && !isPomodoroLockActive && !isFullScreenCalculator) {
           CustomDockedBottomTaskBar(
             selectedTab = selectedTab,
             onSelectTab = { selectedTab = it },
@@ -9481,6 +9606,8 @@ private fun MainProductivityScaffold(
           )
           CeNavTab.EXTRAS -> ExtrasScreen(
             viewModel = taskViewModel,
+            isCalculatorOpen = isCalculatorOpen,
+            onCalculatorOpenChange = { isCalculatorOpen = it },
             modifier = Modifier
               .fillMaxSize()
               .widthIn(max = metrics.maxContentWidth)
@@ -10255,8 +10382,10 @@ fun DashboardScreen(
                 Text(
                   text = viewModel.displayUsername,
                   style = MaterialTheme.typography.titleMedium.copy(
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold
+                    fontFamily = AppleSansFamily,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.3).sp
                   ),
                   color = palette.textPrimary,
                   maxLines = 1,
@@ -10273,8 +10402,10 @@ fun DashboardScreen(
                   Text(
                     text = if (viewModel.isFirestoreSyncing) "Syncing" else "Sibil CE",
                     style = MaterialTheme.typography.labelSmall.copy(
-                      fontSize = 9.sp,
-                      fontWeight = FontWeight.Bold
+                      fontFamily = AppleSansFamily,
+                      fontSize = 9.5.sp,
+                      fontWeight = FontWeight.SemiBold,
+                      letterSpacing = (-0.05).sp
                     ),
                     color = palette.accentIndigo,
                     maxLines = 1
@@ -10285,8 +10416,11 @@ fun DashboardScreen(
               Text(
                 text = currentDateTimeText,
                 style = MaterialTheme.typography.bodySmall.copy(
+                  fontFamily = AppleSansFamily,
                   fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold
+                  fontWeight = FontWeight.Medium,
+                  letterSpacing = (-0.05).sp,
+                  fontFeatureSettings = "tnum"
                 ),
                 color = palette.textSecondary,
                 maxLines = 1,
@@ -10389,10 +10523,12 @@ fun DashboardScreen(
                 if (!env.isLoading && !env.isOffline) {
                   Text(
                     text = "${env.temperatureCelsius}°C",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                      fontFamily = FontFamily.Monospace,
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.Bold
+                    style = MaterialTheme.typography.titleSmall.copy(
+                      fontFamily = AppleSansFamily,
+                      fontSize = 14.5.sp,
+                      fontWeight = FontWeight.Bold,
+                      letterSpacing = (-0.2).sp,
+                      fontFeatureSettings = "tnum"
                     ),
                     color = palette.textPrimary,
                     maxLines = 1,
@@ -12539,9 +12675,14 @@ private fun CompactDailyProgressCard(
         ) {
           Text(
             text = "$percentInt%",
-            fontFamily = JetBrainsMonoFamily,
-            fontWeight = FontWeight.Bold,
-            fontSize = metrics.scaledSp(20),
+            style = MaterialTheme.typography.displayMedium.copy(
+              fontFamily = AppleSansFamily,
+              fontWeight = FontWeight.Bold,
+              fontSize = metrics.scaledSp(22),
+              lineHeight = metrics.scaledSp(26),
+              letterSpacing = (-0.6).sp,
+              fontFeatureSettings = "tnum"
+            ),
             color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -12549,8 +12690,10 @@ private fun CompactDailyProgressCard(
           Text(
             text = "$completedCount/$totalCount Done",
             style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = AppleSansFamily,
               fontSize = metrics.scaledSp(11),
-              fontWeight = FontWeight.Bold
+              fontWeight = FontWeight.SemiBold,
+              fontFeatureSettings = "tnum"
             ),
             color = palette.textSecondary,
             maxLines = 1,
@@ -13301,7 +13444,9 @@ private fun DashboardTaskMiniCard(
 @Composable
 fun ExtrasScreen(
   modifier: Modifier = Modifier,
-  viewModel: TaskViewModel = viewModel()
+  viewModel: TaskViewModel = viewModel(),
+  isCalculatorOpen: Boolean = false,
+  onCalculatorOpenChange: (Boolean) -> Unit = {}
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
@@ -13317,45 +13462,48 @@ fun ExtrasScreen(
   var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
   var isFormulaVaultOpen by rememberSaveable { mutableStateOf(false) }
   var isUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
+  var isEstimateOpen by rememberSaveable { mutableStateOf(false) }
+  var isSurveyingSolverOpen by rememberSaveable { mutableStateOf(false) }
+  var localClassWizOpen by rememberSaveable { mutableStateOf(false) }
+  val effectiveCalculatorOpen = isCalculatorOpen || localClassWizOpen
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
-  var comingSoonSnackbarMessage by remember { mutableStateOf<String?>(null) }
-
-  LaunchedEffect(comingSoonSnackbarMessage) {
-    if (comingSoonSnackbarMessage != null) {
-      delay(2600L)
-      comingSoonSnackbarMessage = null
-    }
-  }
-
-  val comingSoonModules = remember {
-    listOf(
-      ExtraToolItem(
-        id = "gpa_calculator",
-        title = "GPA Calculator",
-        subtitle = "Semester GWA & board weighting",
-        icon = Icons.Filled.Calculate
-      ),
-      ExtraToolItem(
-        id = "scientific_calculator",
-        title = "Scientific Calculator",
-        subtitle = "Beam & matrix solver",
-        icon = Icons.Filled.Architecture
-      ),
-      ExtraToolItem(
-        id = "boq_estimator",
-        title = "Quick Tools & BOQ",
-        subtitle = "Material & cost takeoff",
-        icon = Icons.Filled.RequestQuote
-      )
-    )
-  }
 
   val activeStudyDeck = viewModel.flashcardDecks.firstOrNull { it.id == activeStudyDeckId }
+
+  if (effectiveCalculatorOpen) {
+    ScientificCalculatorScreen(
+      metrics = metrics,
+      onBackToExtras = {
+        localClassWizOpen = false
+        onCalculatorOpenChange(false)
+      },
+      modifier = modifier
+    )
+    return
+  }
 
   if (isUnitConverterOpen) {
     UnitConverterScreen(
       metrics = metrics,
       onBackToExtras = { isUnitConverterOpen = false },
+      modifier = modifier
+    )
+    return
+  }
+
+  if (isEstimateOpen) {
+    ConstructionEstimateScreen(
+      metrics = metrics,
+      onBackToExtras = { isEstimateOpen = false },
+      modifier = modifier
+    )
+    return
+  }
+
+  if (isSurveyingSolverOpen) {
+    SurveyingSolverScreen(
+      metrics = metrics,
+      onBackToExtras = { isSurveyingSolverOpen = false },
       modifier = modifier
     )
     return
@@ -13428,8 +13576,10 @@ fun ExtrasScreen(
       Text(
         text = stringResource(R.string.extras_screen_title),
         style = MaterialTheme.typography.headlineLarge.copy(
+          fontFamily = AppleSansFamily,
           fontSize = metrics.scaledSp(26),
-          fontWeight = FontWeight.Bold
+          fontWeight = FontWeight.Bold,
+          letterSpacing = (-0.6).sp
         ),
         color = palette.textPrimary,
         maxLines = 1,
@@ -13596,7 +13746,28 @@ fun ExtrasScreen(
       }
     }
 
-      // 2. Active Companion Module: CE Formula Vault
+      // 2. Active Companion Module: Casio fx-570ES PLUS / CalcES Scientific Calculator
+      ExtraToolPlaceholderCard(
+        tool = ExtraToolItem(
+          id = "scientific_calculator",
+          title = "Scientific Calculator (fx-570ES PLUS)",
+          subtitle = "Natural-V.P.A.M. • 8 Modes, CONST/CONV & CalcES History",
+          icon = Icons.Filled.Calculate
+        ),
+        metrics = metrics,
+        isComingSoon = false,
+        onClick = {
+          playCardHapticSound(context, localView)
+          localClassWizOpen = true
+          onCalculatorOpenChange(true)
+        },
+        modifier = Modifier
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
+      )
+
+      // 2A. Active Companion Module: CE Formula Vault
       ExtraToolPlaceholderCard(
         tool = ExtraToolItem(
           id = "ce_formula_vault",
@@ -13636,82 +13807,45 @@ fun ExtrasScreen(
           .align(Alignment.CenterHorizontally)
       )
 
-      // 3. Secondary Modules ("Coming Soon" Unified Frosted Glass Slab with Hairline Dividers)
-      Text(
-        text = "UPCOMING MODULES",
-        style = MaterialTheme.typography.labelMedium.copy(
-          fontFamily = JetBrainsMonoFamily,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold,
-          letterSpacing = 1.2.sp
+      // 2C. Active Companion Module: Construction Estimate (Max Fajardo Quantity Take-Off + BOQ)
+      ExtraToolPlaceholderCard(
+        tool = ExtraToolItem(
+          id = "construction_estimate",
+          title = "Estimate",
+          subtitle = "Max Fajardo Quantity Take-Off & Project BOQ",
+          icon = Icons.Filled.RequestQuote
         ),
-        color = palette.textSecondary,
-        modifier = Modifier.fillMaxWidth()
-      )
-
-      LiquidGlassCard(
-        cornerRadius = 24.dp,
-        elevation = 6.dp,
+        metrics = metrics,
+        isComingSoon = false,
+        onClick = {
+          playCardHapticSound(context, localView)
+          isEstimateOpen = true
+        },
         modifier = Modifier
           .fillMaxWidth()
           .widthIn(max = 680.dp)
           .align(Alignment.CenterHorizontally)
-      ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-          comingSoonModules.forEachIndexed { index, module ->
-            ExtraToolPlaceholderCard(
-              tool = module,
-              metrics = metrics,
-              isComingSoon = true,
-              onClick = {
-                comingSoonSnackbarMessage = "This module is scheduled for the next Sibil update."
-              },
-              modifier = Modifier.fillMaxWidth()
-            )
-            if (index < comingSoonModules.lastIndex) {
-              GlassHairlineDivider(
-                isDarkMode = palette.isDark,
-                modifier = Modifier.padding(horizontal = 18.dp)
-              )
-            }
-          }
-        }
-      }
-    }
+      )
 
-    // Smooth micro-snackbar when tapping any "Coming Soon" module
-    if (comingSoonSnackbarMessage != null) {
-      Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = palette.dialogSurface,
-        border = BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.45f)),
-        shadowElevation = 10.dp,
+      // 2D. Active Companion Module: Surveying & Curve Solver (CELE MSTE)
+      ExtraToolPlaceholderCard(
+        tool = ExtraToolItem(
+          id = "surveying_curve_solver",
+          title = "Surveying & Curve Solver",
+          subtitle = "Traverse, DMD Area, Horizontal & Vertical Curves",
+          icon = Icons.Filled.Explore
+        ),
+        metrics = metrics,
+        isComingSoon = false,
+        onClick = {
+          playCardHapticSound(context, localView)
+          isSurveyingSolverOpen = true
+        },
         modifier = Modifier
-          .align(Alignment.BottomCenter)
-          .padding(horizontal = 24.dp, vertical = 96.dp)
-          .testTag("coming_soon_micro_snackbar")
-      ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-          Icon(
-            imageVector = Icons.Filled.Info,
-            contentDescription = null,
-            tint = Color(0xFF818CF8),
-            modifier = Modifier.size(18.dp)
-          )
-          Text(
-            text = comingSoonSnackbarMessage.orEmpty(),
-            style = MaterialTheme.typography.bodySmall.copy(
-              fontSize = 12.5.sp,
-              fontWeight = FontWeight.SemiBold
-            ),
-            color = palette.textPrimary
-          )
-        }
-      }
+          .fillMaxWidth()
+          .widthIn(max = 680.dp)
+          .align(Alignment.CenterHorizontally)
+      )
     }
   }
 }
@@ -14121,6 +14255,7 @@ private fun formatConvertedValue(value: Double, mode: UnitPrecisionMode): String
   }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UnitConverterScreen(
   metrics: ResponsiveMetrics,
@@ -14144,6 +14279,7 @@ private fun UnitConverterScreen(
   var searchQuery by rememberSaveable { mutableStateOf("") }
   var inputExpression by rememberSaveable { mutableStateOf("1") }
   var precisionMode by rememberSaveable { mutableStateOf(UnitPrecisionMode.AUTO) }
+  var pickerTargetSide by remember { mutableStateOf<String?>(null) } // "FROM" or "TO"
 
   val categoryUnits = remember(selectedCategory, tempAngleSubGroup) {
     val raw = getUnitsForCategory(selectedCategory)
@@ -14198,20 +14334,22 @@ private fun UnitConverterScreen(
       ?: categoryUnits.getOrElse(1) { categoryUnits.first() }
   }
 
-  val filteredDisplayUnits = remember(categoryUnits, systemFilter, searchQuery) {
-    val bySystem = when (systemFilter) {
+  val systemFilteredUnits = remember(categoryUnits, systemFilter) {
+    when (systemFilter) {
       "SI" -> categoryUnits.filter { it.system == "SI" }
       "USCS" -> categoryUnits.filter { it.system == "USCS" }
       else -> categoryUnits
     }.ifEmpty { categoryUnits }
+  }
 
+  val filteredDisplayUnits = remember(systemFilteredUnits, searchQuery) {
     val q = searchQuery.trim()
     if (q.isEmpty()) {
-      bySystem
+      systemFilteredUnits
     } else {
-      bySystem.filter {
+      systemFilteredUnits.filter {
         it.name.contains(q, ignoreCase = true) || it.symbol.contains(q, ignoreCase = true)
-      }.ifEmpty { bySystem }
+      }.ifEmpty { systemFilteredUnits }
     }
   }
 
@@ -14252,24 +14390,24 @@ private fun UnitConverterScreen(
   val titleColor = if (isDarkMode) Color.White else Color(0xFF0F172A)
   val subtitleColor = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
   val accentCyan = if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+  val activeSegBlue = Color(0xFF0284C7)
 
-  val panelShape = RoundedCornerShape(24.dp)
-  val panelFillBrush = if (isDarkMode) {
+  val cardFillBrush = if (isDarkMode) {
     Brush.verticalGradient(
       listOf(
-        Color(0xFF1E293B).copy(alpha = 0.62f),
-        Color(0xFF0F172A).copy(alpha = 0.72f)
+        Color(0xFF1E293B).copy(alpha = 0.72f),
+        Color(0xFF0F172A).copy(alpha = 0.80f)
       )
     )
   } else {
     Brush.verticalGradient(
       listOf(
-        Color.White.copy(alpha = 0.84f),
-        Color(0xFFF1F5F9).copy(alpha = 0.74f)
+        Color.White.copy(alpha = 0.90f),
+        Color(0xFFF1F5F9).copy(alpha = 0.82f)
       )
     )
   }
-  val panelBorder = if (isDarkMode) {
+  val cardBorder = if (isDarkMode) {
     BorderStroke(1.dp, Color.White.copy(alpha = 0.20f))
   } else {
     BorderStroke(1.2.dp, Color.White)
@@ -14278,102 +14416,80 @@ private fun UnitConverterScreen(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .widthIn(max = 840.dp)
+      .widthIn(max = 760.dp)
       .padding(
-        start = metrics.scaledDp(16),
-        end = metrics.scaledDp(16),
-        top = metrics.scaledDp(16),
-        bottom = metrics.scaledDp(98)
+        top = metrics.scaledDp(14),
+        bottom = metrics.scaledDp(92)
       )
       .testTag("unit_converter_screen"),
-    verticalArrangement = Arrangement.spacedBy(6.dp)
+    verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
-    // 1. STICKY TOP HEADER BAR: Back Button + "CE Unit Converter" + SI/USCS Filter + Search Toggle
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
+    // 1. STICKY TOP HEADER BAR + TACTILE 3-WAY SEGMENTED CONTROL
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
       Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.weight(1f)
-      ) {
-        IconButton(
-          onClick = onBackToExtras,
-          modifier = Modifier
-            .size(34.dp)
-            .clip(CircleShape)
-            .background(
-              if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f)
-              else Color.White.copy(alpha = 0.80f)
-            )
-            .border(
-              1.dp,
-              if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color(0xFFCBD5E1),
-              CircleShape
-            )
-            .testTag("unit_converter_back_button")
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back to Extras",
-            tint = titleColor,
-            modifier = Modifier.size(18.dp)
-          )
-        }
-
-        Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = "CE Unit Converter",
-            style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = metrics.scaledSp(18),
-              fontWeight = FontWeight.ExtraBold
-            ),
-            color = titleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-          Text(
-            text = "${selectedCategory.fullTitle} • ${selectedCategory.boardTag}",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.5.sp,
-              fontWeight = FontWeight.SemiBold
-            ),
-            color = accentCyan,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-        }
-      }
-
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        // System Filter Pill (ALL -> SI -> USCS)
-        RecessedGlassPill(
-          isDarkMode = isDarkMode,
-          fillColor = if (systemFilter != "ALL") accentCyan.copy(alpha = 0.18f) else null,
-          borderColor = if (systemFilter != "ALL") accentCyan else null,
-          onClick = {
-            systemFilter = when (systemFilter) {
-              "ALL" -> "SI"
-              "SI" -> "USCS"
-              else -> "ALL"
-            }
-          },
-          contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp),
-          modifier = Modifier.testTag("unit_converter_system_filter_pill")
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          modifier = Modifier.weight(1f)
         ) {
-          Text(
-            text = if (systemFilter == "ALL") "SI / USCS" else systemFilter,
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontSize = 10.5.sp,
-              fontWeight = FontWeight.ExtraBold
-            ),
-            color = if (systemFilter != "ALL") accentCyan else titleColor
-          )
+          IconButton(
+            onClick = onBackToExtras,
+            modifier = Modifier
+              .size(40.dp)
+              .clip(CircleShape)
+              .background(
+                if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.72f)
+                else Color.White.copy(alpha = 0.88f)
+              )
+              .border(
+                1.dp,
+                if (isDarkMode) Color.White.copy(alpha = 0.18f) else Color(0xFFCBD5E1),
+                CircleShape
+              )
+              .testTag("unit_converter_back_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+              contentDescription = "Back to Extras",
+              tint = titleColor,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "CE Unit Converter",
+              style = MaterialTheme.typography.headlineMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = metrics.scaledSp(20),
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.4).sp
+              ),
+              color = titleColor,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = "${selectedCategory.fullTitle} • ${selectedCategory.boardTag}",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+              ),
+              color = accentCyan,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
         }
 
         IconButton(
@@ -14382,16 +14498,16 @@ private fun UnitConverterScreen(
             if (!isSearchVisible) searchQuery = ""
           },
           modifier = Modifier
-            .size(34.dp)
+            .size(40.dp)
             .clip(CircleShape)
             .background(
-              if (isSearchVisible) accentCyan.copy(alpha = 0.20f)
-              else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.55f)
-              else Color.White.copy(alpha = 0.78f)
+              if (isSearchVisible) accentCyan.copy(alpha = 0.22f)
+              else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f)
+              else Color.White.copy(alpha = 0.86f)
             )
             .border(
               1.dp,
-              if (isSearchVisible) accentCyan else if (isDarkMode) Color.White.copy(alpha = 0.14f) else Color(0xFFCBD5E1),
+              if (isSearchVisible) accentCyan else if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1),
               CircleShape
             )
             .testTag("unit_converter_search_toggle")
@@ -14400,21 +14516,60 @@ private fun UnitConverterScreen(
             imageVector = if (isSearchVisible) Icons.Default.Close else Icons.Default.Search,
             contentDescription = "Toggle Unit Search",
             tint = if (isSearchVisible) accentCyan else titleColor,
-            modifier = Modifier.size(17.dp)
+            modifier = Modifier.size(19.dp)
           )
         }
       }
-    }
 
-    // Main Converter Content Area below sticky header
-    Column(
-      modifier = Modifier
-        .weight(1f)
-        .fillMaxWidth()
-        .verticalScroll(rememberScrollState()),
-      verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-      // Optional Expandable Search Bar
+      // Tactile 3-Way All | SI | USCS Segmented Control
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFE2E8F0).copy(alpha = 0.85f),
+        border = BorderStroke(1.dp, if (isDarkMode) Color.White.copy(alpha = 0.14f) else Color.White),
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(38.dp)
+          .testTag("unit_converter_system_segmented")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(3.dp),
+          horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+          listOf("ALL" to "All", "SI" to "SI", "USCS" to "USCS").forEach { (sysKey, sysLabel) ->
+            val isSelected = systemFilter == sysKey
+            Surface(
+              onClick = {
+                playCardHapticSound(context, localView)
+                systemFilter = sysKey
+              },
+              shape = RoundedCornerShape(9.dp),
+              color = if (isSelected) activeSegBlue else Color.Transparent,
+              shadowElevation = if (isSelected) 4.dp else 0.dp,
+              modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .testTag("unit_converter_system_filter_${sysKey.lowercase(Locale.US)}")
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Text(
+                  text = sysLabel,
+                  style = MaterialTheme.typography.labelLarge.copy(
+                    fontFamily = AppleSansFamily,
+                    fontSize = 13.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
+                  ),
+                  color = if (isSelected) Color.White else subtitleColor,
+                  maxLines = 1,
+                  softWrap = false
+                )
+              }
+            }
+          }
+        }
+      }
+
       AnimatedVisibility(
         visible = isSearchVisible,
         enter = expandVertically() + fadeIn(),
@@ -14425,28 +14580,18 @@ private fun UnitConverterScreen(
           onValueChange = { searchQuery = it },
           placeholder = {
             Text(
-              text = "Filter units by name or symbol (e.g., MPa, kip, cfs, ft)...",
-              fontSize = 12.sp,
+              text = "Filter units (e.g., MPa, kip, cfs, ft)...",
+              fontSize = 13.sp,
               color = subtitleColor
             )
           },
           leadingIcon = {
-            Icon(
-              imageVector = Icons.Default.Search,
-              contentDescription = null,
-              tint = accentCyan,
-              modifier = Modifier.size(17.dp)
-            )
+            Icon(Icons.Default.Search, null, tint = accentCyan, modifier = Modifier.size(18.dp))
           },
           trailingIcon = if (searchQuery.isNotEmpty()) {
             {
-              IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(28.dp)) {
-                Icon(
-                  imageVector = Icons.Default.Close,
-                  contentDescription = "Clear search",
-                  tint = subtitleColor,
-                  modifier = Modifier.size(14.dp)
-                )
+              IconButton(onClick = { searchQuery = "" }) {
+                Icon(Icons.Default.Close, "Clear search", tint = subtitleColor, modifier = Modifier.size(16.dp))
               }
             }
           } else null,
@@ -14458,228 +14603,418 @@ private fun UnitConverterScreen(
             .testTag("unit_converter_search_input")
         )
       }
+    }
 
-      // 2. 12-CATEGORY HORIZONTAL SCROLLABLE RIBBON
-      LazyRow(
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("unit_converter_category_ribbon"),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        items(
-          items = CeUnitCategory.entries,
-          key = { it.id }
-        ) { category ->
-          val isSelected = selectedCategory == category
-          RecessedGlassPill(
-            isDarkMode = isDarkMode,
-            fillColor = if (isSelected) {
-              if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.36f) else Color(0xFF0284C7)
-            } else null,
-            borderColor = if (isSelected) Color(0xFF38BDF8) else null,
-            onClick = {
-              playCardHapticSound(context, localView)
-              selectedCategory = category
-            },
-            contentPadding = PaddingValues(horizontal = 11.dp, vertical = 5.dp),
-            modifier = Modifier.testTag("unit_category_chip_${category.id}")
+    // 2. SPACIOUS CATEGORY RIBBON (40.dp tall, 14.sp SemiBold, no truncation)
+    LazyRow(
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("unit_converter_category_ribbon"),
+      contentPadding = PaddingValues(horizontal = 16.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      items(items = CeUnitCategory.entries, key = { it.id }) { category ->
+        val isSelected = selectedCategory == category
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            selectedCategory = category
+          },
+          shape = CircleShape,
+          color = if (isSelected) activeSegBlue else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.65f) else Color.White.copy(alpha = 0.85f),
+          border = BorderStroke(
+            width = 1.dp,
+            color = if (isSelected) Color(0xFF38BDF8) else if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1)
+          ),
+          shadowElevation = if (isSelected) 4.dp else 0.dp,
+          modifier = Modifier
+            .height(40.dp)
+            .testTag("unit_category_chip_${category.id}")
+        ) {
+          Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 16.dp)
           ) {
             Text(
               text = category.shortLabel,
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = 11.5.sp,
-                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+              style = MaterialTheme.typography.labelLarge.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
               ),
-              color = if (isSelected) Color.White else titleColor
+              color = if (isSelected) Color.White else titleColor,
+              maxLines = 1,
+              softWrap = false
             )
           }
         }
       }
+    }
 
-      // 3. QUICK CE BOARD EXAM PRESET STRIP (+ Temp/Angle Sub-Mode Toggle when in TEMP_ANGLE)
-      val presets = remember(selectedCategory) { getPresetsForCategory(selectedCategory) }
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        if (selectedCategory == CeUnitCategory.TEMP_ANGLE) {
-          listOf("TEMP" to "🌡️ Temp", "ANGLE" to "📐 Angle").forEach { (subCode, subLabel) ->
-            val isSubActive = tempAngleSubGroup == subCode
-            RecessedGlassPill(
-              isDarkMode = isDarkMode,
-              fillColor = if (isSubActive) accentCyan.copy(alpha = 0.22f) else null,
-              borderColor = if (isSubActive) accentCyan else null,
-              onClick = { tempAngleSubGroup = subCode },
-              contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
-            ) {
+    // 3. SPACIOUS QUICK PRESETS RIBBON (36.dp tall, 13.sp Medium)
+    val presets = remember(selectedCategory) { getPresetsForCategory(selectedCategory) }
+    LazyRow(
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("unit_converter_presets_ribbon"),
+      contentPadding = PaddingValues(horizontal = 16.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      if (selectedCategory == CeUnitCategory.TEMP_ANGLE) {
+        items(listOf("TEMP" to "Temp", "ANGLE" to "Angle"), key = { it.first }) { (subCode, subLabel) ->
+          val isSubActive = tempAngleSubGroup == subCode
+          Surface(
+            onClick = { tempAngleSubGroup = subCode },
+            shape = CircleShape,
+            color = if (isSubActive) accentCyan.copy(alpha = 0.22f) else palette.nestedCardFill,
+            border = BorderStroke(1.dp, if (isSubActive) accentCyan else palette.nestedBorderColor),
+            modifier = Modifier.height(36.dp)
+          ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
               Text(
                 text = subLabel,
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.ExtraBold
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 13.sp,
+                  fontWeight = FontWeight.SemiBold
                 ),
-                color = if (isSubActive) accentCyan else subtitleColor
+                color = if (isSubActive) accentCyan else subtitleColor,
+                maxLines = 1,
+                softWrap = false
               )
             }
           }
         }
+      }
 
-        Text(
-          text = "PRESETS:",
-          style = MaterialTheme.typography.labelSmall.copy(
-            fontSize = 9.5.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = 0.5.sp
+      items(items = presets, key = { it.label }) { preset ->
+        val isPresetSelected =
+          activeFromUnit.symbol == preset.fromSymbol && activeToUnit.symbol == preset.toSymbol
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            if (selectedCategory == CeUnitCategory.TEMP_ANGLE && preset.subGroup != "Default") {
+              tempAngleSubGroup = preset.subGroup
+            }
+            fromSymbol = preset.fromSymbol
+            toSymbol = preset.toSymbol
+          },
+          shape = CircleShape,
+          color = if (isPresetSelected) accentCyan.copy(alpha = 0.20f) else if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.55f) else Color.White.copy(alpha = 0.78f),
+          border = BorderStroke(
+            width = 1.dp,
+            color = if (isPresetSelected) accentCyan else if (isDarkMode) Color.White.copy(alpha = 0.14f) else Color(0xFFCBD5E1)
           ),
-          color = subtitleColor,
-          modifier = Modifier.padding(end = 2.dp)
-        )
-
-        presets.forEach { preset ->
-          val isPresetSelected =
-            activeFromUnit.symbol == preset.fromSymbol && activeToUnit.symbol == preset.toSymbol
-          RecessedGlassPill(
-            isDarkMode = isDarkMode,
-            fillColor = if (isPresetSelected) accentCyan.copy(alpha = 0.20f) else null,
-            borderColor = if (isPresetSelected) accentCyan else null,
-            onClick = {
-              playCardHapticSound(context, localView)
-              if (selectedCategory == CeUnitCategory.TEMP_ANGLE && preset.subGroup != "Default") {
-                tempAngleSubGroup = preset.subGroup
-              }
-              fromSymbol = preset.fromSymbol
-              toSymbol = preset.toSymbol
-            },
-            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp)
-          ) {
+          modifier = Modifier.height(36.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 14.dp)) {
             Text(
               text = preset.label,
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 10.5.sp,
-                fontWeight = if (isPresetSelected) FontWeight.ExtraBold else FontWeight.SemiBold
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 13.sp,
+                fontWeight = if (isPresetSelected) FontWeight.Bold else FontWeight.Medium
               ),
-              color = if (isPresetSelected) accentCyan else titleColor
+              color = if (isPresetSelected) accentCyan else titleColor,
+              maxLines = 1,
+              softWrap = false
             )
           }
         }
       }
+    }
 
-      // 4. DUAL "FROM:" & "TO:" INPUT/OUTPUT HEADER BOXES + CENTER SWAP BUTTON
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(18.dp))
-          .background(brush = panelFillBrush, shape = RoundedCornerShape(18.dp))
-          .border(border = panelBorder, shape = RoundedCornerShape(18.dp))
-          .padding(8.dp)
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          // Left Box ("From:")
-          val ioBoxFill = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.65f) else Color.White.copy(alpha = 0.90f)
-          val ioBoxBorder = if (isDarkMode) Color.White.copy(alpha = 0.16f) else Color(0xFFCBD5E1)
-
-          Column(
-            modifier = Modifier
-              .weight(1f)
-              .clip(RoundedCornerShape(12.dp))
-              .background(ioBoxFill)
-              .border(1.dp, accentCyan.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
-              .padding(horizontal = 9.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-          ) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
+    // 4. SCROLLABLE CONVERSION CARDS + SINGLE-COLUMN ALL UNIT EQUIVALENTS LIST
+    LazyColumn(
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxWidth()
+        .testTag("unit_converter_equivalents_list"),
+      contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      // Stacked Ergonomic FROM + SWAP + TO Cards
+      item(key = "converter_io_cards") {
+        Box(modifier = Modifier.fillMaxWidth()) {
+          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // FROM CARD
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
+                .border(cardBorder, RoundedCornerShape(22.dp))
+                .padding(horizontal = 16.dp, vertical = 14.dp)
             ) {
-              Text(
-                text = "From: ${activeFromUnit.symbol}",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = accentCyan,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-              if (inputExpression.isNotEmpty()) {
-                Icon(
-                  imageVector = Icons.Default.Close,
-                  contentDescription = "Clear Input",
-                  tint = subtitleColor,
+              Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  // Tappable Unit Selector Button
+                  Surface(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      pickerTargetSide = "FROM"
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
+                    border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                      .weight(1f, fill = false)
+                      .height(40.dp)
+                      .testTag("unit_converter_from_selector")
+                  ) {
+                    Row(
+                      modifier = Modifier.padding(horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      Text(
+                        text = "${activeFromUnit.name.replace(" (Base)", "")} (${activeFromUnit.symbol})",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                          fontFamily = AppleSansFamily,
+                          fontSize = 15.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = titleColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                      )
+                      Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Select From Unit",
+                        tint = accentCyan,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
+                  }
+
+                  Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 8.dp)
+                  ) {
+                    Surface(
+                      shape = RoundedCornerShape(8.dp),
+                      color = accentCyan.copy(alpha = 0.14f),
+                      modifier = Modifier.height(28.dp)
+                    ) {
+                      Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 8.dp)) {
+                        Text(
+                          text = activeFromUnit.system,
+                          fontSize = 11.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = accentCyan
+                        )
+                      }
+                    }
+
+                    if (inputExpression.isNotEmpty()) {
+                      IconButton(
+                        onClick = { inputExpression = "" },
+                        modifier = Modifier
+                          .size(34.dp)
+                          .testTag("unit_converter_clear_input_button")
+                      ) {
+                        Icon(
+                          imageVector = Icons.Default.Close,
+                          contentDescription = "Clear Input",
+                          tint = subtitleColor,
+                          modifier = Modifier.size(17.dp)
+                        )
+                      }
+                    }
+                  }
+                }
+
+                // Bottom Row: Large Editable Numeric/Expression Input (28.sp Bold tnum)
+                BasicTextField(
+                  value = inputExpression,
+                  onValueChange = { inputExpression = it },
+                  singleLine = true,
+                  textStyle = ComposeTextStyle(
+                    fontFamily = AppleSansFamily,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.5).sp,
+                    fontFeatureSettings = "tnum",
+                    color = titleColor
+                  ),
+                  cursorBrush = SolidColor(accentCyan),
+                  keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Done
+                  ),
+                  decorationBox = { innerTextField ->
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                      if (inputExpression.isEmpty()) {
+                        Text(
+                          text = "Enter value or e.g. 25 * 4",
+                          style = MaterialTheme.typography.headlineSmall.copy(
+                            fontFamily = AppleSansFamily,
+                            fontSize = 22.sp,
+                            fontFeatureSettings = "tnum"
+                          ),
+                          color = subtitleColor.copy(alpha = 0.55f)
+                        )
+                      }
+                      innerTextField()
+                    }
+                  },
                   modifier = Modifier
-                    .size(14.dp)
-                    .clickable { inputExpression = "" }
-                    .testTag("unit_converter_clear_input_button")
+                    .fillMaxWidth()
+                    .testTag("unit_converter_from_input")
                 )
               }
             }
 
-            BasicTextField(
-              value = inputExpression,
-              onValueChange = { inputExpression = it },
-              singleLine = true,
-              textStyle = androidx.compose.ui.text.TextStyle(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = titleColor
-              ),
-              cursorBrush = SolidColor(accentCyan),
-              keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Text,
-                imeAction = ImeAction.Done
-              ),
-              decorationBox = { innerTextField ->
-                Box(modifier = Modifier.fillMaxWidth()) {
-                  if (inputExpression.isEmpty()) {
-                    Text(
-                      text = "e.g. 25 * 4",
-                      style = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = JetBrainsMonoFamily,
-                        fontSize = 13.sp
-                      ),
-                      color = subtitleColor.copy(alpha = 0.65f)
-                    )
-                  }
-                  innerTextField()
-                }
-              },
+            // TO CARD
+            Box(
               modifier = Modifier
                 .fillMaxWidth()
-                .testTag("unit_converter_from_input")
-            )
+                .clip(RoundedCornerShape(22.dp))
+                .background(brush = cardFillBrush, shape = RoundedCornerShape(22.dp))
+                .border(cardBorder, RoundedCornerShape(22.dp))
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+              Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  // Tappable Target Unit Selector Button
+                  Surface(
+                    onClick = {
+                      playCardHapticSound(context, localView)
+                      pickerTargetSide = "TO"
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.72f) else Color(0xFFF1F5F9),
+                    border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                      .weight(1f, fill = false)
+                      .height(40.dp)
+                      .testTag("unit_converter_to_selector")
+                  ) {
+                    Row(
+                      modifier = Modifier.padding(horizontal = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                      Text(
+                        text = "${activeToUnit.name.replace(" (Base)", "")} (${activeToUnit.symbol})",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                          fontFamily = AppleSansFamily,
+                          fontSize = 15.sp,
+                          fontWeight = FontWeight.Bold
+                        ),
+                        color = titleColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                      )
+                      Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Select Target Unit",
+                        tint = accentCyan,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
+                  }
 
-            Text(
-              text = activeFromUnit.name,
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.Medium
-              ),
-              color = subtitleColor,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
+                  Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 8.dp)
+                  ) {
+                    Surface(
+                      onClick = {
+                        precisionMode = when (precisionMode) {
+                          UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
+                          UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
+                          UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
+                        }
+                      },
+                      shape = RoundedCornerShape(10.dp),
+                      color = accentCyan.copy(alpha = 0.16f),
+                      border = BorderStroke(1.dp, accentCyan.copy(alpha = 0.40f)),
+                      modifier = Modifier
+                        .height(34.dp)
+                        .testTag("unit_converter_precision_toggle")
+                    ) {
+                      Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                        Text(
+                          text = precisionMode.label,
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = accentCyan
+                        )
+                      }
+                    }
+
+                    IconButton(
+                      onClick = {
+                        clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
+                        Toast.makeText(
+                          context,
+                          "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
+                          Toast.LENGTH_SHORT
+                        ).show()
+                      },
+                      modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(accentCyan.copy(alpha = 0.14f))
+                        .testTag("unit_converter_copy_result_button")
+                    ) {
+                      Icon(
+                        imageVector = Icons.Filled.ContentCopy,
+                        contentDescription = "Copy Converted Result",
+                        tint = accentCyan,
+                        modifier = Modifier.size(16.dp)
+                      )
+                    }
+                  }
+                }
+
+                // Bottom Row: Large Converted Output Readout (28.sp Bold cyan-blue)
+                Text(
+                  text = "$formattedPrimaryOutput ${activeToUnit.symbol}",
+                  style = MaterialTheme.typography.headlineMedium.copy(
+                    fontFamily = AppleSansFamily,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.5).sp,
+                    fontFeatureSettings = "tnum"
+                  ),
+                  color = accentCyan,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("unit_converter_to_output")
+                )
+              }
+            }
           }
 
-          // Center Swap Button (⇄)
+          // Prominent Circular 44.dp Swap Button Centered Between FROM & TO Cards
           Box(
             modifier = Modifier
-              .size(34.dp)
+              .align(Alignment.CenterEnd)
+              .padding(end = 24.dp)
+              .size(44.dp)
               .shadow(
-                elevation = 6.dp,
+                elevation = 10.dp,
                 shape = CircleShape,
-                ambientColor = accentCyan.copy(alpha = 0.35f),
-                spotColor = accentCyan.copy(alpha = 0.35f)
+                ambientColor = activeSegBlue.copy(alpha = 0.40f),
+                spotColor = activeSegBlue.copy(alpha = 0.40f)
               )
               .clip(CircleShape)
               .background(
@@ -14687,7 +15022,7 @@ private fun UnitConverterScreen(
                   listOf(Color(0xFF0284C7), Color(0xFF2563EB))
                 )
               )
-              .border(1.dp, Color.White.copy(alpha = 0.65f), CircleShape)
+              .border(1.5.dp, Color.White, CircleShape)
               .clickable {
                 playCardHapticSound(context, localView)
                 val prevFrom = activeFromUnit.symbol
@@ -14698,370 +15033,17 @@ private fun UnitConverterScreen(
             contentAlignment = Alignment.Center
           ) {
             Icon(
-              imageVector = Icons.Filled.SwapHoriz,
-              contentDescription = "Swap Units",
+              imageVector = Icons.Filled.SwapVert,
+              contentDescription = "Swap From and To Units",
               tint = Color.White,
-              modifier = Modifier.size(18.dp)
-            )
-          }
-
-          // Right Box ("To:")
-          Column(
-            modifier = Modifier
-              .weight(1f)
-              .clip(RoundedCornerShape(12.dp))
-              .background(ioBoxFill)
-              .border(1.dp, ioBoxBorder, RoundedCornerShape(12.dp))
-              .padding(horizontal = 9.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-          ) {
-            Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Text(
-                text = "To: ${activeToUnit.symbol}",
-                style = MaterialTheme.typography.labelSmall.copy(
-                  fontSize = 10.5.sp,
-                  fontWeight = FontWeight.ExtraBold
-                ),
-                color = subtitleColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-              )
-
-              Row(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  text = precisionMode.label,
-                  style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.ExtraBold
-                  ),
-                  color = accentCyan,
-                  modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(accentCyan.copy(alpha = 0.14f))
-                    .clickable {
-                      precisionMode = when (precisionMode) {
-                        UnitPrecisionMode.AUTO -> UnitPrecisionMode.FOUR_DEC
-                        UnitPrecisionMode.FOUR_DEC -> UnitPrecisionMode.SCI
-                        UnitPrecisionMode.SCI -> UnitPrecisionMode.AUTO
-                      }
-                    }
-                    .padding(horizontal = 5.dp, vertical = 1.dp)
-                    .testTag("unit_converter_precision_toggle")
-                )
-
-                Icon(
-                  imageVector = Icons.Filled.ContentCopy,
-                  contentDescription = "Copy Converted Result",
-                  tint = accentCyan,
-                  modifier = Modifier
-                    .size(14.dp)
-                    .clickable {
-                      clipboardManager.setText(AnnotatedString("$formattedPrimaryOutput ${activeToUnit.symbol}"))
-                      Toast.makeText(
-                        context,
-                        "Copied: $formattedPrimaryOutput ${activeToUnit.symbol}",
-                        Toast.LENGTH_SHORT
-                      ).show()
-                    }
-                    .testTag("unit_converter_copy_result_button")
-                )
-              }
-            }
-
-            Text(
-              text = formattedPrimaryOutput,
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.ExtraBold
-              ),
-              color = accentCyan,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("unit_converter_to_output")
-            )
-
-            Text(
-              text = activeToUnit.name,
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 9.5.sp,
-                fontWeight = FontWeight.Medium
-              ),
-              color = subtitleColor,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
+              modifier = Modifier.size(22.dp)
             )
           }
         }
       }
 
-      // 5. INTERACTIVE DUAL-LIST SELECTOR ("From" List vs. Live "To" Multi-Preview List)
-      // Expanded height so 6 to 9 units are clearly visible at once without cramped 2-line scrolling
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(min = 360.dp, max = 520.dp)
-          .clip(panelShape)
-          .background(brush = panelFillBrush, shape = panelShape)
-          .border(border = panelBorder, shape = panelShape)
-      ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-          // Dual Column Header Strip
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .background(
-                if (isDarkMode) Color.White.copy(alpha = 0.05f)
-                else Color(0xFF0284C7).copy(alpha = 0.07f)
-              )
-              .padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text(
-              text = "FROM UNIT (${filteredDisplayUnits.size})",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 0.6.sp
-              ),
-              color = subtitleColor,
-              modifier = Modifier.weight(0.46f)
-            )
-            Text(
-              text = "TO UNIT • LIVE EQUIVALENTS",
-              style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 0.6.sp
-              ),
-              color = accentCyan,
-              modifier = Modifier.weight(0.54f)
-            )
-          }
-
-          GlassHairlineDivider(isDarkMode = isDarkMode)
-
-          Row(
-            modifier = Modifier
-              .weight(1f)
-              .fillMaxWidth()
-          ) {
-            // LEFT SCROLLABLE COLUMN: "From Unit" Selector List
-            LazyColumn(
-              modifier = Modifier
-                .weight(0.46f)
-                .fillMaxHeight()
-                .heightIn(min = 320.dp, max = 520.dp)
-                .testTag("unit_converter_from_list"),
-              contentPadding = PaddingValues(6.dp),
-              verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              items(
-                items = filteredDisplayUnits,
-                key = { "from_${it.symbol}" }
-              ) { unit ->
-                val isSelected = unit.symbol == activeFromUnit.symbol
-                val itemFill = if (isSelected) {
-                  if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
-                  else Color(0xFFE0F2FE).copy(alpha = 0.92f)
-                } else {
-                  Color.Transparent
-                }
-                val itemBorder = if (isSelected) {
-                  BorderStroke(1.dp, accentCyan)
-                } else {
-                  BorderStroke(0.5.dp, Color.Transparent)
-                }
-
-                Surface(
-                  onClick = {
-                    playCardHapticSound(context, localView)
-                    fromSymbol = unit.symbol
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  color = itemFill,
-                  border = itemBorder,
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("from_unit_row_${unit.symbol}")
-                ) {
-                  Row(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .padding(horizontal = 8.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                  ) {
-                    // Symbol Badge
-                    Box(
-                      modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(
-                          if (isSelected) accentCyan
-                          else if (isDarkMode) Color.White.copy(alpha = 0.08f)
-                          else Color(0xFF0F172A).copy(alpha = 0.07f)
-                        )
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                      contentAlignment = Alignment.Center
-                    ) {
-                      Text(
-                        text = unit.symbol,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                          fontFamily = JetBrainsMonoFamily,
-                          fontSize = 10.sp,
-                          fontWeight = FontWeight.ExtraBold
-                        ),
-                        color = if (isSelected) Color.White else titleColor
-                      )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                      Text(
-                        text = unit.name,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                          fontSize = 11.sp,
-                          fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium
-                        ),
-                        color = titleColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                      )
-                      Text(
-                        text = unit.system,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                          fontSize = 9.sp,
-                          fontWeight = FontWeight.SemiBold
-                        ),
-                        color = subtitleColor
-                      )
-                    }
-                  }
-                }
-              }
-            }
-
-            // Vertical Hairline Divider between From and To lists
-            Box(
-              modifier = Modifier
-                .width(1.dp)
-                .fillMaxHeight()
-                .background(
-                  if (isDarkMode) Color.White.copy(alpha = 0.12f)
-                  else Color(0xFFCBD5E1).copy(alpha = 0.75f)
-                )
-            )
-
-            // RIGHT SCROLLABLE COLUMN: "To Unit" List with Live Multi-Previews
-            LazyColumn(
-              modifier = Modifier
-                .weight(0.54f)
-                .fillMaxHeight()
-                .heightIn(min = 320.dp, max = 520.dp)
-                .testTag("unit_converter_to_list"),
-              contentPadding = PaddingValues(6.dp),
-              verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              items(
-                items = filteredDisplayUnits,
-                key = { "to_${it.symbol}" }
-              ) { unit ->
-                val isSelected = unit.symbol == activeToUnit.symbol
-                val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
-                  evaluatedInput?.let {
-                    val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
-                    formatConvertedValue(conv, precisionMode)
-                  } ?: "—"
-                }
-
-                val itemFill = if (isSelected) {
-                  if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.32f)
-                  else Color(0xFFE0F2FE).copy(alpha = 0.92f)
-                } else {
-                  Color.Transparent
-                }
-                val itemBorder = if (isSelected) {
-                  BorderStroke(1.dp, accentCyan)
-                } else {
-                  BorderStroke(0.5.dp, Color.Transparent)
-                }
-
-                Surface(
-                  onClick = {
-                    playCardHapticSound(context, localView)
-                    toSymbol = unit.symbol
-                  },
-                  shape = RoundedCornerShape(10.dp),
-                  color = itemFill,
-                  border = itemBorder,
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("to_unit_row_${unit.symbol}")
-                ) {
-                  Column(
-                    modifier = Modifier
-                      .fillMaxWidth()
-                      .padding(horizontal = 8.dp, vertical = 5.dp),
-                    verticalArrangement = Arrangement.spacedBy(1.dp)
-                  ) {
-                    Row(
-                      modifier = Modifier.fillMaxWidth(),
-                      horizontalArrangement = Arrangement.SpaceBetween,
-                      verticalAlignment = Alignment.CenterVertically
-                    ) {
-                      Text(
-                        text = unit.name,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                          fontSize = 11.sp,
-                          fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold
-                        ),
-                        color = titleColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                      )
-
-                      Text(
-                        text = unit.system,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                          fontSize = 8.5.sp,
-                          fontWeight = FontWeight.Bold
-                        ),
-                        color = subtitleColor,
-                        modifier = Modifier.padding(start = 4.dp)
-                      )
-                    }
-
-                    Text(
-                      text = "($livePreviewText ${unit.symbol})",
-                      style = MaterialTheme.typography.labelMedium.copy(
-                        fontFamily = JetBrainsMonoFamily,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
-                      ),
-                      color = if (isSelected) accentCyan else subtitleColor,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
-                    )
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // 6. BOTTOM FORMULA & CONVERSION FACTOR CAPSULE (1-Tap Copy)
-      Box(modifier = Modifier.padding(bottom = 4.dp)) {
+      // Formula & Conversion Factor Capsule
+      item(key = "formula_capsule") {
         MathFormulaCapsule(
           label = "${selectedCategory.shortLabel} Conversion",
           equation = liveEquationText,
@@ -15069,6 +15051,255 @@ private fun UnitConverterScreen(
           accentColor = accentCyan,
           testTag = "unit_converter_formula_capsule"
         )
+      }
+
+      // Single-Column Section Header
+      item(key = "all_equivalents_header") {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 2.dp, start = 4.dp, end = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "ALL UNIT EQUIVALENTS",
+            style = MaterialTheme.typography.labelMedium.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontSize = 11.5.sp,
+              fontWeight = FontWeight.ExtraBold,
+              letterSpacing = 0.8.sp
+            ),
+            color = subtitleColor
+          )
+          Text(
+            text = "${filteredDisplayUnits.size} units",
+            style = MaterialTheme.typography.labelSmall.copy(
+              fontFamily = JetBrainsMonoFamily,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold
+            ),
+            color = accentCyan
+          )
+        }
+      }
+
+      // Clean Single-Column "All Unit Equivalents" Rows (minHeight = 56.dp)
+      items(
+        items = filteredDisplayUnits,
+        key = { "equiv_${it.symbol}" }
+      ) { unit ->
+        val isSelected = unit.symbol == activeToUnit.symbol
+        val livePreviewText = remember(evaluatedInput, activeFromUnit, unit, selectedCategory, precisionMode) {
+          evaluatedInput?.let {
+            val conv = convertCeUnitValue(it, activeFromUnit, unit, selectedCategory)
+            formatConvertedValue(conv, precisionMode)
+          } ?: "—"
+        }
+
+        Surface(
+          onClick = {
+            playCardHapticSound(context, localView)
+            toSymbol = unit.symbol
+          },
+          shape = RoundedCornerShape(16.dp),
+          color = if (isSelected) {
+            if (isDarkMode) Color(0xFF0284C7).copy(alpha = 0.24f) else Color(0xFFE0F2FE).copy(alpha = 0.92f)
+          } else {
+            if (isDarkMode) Color(0xFF1E293B).copy(alpha = 0.62f) else Color.White.copy(alpha = 0.86f)
+          },
+          border = if (isSelected) {
+            BorderStroke(1.3.dp, accentCyan)
+          } else {
+            cardBorder
+          },
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .testTag("to_unit_row_${unit.symbol}")
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+          ) {
+            // Left: Symbol Badge + Unit Name + SI/USCS Sub-label
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = if (isSelected) activeSegBlue else if (isDarkMode) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+              modifier = Modifier
+                .widthIn(min = 42.dp)
+                .height(36.dp)
+            ) {
+              Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.padding(horizontal = 8.dp)
+              ) {
+                Text(
+                  text = unit.symbol,
+                  style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = if (isSelected) Color.White else titleColor,
+                  maxLines = 1,
+                  softWrap = false
+                )
+              }
+            }
+
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = unit.name.replace(" (Base)", ""),
+                style = MaterialTheme.typography.titleSmall.copy(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 15.sp,
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+              Text(
+                text = unit.system,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Medium
+                ),
+                color = subtitleColor
+              )
+            }
+
+            // Right: Live Converted Value (16.sp Bold tnum) + Copy Button
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Text(
+                text = livePreviewText,
+                style = MaterialTheme.typography.titleMedium.copy(
+                  fontFamily = AppleSansFamily,
+                  fontSize = 16.sp,
+                  fontWeight = FontWeight.Bold,
+                  fontFeatureSettings = "tnum"
+                ),
+                color = if (isSelected) accentCyan else titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+              )
+
+              IconButton(
+                onClick = {
+                  clipboardManager.setText(AnnotatedString("$livePreviewText ${unit.symbol}"))
+                  Toast.makeText(
+                    context,
+                    "Copied: $livePreviewText ${unit.symbol}",
+                    Toast.LENGTH_SHORT
+                  ).show()
+                },
+                modifier = Modifier
+                  .size(34.dp)
+                  .testTag("copy_equiv_${unit.symbol}")
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.ContentCopy,
+                  contentDescription = "Copy ${unit.name} equivalent",
+                  tint = subtitleColor,
+                  modifier = Modifier.size(16.dp)
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // UNIT PICKER MODAL BOTTOM SHEET (Triggered by FROM / TO Unit Selector Pills)
+  if (pickerTargetSide != null) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val isPickingFrom = pickerTargetSide == "FROM"
+    val currentSymbol = if (isPickingFrom) activeFromUnit.symbol else activeToUnit.symbol
+    ModalBottomSheet(
+      onDismissRequest = { pickerTargetSide = null },
+      sheetState = sheetState,
+      containerColor = palette.dialogSurface,
+      contentColor = titleColor
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 16.dp)
+          .padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Text(
+          text = if (isPickingFrom) "Select Source Unit (${selectedCategory.shortLabel})" else "Select Target Unit (${selectedCategory.shortLabel})",
+          style = MaterialTheme.typography.titleLarge.copy(
+            fontFamily = AppleSansFamily,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+          ),
+          color = titleColor
+        )
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          items(items = systemFilteredUnits, key = { "picker_${it.symbol}" }) { unit ->
+            val selected = unit.symbol == currentSymbol
+            Surface(
+              onClick = {
+                playCardHapticSound(context, localView)
+                if (isPickingFrom) fromSymbol = unit.symbol else toSymbol = unit.symbol
+                pickerTargetSide = null
+              },
+              shape = RoundedCornerShape(14.dp),
+              color = if (selected) accentCyan.copy(alpha = 0.20f) else palette.nestedCardFill,
+              border = BorderStroke(1.dp, if (selected) accentCyan else palette.nestedBorderColor),
+              modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = "${unit.name.replace(" (Base)", "")} (${unit.symbol})",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                      fontFamily = AppleSansFamily,
+                      fontSize = 16.sp,
+                      fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                    ),
+                    color = titleColor
+                  )
+                  Text(
+                    text = unit.system,
+                    fontSize = 12.sp,
+                    color = subtitleColor
+                  )
+                }
+                if (selected) {
+                  Icon(Icons.Filled.Check, contentDescription = "Selected", tint = accentCyan)
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -15081,13 +15312,13 @@ private fun UnitConverterScreen(
 private const val PREF_STARRED_FORMULAS_KEY = "ce_formula_vault_starred_ids"
 private const val PREF_CUSTOM_FORMULAS_JSON_KEY = "ce_formula_vault_custom_formulas_json"
 
-private data class FormulaVariableNote(
+internal data class FormulaVariableNote(
   val symbol: String,
   val meaning: String,
   val unit: String
 )
 
-private data class ReferenceFormulaCardData(
+internal data class ReferenceFormulaCardData(
   val id: String,
   val title: String,
   val categoryTab: String, // "Mathematics", "PSAD", "HPGE"
@@ -15565,8 +15796,12 @@ private fun buildGeometryShapesCatalog(): List<GeometryShapeEntry> = listOf(
 private enum class FormulaVaultTier {
   MASTER_VOLUMES,
   MSTE_SUB_SHELF,
+  PSAD_SUB_SHELF,
+  HPGE_SUB_SHELF,
+  ENGINEERING_SUB_VOLUME_SHEET,
   ALGEBRA_A4_SHEET,
   TRIGONOMETRY_A4_SHEET,
+  ANALYTIC_GEOMETRY_SHEET,
   GEOMETRY_VOLUMES,
   PLANE_GEOMETRY,
   SOLID_GEOMETRY
@@ -15600,10 +15835,10 @@ private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
     id = "psad",
     title = "PSAD",
     fullTitle = "",
-    subtitle = "Structural Analysis & Design",
+    subtitle = "Structural Engineering & Construction",
     departmentCode = "PRC BOARD PILLAR II • PSAD",
-    pageBadge = "COMING SOON",
-    isActive = false,
+    pageBadge = "ACTIVE • 5 SUB-VOLUMES",
+    isActive = true,
     spineAccentColor = Color(0xFFF59E0B),
     secondaryAccentColor = Color(0xFFEF4444)
   ),
@@ -15611,10 +15846,10 @@ private fun buildMasterBoardVolumes(): List<EngineeringNotebookSpec> = listOf(
     id = "hpge",
     title = "HPGE",
     fullTitle = "",
-    subtitle = "Hydraulics & Geotechnical",
+    subtitle = "Hydraulics & Geotechnical Engineering",
     departmentCode = "PRC BOARD PILLAR III • HPGE",
-    pageBadge = "COMING SOON",
-    isActive = false,
+    pageBadge = "ACTIVE • 3 SUB-VOLUMES",
+    isActive = true,
     spineAccentColor = Color(0xFF06B6D4),
     secondaryAccentColor = Color(0xFF3B82F6)
   )
@@ -15658,10 +15893,10 @@ private fun buildMsteSubNotebooks(): List<EngineeringNotebookSpec> = listOf(
     id = "analytic_geometry",
     title = "Analytic Geometry",
     fullTitle = "",
-    subtitle = "Cartesian & Conic Sections",
+    subtitle = "Conics, Lines, Polar & 3D Space",
     departmentCode = "MSTE / CE-04",
-    pageBadge = "COMING SOON",
-    isActive = false,
+    pageBadge = "ACTIVE • 10 SECTIONS",
+    isActive = true,
     spineAccentColor = Color(0xFF8B5CF6),
     secondaryAccentColor = Color(0xFFEC4899)
   )
@@ -15682,6 +15917,7 @@ fun FormulaVaultMainView(
   // 3-Tier PRC Board Exam Hierarchy State:
   // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET" / "TRIGONOMETRY_A4_SHEET" / "GEOMETRY_VOLUMES" -> "PLANE_GEOMETRY" / "SOLID_GEOMETRY"
   var currentTierName by rememberSaveable { mutableStateOf(FormulaVaultTier.MASTER_VOLUMES.name) }
+  var activeEngineeringSubVolumeId by rememberSaveable { mutableStateOf("psad_strength_of_materials") }
   val currentTier = remember(currentTierName) {
     runCatching { FormulaVaultTier.valueOf(currentTierName) }.getOrDefault(FormulaVaultTier.MASTER_VOLUMES)
   }
@@ -15695,6 +15931,8 @@ fun FormulaVaultMainView(
 
   val a4LazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
   val trigLazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+  val analyticLazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+  val engineeringSubLazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
 
   // Automatically clear the arrival pulse glow after 1.8 seconds
   androidx.compose.runtime.LaunchedEffect(highlightedSectionIndex) {
@@ -15709,8 +15947,15 @@ fun FormulaVaultMainView(
 
   val masterVolumes = remember { buildMasterBoardVolumes() }
   val msteSubNotebooks = remember { buildMsteSubNotebooks() }
+  val psadSubVolumes = remember { buildPsadSubVolumeSpecs() }
+  val hpgeSubVolumes = remember { buildHpgeSubVolumeSpecs() }
+  val activeEngineeringSpec = remember(activeEngineeringSubVolumeId, psadSubVolumes, hpgeSubVolumes) {
+    (psadSubVolumes + hpgeSubVolumes).firstOrNull { it.id == activeEngineeringSubVolumeId }
+      ?: psadSubVolumes.first()
+  }
   val algebraSections = remember { buildAlgebraHandbookSections() }
   val trigonometrySections = remember { buildTrigonometryHandbookSections() }
+  val analyticSections = remember { buildAnalyticGeometryHandbookSections() }
 
   fun navigateBackOneTier() {
     playCardHapticSound(context, localView)
@@ -15719,12 +15964,22 @@ fun FormulaVaultMainView(
       FormulaVaultTier.SOLID_GEOMETRY -> {
         currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
       }
+      FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET -> {
+        currentTierName = if (activeEngineeringSpec.pillar == EngineeringVolumePillar.PSAD) {
+          FormulaVaultTier.PSAD_SUB_SHELF.name
+        } else {
+          FormulaVaultTier.HPGE_SUB_SHELF.name
+        }
+      }
       FormulaVaultTier.GEOMETRY_VOLUMES,
       FormulaVaultTier.ALGEBRA_A4_SHEET,
-      FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> {
+      FormulaVaultTier.TRIGONOMETRY_A4_SHEET,
+      FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET -> {
         currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
       }
-      FormulaVaultTier.MSTE_SUB_SHELF -> {
+      FormulaVaultTier.MSTE_SUB_SHELF,
+      FormulaVaultTier.PSAD_SUB_SHELF,
+      FormulaVaultTier.HPGE_SUB_SHELF -> {
         currentTierName = FormulaVaultTier.MASTER_VOLUMES.name
       }
       FormulaVaultTier.MASTER_VOLUMES -> {
@@ -15759,8 +16014,13 @@ fun FormulaVaultMainView(
   val topBarTitle = when (currentTier) {
     FormulaVaultTier.MASTER_VOLUMES -> "CE Formula Vault"
     FormulaVaultTier.MSTE_SUB_SHELF -> "MSTE Library"
+    FormulaVaultTier.PSAD_SUB_SHELF -> "PSAD Library"
+    FormulaVaultTier.HPGE_SUB_SHELF -> "HPGE Library"
+    FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET ->
+      "${activeEngineeringSpec.pillar.code} • ${activeEngineeringSpec.shortTitle}"
     FormulaVaultTier.ALGEBRA_A4_SHEET -> "MSTE • Algebra"
     FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "MSTE • Trigonometry"
+    FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET -> "MSTE • Analytic Geometry"
     FormulaVaultTier.GEOMETRY_VOLUMES -> "MSTE • Geometry"
     FormulaVaultTier.PLANE_GEOMETRY -> "MSTE • Plane Geometry"
     FormulaVaultTier.SOLID_GEOMETRY -> "MSTE • Solid Geometry"
@@ -15793,25 +16053,63 @@ fun FormulaVaultMainView(
     }
   }
 
+  val analyticMatchesQuery = remember(trimmedQuery, analyticSections) {
+    if (trimmedQuery.isEmpty()) false
+    else analyticSections.any { sec ->
+      sec.sectionTitle.contains(trimmedQuery, ignoreCase = true) ||
+        sec.items.any { item ->
+          item.title.contains(trimmedQuery, ignoreCase = true) ||
+            item.formulaOrStatement.contains(trimmedQuery, ignoreCase = true) ||
+            item.note.contains(trimmedQuery, ignoreCase = true) ||
+            item.subItems.any { it.contains(trimmedQuery, ignoreCase = true) }
+        }
+    }
+  }
+
   val noShelfMatchesQuery = trimmedQuery.isNotEmpty() &&
     masterVolumes.none {
       it.title.contains(trimmedQuery, ignoreCase = true) ||
-        it.fullTitle.contains(trimmedQuery, ignoreCase = true)
+        it.fullTitle.contains(trimmedQuery, ignoreCase = true) ||
+        it.subtitle.contains(trimmedQuery, ignoreCase = true)
     } &&
     msteSubNotebooks.none {
       it.title.contains(trimmedQuery, ignoreCase = true)
+    } &&
+    psadSubVolumes.none {
+      it.title.contains(trimmedQuery, ignoreCase = true) ||
+        it.compactSummaryTag.contains(trimmedQuery, ignoreCase = true) ||
+        it.searchKeywords.contains(trimmedQuery, ignoreCase = true)
+    } &&
+    hpgeSubVolumes.none {
+      it.title.contains(trimmedQuery, ignoreCase = true) ||
+        it.compactSummaryTag.contains(trimmedQuery, ignoreCase = true) ||
+        it.searchKeywords.contains(trimmedQuery, ignoreCase = true)
     }
 
   val isGeometryScreen = currentTier == FormulaVaultTier.GEOMETRY_VOLUMES ||
     currentTier == FormulaVaultTier.PLANE_GEOMETRY ||
     currentTier == FormulaVaultTier.SOLID_GEOMETRY
+  val isEngineeringSubScreen = currentTier == FormulaVaultTier.PSAD_SUB_SHELF ||
+    currentTier == FormulaVaultTier.HPGE_SUB_SHELF ||
+    currentTier == FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET
+  val hideTocTopButton = isGeometryScreen ||
+    currentTier == FormulaVaultTier.PSAD_SUB_SHELF ||
+    currentTier == FormulaVaultTier.HPGE_SUB_SHELF
 
-  val showTrigDirectlyFromSearch = !isGeometryScreen && noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
-  val showAlgebraDirectlyFromSearch = !isGeometryScreen && noShelfMatchesQuery && algebraMatchesQuery
+  val showAnalyticDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+    noShelfMatchesQuery && analyticMatchesQuery && !trigMatchesQuery && !algebraMatchesQuery
+  val showTrigDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+    noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
+  val showAlgebraDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+    noShelfMatchesQuery && algebraMatchesQuery
 
-  val isShowingTrigSheet = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET ||
-    (showTrigDirectlyFromSearch && currentTier != FormulaVaultTier.ALGEBRA_A4_SHEET)
-  val isShowingAlgebraSheet = !isShowingTrigSheet &&
+  val isShowingAnalyticSheet = currentTier == FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET ||
+    (showAnalyticDirectlyFromSearch &&
+      currentTier != FormulaVaultTier.ALGEBRA_A4_SHEET &&
+      currentTier != FormulaVaultTier.TRIGONOMETRY_A4_SHEET)
+  val isShowingTrigSheet = !isShowingAnalyticSheet && (currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET ||
+    (showTrigDirectlyFromSearch && currentTier != FormulaVaultTier.ALGEBRA_A4_SHEET))
+  val isShowingAlgebraSheet = !isShowingAnalyticSheet && !isShowingTrigSheet &&
     (currentTier == FormulaVaultTier.ALGEBRA_A4_SHEET || showAlgebraDirectlyFromSearch)
 
   Box(
@@ -15863,10 +16161,15 @@ fun FormulaVaultMainView(
                 contentDescription = when (currentTier) {
                   FormulaVaultTier.PLANE_GEOMETRY,
                   FormulaVaultTier.SOLID_GEOMETRY -> "Back to Geometry Volumes"
+                  FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET ->
+                    "Back to ${activeEngineeringSpec.pillar.libraryTitle}"
                   FormulaVaultTier.GEOMETRY_VOLUMES,
                   FormulaVaultTier.ALGEBRA_A4_SHEET,
-                  FormulaVaultTier.TRIGONOMETRY_A4_SHEET -> "Back to MSTE Library"
-                  FormulaVaultTier.MSTE_SUB_SHELF -> "Back to Master Volumes"
+                  FormulaVaultTier.TRIGONOMETRY_A4_SHEET,
+                  FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET -> "Back to MSTE Library"
+                  FormulaVaultTier.MSTE_SUB_SHELF,
+                  FormulaVaultTier.PSAD_SUB_SHELF,
+                  FormulaVaultTier.HPGE_SUB_SHELF -> "Back to Master Volumes"
                   FormulaVaultTier.MASTER_VOLUMES -> "Back to Extras"
                 },
                 tint = palette.textPrimary,
@@ -15875,12 +16178,14 @@ fun FormulaVaultMainView(
             }
           }
 
-          // Dynamic Single-Line Title ("CE Formula Vault" / "MSTE Library" / "MSTE • Algebra" / "MSTE • Trigonometry")
+          // Dynamic Single-Line Title
           Text(
             text = topBarTitle,
-            style = MaterialTheme.typography.titleLarge.copy(
-              fontSize = 18.sp,
-              fontWeight = FontWeight.Bold
+            style = MaterialTheme.typography.headlineMedium.copy(
+              fontFamily = AppleSansFamily,
+              fontSize = 19.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = (-0.4).sp
             ),
             color = palette.textPrimary,
             maxLines = 1,
@@ -15893,8 +16198,8 @@ fun FormulaVaultMainView(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-          // Dedicated Table of Contents (TOC) Top Bar Button (Hidden on GeometryVolumesScreen, PlaneGeometryScreen & SolidGeometryScreen)
-          if (!isGeometryScreen) {
+          // Dedicated Table of Contents (TOC) Top Bar Button
+          if (!hideTocTopButton) {
             Surface(
               onClick = {
                 playCardHapticSound(context, localView)
@@ -15995,6 +16300,14 @@ fun FormulaVaultMainView(
             placeholder = {
               Text(
                 text = when (currentTier) {
+                  FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET ->
+                    "Filter ${activeEngineeringSpec.shortTitle} formulas, chapters, or symbols..."
+                  FormulaVaultTier.PSAD_SUB_SHELF ->
+                    "Search PSAD sub-volumes (Strength of Materials, Structural, RCD & PCD, Steel, Foundation)..."
+                  FormulaVaultTier.HPGE_SUB_SHELF ->
+                    "Search HPGE sub-volumes (Hydraulics, Geotechnical, Hydrology)..."
+                  FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET ->
+                    "Filter conics, lines, parabola, ellipse, hyperbola, polar, or 3D plane..."
                   FormulaVaultTier.TRIGONOMETRY_A4_SHEET ->
                     "Filter Trigonometry laws, triangle area, medians, bisectors, or identities..."
                   FormulaVaultTier.ALGEBRA_A4_SHEET ->
@@ -16005,9 +16318,9 @@ fun FormulaVaultMainView(
                   FormulaVaultTier.PLANE_GEOMETRY ->
                     "Filter Geometry shapes & solids (Triangle, Circle, Prism, Pyramid, Cone, Sphere)..."
                   FormulaVaultTier.MSTE_SUB_SHELF ->
-                    "Search MSTE sub-volumes, Algebra, Trigonometry, or Geometry..."
+                    "Search MSTE sub-volumes, Algebra, Trigonometry, Geometry, or Analytic Geometry..."
                   FormulaVaultTier.MASTER_VOLUMES ->
-                    "Search PRC board subjects (MSTE, PSAD, HPGE) or MSTE formulas..."
+                    "Search PRC board subjects (MSTE, PSAD, HPGE) or formula topics..."
                 },
                 style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                 color = palette.textSecondary
@@ -16105,6 +16418,33 @@ fun FormulaVaultMainView(
           )
         }
 
+        isShowingAnalyticSheet -> {
+          val customAnalyticFormulas = customFormulas.filter {
+            it.mathSubTab.contains("Analytic", ignoreCase = true) ||
+              it.categoryTab.contains("Analytic", ignoreCase = true)
+          }
+          MsteAnalyticGeometrySheet(
+            metrics = metrics,
+            lazyListState = analyticLazyListState,
+            highlightedSectionIndex = highlightedSectionIndex,
+            searchQuery = trimmedQuery,
+            customFormulas = customAnalyticFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            onBackToShelf = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+            },
+            onOpenToc = {
+              playCardHapticSound(context, localView)
+              showTocSheet = true
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
         isShowingTrigSheet -> {
           val customTrigFormulas = customFormulas.filter {
             it.mathSubTab.contains("Trig", ignoreCase = true) ||
@@ -16192,6 +16532,9 @@ fun FormulaVaultMainView(
                   showTocSheet = false
                   currentTierName = FormulaVaultTier.GEOMETRY_VOLUMES.name
                 }
+                notebook.isActive && notebook.id == "analytic_geometry" -> {
+                  currentTierName = FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET.name
+                }
                 else -> {
                   Toast.makeText(
                     context,
@@ -16200,6 +16543,92 @@ fun FormulaVaultMainView(
                   ).show()
                 }
               }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        currentTier == FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET -> {
+          val spec = activeEngineeringSpec
+          val customSubFormulas = customFormulas.filter {
+            it.mathSubTab.contains(spec.shortTitle, ignoreCase = true) ||
+              it.mathSubTab.contains(spec.title, ignoreCase = true) ||
+              it.categoryTab.contains(spec.pillar.code, ignoreCase = true)
+          }
+          EngineeringSubVolumeSheet(
+            spec = spec,
+            metrics = metrics,
+            lazyListState = engineeringSubLazyListState,
+            highlightedSectionIndex = highlightedSectionIndex,
+            searchQuery = trimmedQuery,
+            customFormulas = customSubFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            onBackToShelf = {
+              playCardHapticSound(context, localView)
+              currentTierName = if (spec.pillar == EngineeringVolumePillar.PSAD) {
+                FormulaVaultTier.PSAD_SUB_SHELF.name
+              } else {
+                FormulaVaultTier.HPGE_SUB_SHELF.name
+              }
+            },
+            onOpenToc = {
+              playCardHapticSound(context, localView)
+              showTocSheet = true
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        currentTier == FormulaVaultTier.PSAD_SUB_SHELF -> {
+          EngineeringSubVolumeHubView(
+            pillar = EngineeringVolumePillar.PSAD,
+            subVolumes = psadSubVolumes,
+            searchQuery = trimmedQuery,
+            customFormulas = customFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            metrics = metrics,
+            onBreadcrumbClick = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MASTER_VOLUMES.name
+            },
+            onOpenSubVolume = { spec ->
+              playCardHapticSound(context, localView)
+              activeEngineeringSubVolumeId = spec.id
+              highlightedSectionIndex = null
+              coroutineScope.launch { engineeringSubLazyListState.scrollToItem(0) }
+              currentTierName = FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET.name
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          )
+        }
+
+        currentTier == FormulaVaultTier.HPGE_SUB_SHELF -> {
+          EngineeringSubVolumeHubView(
+            pillar = EngineeringVolumePillar.HPGE,
+            subVolumes = hpgeSubVolumes,
+            searchQuery = trimmedQuery,
+            customFormulas = customFormulas,
+            starredIds = starredIds,
+            onToggleStar = { toggleStarFormula(it) },
+            metrics = metrics,
+            onBreadcrumbClick = {
+              playCardHapticSound(context, localView)
+              currentTierName = FormulaVaultTier.MASTER_VOLUMES.name
+            },
+            onOpenSubVolume = { spec ->
+              playCardHapticSound(context, localView)
+              activeEngineeringSubVolumeId = spec.id
+              highlightedSectionIndex = null
+              coroutineScope.launch { engineeringSubLazyListState.scrollToItem(0) }
+              currentTierName = FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET.name
             },
             modifier = Modifier
               .fillMaxWidth()
@@ -16222,14 +16651,10 @@ fun FormulaVaultMainView(
             onBreadcrumbClick = null,
             onOpenNotebook = { volume ->
               playCardHapticSound(context, localView)
-              if (volume.isActive && volume.id == "mste") {
-                currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
-              } else {
-                Toast.makeText(
-                  context,
-                  "${volume.title} — ${volume.fullTitle} master volume is coming soon!",
-                  Toast.LENGTH_SHORT
-                ).show()
+              when (volume.id) {
+                "mste" -> currentTierName = FormulaVaultTier.MSTE_SUB_SHELF.name
+                "psad" -> currentTierName = FormulaVaultTier.PSAD_SUB_SHELF.name
+                "hpge" -> currentTierName = FormulaVaultTier.HPGE_SUB_SHELF.name
               }
             },
             modifier = Modifier
@@ -16241,14 +16666,25 @@ fun FormulaVaultMainView(
     }
 
     // Frosted Glass Table of Contents (TOC) Quick-Jump Sheet
-    if (showTocSheet && !isGeometryScreen) {
-      val activeTocIsTrig = currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet
+    if (showTocSheet && !hideTocTopButton) {
+      val activeTocIsEngineering = currentTier == FormulaVaultTier.ENGINEERING_SUB_VOLUME_SHEET
+      val activeTocIsAnalytic = !activeTocIsEngineering &&
+        (currentTier == FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET || isShowingAnalyticSheet)
+      val activeTocIsTrig = !activeTocIsEngineering && !activeTocIsAnalytic &&
+        (currentTier == FormulaVaultTier.TRIGONOMETRY_A4_SHEET || isShowingTrigSheet)
       FormulaVaultTocGlassSheet(
-        sections = if (activeTocIsTrig) trigonometrySections else algebraSections,
-        sheetSubtitle = if (activeTocIsTrig) {
-          "CIVIL ENGINEERING • TRIGONOMETRY CHEAT SHEET"
-        } else {
-          "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET"
+        sections = when {
+          activeTocIsEngineering -> activeEngineeringSpec.sections
+          activeTocIsAnalytic -> analyticSections
+          activeTocIsTrig -> trigonometrySections
+          else -> algebraSections
+        },
+        sheetSubtitle = when {
+          activeTocIsEngineering ->
+            "${activeEngineeringSpec.tagBadge} • ${activeEngineeringSpec.shortTitle.uppercase(Locale.ROOT)}"
+          activeTocIsAnalytic -> "CIVIL ENGINEERING • ANALYTIC GEOMETRY"
+          activeTocIsTrig -> "CIVIL ENGINEERING • TRIGONOMETRY CHEAT SHEET"
+          else -> "CIVIL ENGINEERING • ALGEBRA CHEAT SHEET"
         },
         isDarkMode = palette.isDark,
         onDismiss = { showTocSheet = false },
@@ -16259,21 +16695,41 @@ fun FormulaVaultMainView(
             searchQuery = ""
             isSearchExpanded = false
           }
-          if (activeTocIsTrig) {
-            currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
-            highlightedSectionIndex = sectionZeroBasedIndex
-            val targetIndex = sectionZeroBasedIndex + 1
-            coroutineScope.launch {
-              kotlinx.coroutines.delay(60L)
-              trigLazyListState.animateScrollToItem(index = targetIndex)
+          when {
+            activeTocIsEngineering -> {
+              highlightedSectionIndex = sectionZeroBasedIndex
+              val targetIndex = sectionZeroBasedIndex + 1
+              coroutineScope.launch {
+                kotlinx.coroutines.delay(60L)
+                engineeringSubLazyListState.animateScrollToItem(index = targetIndex)
+              }
             }
-          } else {
-            currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
-            highlightedSectionIndex = sectionZeroBasedIndex
-            val targetIndex = sectionZeroBasedIndex + 1
-            coroutineScope.launch {
-              kotlinx.coroutines.delay(60L)
-              a4LazyListState.animateScrollToItem(index = targetIndex)
+            activeTocIsAnalytic -> {
+              currentTierName = FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET.name
+              highlightedSectionIndex = sectionZeroBasedIndex
+              val targetIndex = sectionZeroBasedIndex + 1
+              coroutineScope.launch {
+                kotlinx.coroutines.delay(60L)
+                analyticLazyListState.animateScrollToItem(index = targetIndex)
+              }
+            }
+            activeTocIsTrig -> {
+              currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
+              highlightedSectionIndex = sectionZeroBasedIndex
+              val targetIndex = sectionZeroBasedIndex + 1
+              coroutineScope.launch {
+                kotlinx.coroutines.delay(60L)
+                trigLazyListState.animateScrollToItem(index = targetIndex)
+              }
+            }
+            else -> {
+              currentTierName = FormulaVaultTier.ALGEBRA_A4_SHEET.name
+              highlightedSectionIndex = sectionZeroBasedIndex
+              val targetIndex = sectionZeroBasedIndex + 1
+              coroutineScope.launch {
+                kotlinx.coroutines.delay(60L)
+                a4LazyListState.animateScrollToItem(index = targetIndex)
+              }
             }
           }
         }
@@ -16335,6 +16791,9 @@ fun FormulaVaultMainView(
           saveCustomFormulas(context, updatedList)
           isAddCustomDialogOpen = false
           when {
+            mathSubTab.contains("Analytic", ignoreCase = true) || categoryTab.contains("Analytic", ignoreCase = true) -> {
+              currentTierName = FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET.name
+            }
             mathSubTab.contains("Trig", ignoreCase = true) || categoryTab.contains("Trig", ignoreCase = true) -> {
               currentTierName = FormulaVaultTier.TRIGONOMETRY_A4_SHEET.name
             }
@@ -16621,6 +17080,18 @@ private fun NotebookShelfLibraryView(
             )) ||
           ((nb.id == "trigonometry" || nb.id == "mste") &&
             "trigonometry sine cosine tangent pythagorean oblique heron median altitude bisector incenter centroid orthocenter radians grads mils spherical".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            )) ||
+          ((nb.id == "analytic_geometry" || nb.id == "mste") &&
+            "analytic geometry cartesian conic parabola ellipse hyperbola asymptote directrix latus rectum eccentricity polar shoelace plane".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            )) ||
+          (nb.id == "psad" &&
+            "psad strength materials structural analysis rcd pcd reinforced prestressed concrete steel design foundation bearing retaining nscp aci aisc".contains(
+              searchQuery.lowercase(Locale.ROOT)
+            )) ||
+          (nb.id == "hpge" &&
+            "hpge hydraulics fluid mechanics bernoulli manning geotechnical soil mechanics hydrology infiltration runoff groundwater".contains(
               searchQuery.lowercase(Locale.ROOT)
             ))
       }
@@ -20414,15 +20885,16 @@ private fun SolidGeometryShapeIcon(
   }
 }
 
-private data class AlgebraHandbookRuleItem(
+internal data class AlgebraHandbookRuleItem(
   val number: Int,
   val title: String,
   val formulaOrStatement: String,
   val note: String = "",
-  val subItems: List<String> = emptyList()
+  val subItems: List<String> = emptyList(),
+  val codeTag: String = ""
 )
 
-private data class AlgebraHandbookSection(
+internal data class AlgebraHandbookSection(
   val sectionTitle: String,
   val items: List<AlgebraHandbookRuleItem>,
   val ribbonLabel: String = sectionTitle
@@ -20613,13 +21085,14 @@ private fun buildMathAnnotatedString(
 }
 
 @Composable
-private fun MathFormulaCapsule(
+internal fun MathFormulaCapsule(
   label: String,
   equation: String,
   secondaryEquation: String? = null,
   accentColor: Color,
   modifier: Modifier = Modifier,
-  testTag: String? = null
+  testTag: String? = null,
+  codeTag: String? = null
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
@@ -20734,6 +21207,28 @@ private fun MathFormulaCapsule(
           }
         }
 
+        if (!codeTag.isNullOrBlank()) {
+          Surface(
+            shape = RoundedCornerShape(7.dp),
+            color = operatorHighlight.copy(alpha = if (palette.isDark) 0.16f else 0.11f),
+            border = BorderStroke(0.8.dp, operatorHighlight.copy(alpha = 0.38f))
+          ) {
+            Text(
+              text = codeTag,
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.4.sp
+              ),
+              color = operatorHighlight,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+          }
+        }
+
         // Equation Body: Single expression or multi-pill layout when separated by `|`
         if (formulaSegments.size <= 1) {
           val singleText = formulaSegments.firstOrNull() ?: equation
@@ -20818,7 +21313,7 @@ private fun MathFormulaCapsule(
 }
 
 @Composable
-private fun StickyFormulaSectionRibbon(
+internal fun StickyFormulaSectionRibbon(
   sections: List<Pair<Int, AlgebraHandbookSection>>,
   activeSectionIndex: Int,
   accentColor: Color,
@@ -23242,7 +23737,7 @@ private fun distBetween(p1: Offset, p2: Offset): Float =
   sqrt((p1.x - p2.x).pow(2) + (p1.y - p2.y).pow(2))
 
 @Composable
-private fun InteractiveReferenceFormulaCard(
+internal fun InteractiveReferenceFormulaCard(
   formula: ReferenceFormulaCardData,
   isStarred: Boolean,
   onToggleStar: () -> Unit,
@@ -28751,8 +29246,10 @@ fun ClassTimetableScheduleScreen(
           Text(
             text = stringResource(R.string.schedule_screen_title),
             style = MaterialTheme.typography.headlineLarge.copy(
+              fontFamily = AppleSansFamily,
               fontSize = metrics.scaledSp(26),
-              fontWeight = FontWeight.Bold
+              fontWeight = FontWeight.Bold,
+              letterSpacing = (-0.6).sp
             ),
             color = palette.textPrimary,
             maxLines = 1,
@@ -33237,8 +33734,10 @@ private fun TasksInboxListPane(
           Text(
             text = if (selectedFilterChip.equals("All", ignoreCase = true)) "Inbox" else selectedFilterChip,
             style = MaterialTheme.typography.headlineLarge.copy(
+              fontFamily = AppleSansFamily,
               fontSize = metrics.scaledSp(26),
-              fontWeight = FontWeight.ExtraBold
+              fontWeight = FontWeight.Bold,
+              letterSpacing = (-0.6).sp
             ),
             color = highContrastHeaderColor,
             maxLines = 1,
@@ -33542,9 +34041,10 @@ private fun TasksInboxListPane(
                   Text(
                     text = "${completedTasksList.size}",
                     style = MaterialTheme.typography.labelMedium.copy(
-                      fontFamily = FontFamily.Monospace,
+                      fontFamily = AppleSansFamily,
                       fontSize = metrics.scaledSp(12),
-                      fontWeight = FontWeight.Bold
+                      fontWeight = FontWeight.Bold,
+                      fontFeatureSettings = "tnum"
                     ),
                     color = highContrastSubtitleColor
                   )
@@ -34575,10 +35075,12 @@ private fun TaskNoteDetailWorkspace(
           if (descriptionField.text.isEmpty()) {
             Text(
               text = "Write detailed study notes, derivations, or problem set steps... Tap B, I, U above to format.",
-              style = androidx.compose.ui.text.TextStyle(
+              style = ComposeTextStyle(
+                fontFamily = AppleSansFamily,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Normal,
-                lineHeight = 24.sp,
+                lineHeight = 23.sp,
+                letterSpacing = (-0.1).sp,
                 color = descriptionPlaceholderColor
               )
             )
@@ -34587,10 +35089,12 @@ private fun TaskNoteDetailWorkspace(
             value = descriptionField,
             onValueChange = onDescriptionValueChange,
             visualTransformation = richVisualTransformation,
-            textStyle = androidx.compose.ui.text.TextStyle(
+            textStyle = ComposeTextStyle(
+              fontFamily = AppleSansFamily,
               fontSize = 16.sp,
               fontWeight = FontWeight.Normal,
-              lineHeight = 24.sp,
+              lineHeight = 23.sp,
+              letterSpacing = (-0.1).sp,
               color = baseDescriptionTextColor
             ),
             cursorBrush = SolidColor(descriptionCursorColor),
@@ -36455,8 +36959,12 @@ fun ClockScreen(
         Column(modifier = Modifier.weight(1f)) {
           Text(
             text = if (effectiveLockActive) "Focus Sanctuary" else "Clock",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.ExtraBold,
+            style = MaterialTheme.typography.headlineLarge.copy(
+              fontFamily = AppleSansFamily,
+              fontSize = 25.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = (-0.6).sp
+            ),
             color = palette.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -37248,10 +37756,12 @@ private fun AlarmSubScreen(
                 Text(
                   text = "${alarm.hour}:${alarm.minute}",
                   style = MaterialTheme.typography.displayLarge.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = AppleSansFamily,
+                    fontWeight = FontWeight.Bold,
                     fontSize = metrics.scaledSp(46),
-                    lineHeight = metrics.scaledSp(50)
+                    lineHeight = metrics.scaledSp(52),
+                    letterSpacing = (-1.2).sp,
+                    fontFeatureSettings = "tnum"
                   ),
                   color = if (alarm.isActive) {
                     palette.textPrimary
@@ -37811,11 +38321,12 @@ private fun TimerSubScreen(
                 maxLines = 1,
                 softWrap = false,
                 style = MaterialTheme.typography.displayLarge.copy(
-                  fontFamily = FontFamily.Monospace,
+                  fontFamily = AppleSansFamily,
                   fontWeight = FontWeight.Bold,
                   fontSize = timeFontSize,
-                  lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
-                  letterSpacing = (-0.5).sp
+                  lineHeight = if (metrics.screenWidthDp >= 600) 42.sp else 36.sp,
+                  letterSpacing = (-1.1).sp,
+                  fontFeatureSettings = "tnum"
                 ),
                 color = palette.textPrimary,
                 textAlign = TextAlign.Center,
@@ -38145,9 +38656,11 @@ private fun TimerSubScreen(
                     maxLines = 1,
                     softWrap = false,
                     style = MaterialTheme.typography.titleLarge.copy(
-                      fontFamily = JetBrainsMonoFamily,
-                      fontWeight = FontWeight.Bold,
-                      fontSize = metrics.scaledSp(22)
+                      fontFamily = AppleSansFamily,
+                      fontWeight = FontWeight.SemiBold,
+                      fontSize = metrics.scaledSp(22),
+                      letterSpacing = (-0.3).sp,
+                      fontFeatureSettings = "tnum"
                     ),
                     color = if (keyLabel == "C") {
                       palette.accentRed
@@ -38409,10 +38922,11 @@ private fun TimerUnitSegment(
       maxLines = 1,
       softWrap = false,
       style = MaterialTheme.typography.displayMedium.copy(
-        fontFamily = FontFamily.Monospace,
+        fontFamily = AppleSansFamily,
         fontWeight = FontWeight.Bold,
         fontSize = if (metrics.screenWidthDp >= 600) 36.sp else 32.sp,
-        letterSpacing = (-0.5).sp
+        letterSpacing = (-0.8).sp,
+        fontFeatureSettings = "tnum"
       ),
       color = if (isHighlighted) {
         palette.accentIndigo
@@ -38539,11 +39053,12 @@ private fun StopwatchSubScreen(
               maxLines = 1,
               softWrap = false,
               style = MaterialTheme.typography.displayLarge.copy(
-                fontFamily = FontFamily.Monospace,
+                fontFamily = AppleSansFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = timeFontSize,
-                lineHeight = if (metrics.screenWidthDp >= 600) 40.sp else 34.sp,
-                letterSpacing = (-0.5).sp
+                lineHeight = if (metrics.screenWidthDp >= 600) 42.sp else 36.sp,
+                letterSpacing = (-1.0).sp,
+                fontFeatureSettings = "tnum"
               ),
               color = palette.textPrimary,
               textAlign = TextAlign.Center,
@@ -38794,9 +39309,11 @@ private fun StopwatchSubScreen(
                   maxLines = 1,
                   softWrap = false,
                   style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = AppleSansFamily,
                     fontWeight = if (isHighlightedLap) FontWeight.Bold else FontWeight.Medium,
-                    fontSize = 13.sp
+                    fontSize = 13.5.sp,
+                    letterSpacing = (-0.1).sp,
+                    fontFeatureSettings = "tnum"
                   ),
                   color = if (isHighlightedLap) highlightIndigo else palette.textSecondary,
                   textAlign = TextAlign.Center,
@@ -38809,9 +39326,11 @@ private fun StopwatchSubScreen(
                   maxLines = 1,
                   softWrap = false,
                   style = MaterialTheme.typography.bodyLarge.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 14.sp
+                    fontFamily = AppleSansFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.5.sp,
+                    letterSpacing = (-0.2).sp,
+                    fontFeatureSettings = "tnum"
                   ),
                   color = palette.textPrimary,
                   textAlign = TextAlign.End,
