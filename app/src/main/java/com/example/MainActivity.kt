@@ -175,6 +175,7 @@ import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.rounded.AutoAwesome as RoundedAutoAwesome
 import androidx.compose.material.icons.filled.AvTimer
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Calculate
@@ -489,26 +490,11 @@ object ApiKeyManager {
   private var activeKeyCache: String? = null
 
   fun getCompiledKeys(): List<String> {
-    return INJECTED_API_KEYS
-      .split(',', '\n', ';', ' ')
-      .map { it.trim() }
-      .filter { it.isNotEmpty() && !it.startsWith("__KEY") }
+    return parseValidGeminiKeyTokens(INJECTED_API_KEYS)
   }
 
   fun getAllValidKeys(context: Context? = null): List<String> {
-    val compiled = getCompiledKeys()
-    val userSaved = if (context != null) {
-      val prefs = context.applicationContext.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
-      prefs.getString("saved_gemini_api_key", "")?.trim().orEmpty()
-    } else {
-      ""
-    }
-    val userKeys = userSaved
-      .split(',', '\n', ';', ' ')
-      .map { it.trim() }
-      .filter { it.isNotEmpty() && !it.startsWith("__KEY") }
-
-    return (userKeys + compiled).distinct()
+    return resolveInjectedGeminiKeys(context)
   }
 
   fun getAvailableKeys(context: Context? = null): List<String> {
@@ -557,6 +543,52 @@ object ApiKeyManager {
     activeKeyCache = null
   }
 }
+
+internal fun parseValidGeminiKeyTokens(raw: String): List<String> {
+  return raw
+    .split(',', '\n', ';', ' ')
+    .map {
+      it.trim()
+        .removeSurrounding("\"")
+        .removeSurrounding("'")
+        .trim()
+    }
+    .filter { token ->
+      token.isNotEmpty() &&
+        !token.startsWith("__KEY") &&
+        !token.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) &&
+        !token.equals("MY_GEMINI_API_KEY", ignoreCase = true) &&
+        !token.equals("null", ignoreCase = true)
+    }
+}
+
+internal fun resolveInjectedGeminiKeys(context: Context? = null): List<String> {
+  val collected = mutableListOf<String>()
+  if (context != null) {
+    val appCtx = context.applicationContext
+    val sibilPrefs = appCtx.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
+    collected += parseValidGeminiKeyTokens(
+      sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty()
+    )
+    val offlinePrefs = appCtx.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
+    collected += parseValidGeminiKeyTokens(
+      offlinePrefs.getString("sibil_gemini_custom_key", "").orEmpty()
+    )
+    collected += parseValidGeminiKeyTokens(
+      offlinePrefs.getString("saved_gemini_api_key", "").orEmpty()
+    )
+  }
+  collected += parseValidGeminiKeyTokens(INJECTED_API_KEYS)
+  val buildConfigKey = try {
+    BuildConfig.GEMINI_API_KEY
+  } catch (_: Throwable) {
+    ""
+  }
+  collected += parseValidGeminiKeyTokens(buildConfigKey)
+  return collected.distinct()
+}
+
+internal fun getSibilCompiledInjectedApiKeys(): String = INJECTED_API_KEYS
 
 private val DEFAULT_GEMINI_API_KEY: String
   get() = ApiKeyManager.getActiveKey()
@@ -1259,6 +1291,9 @@ var pendingWidgetTargetTab by mutableStateOf<CeNavTab?>(null)
 var pendingWidgetOpenAddTask by mutableStateOf(false)
 var pendingImportedDeckUri by mutableStateOf<Uri?>(null)
 var pendingOpenFlashcardsAfterImport by mutableStateOf(false)
+var pendingStudyPomodoroTrigger by mutableLongStateOf(0L)
+var pendingStudyPomodoroMinutes by mutableIntStateOf(25)
+var pendingStudyPomodoroLabel by mutableStateOf("Study Focus")
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -9881,6 +9916,7 @@ private fun MainProductivityScaffold(
   var showPinUnlockDialog by remember { mutableStateOf(false) }
   var isCalculatorOpen by rememberSaveable { mutableStateOf(false) }
   var isUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
+  var isStudyHelperOpen by rememberSaveable { mutableStateOf(false) }
 
   // Intercept system Back button when Pomodoro Focus Lock is active
   BackHandler(enabled = isPomodoroLockActive) {
@@ -9897,144 +9933,147 @@ private fun MainProductivityScaffold(
   val isCompactTaskNoteOpen = selectedTab == CeNavTab.TASKS &&
     taskViewModel.selectedTaskIdForDetail != null &&
     metrics.screenWidthDp < 680
+  val isFullScreenStudyHelper = selectedTab == CeNavTab.EXTRAS && isStudyHelperOpen && !isPomodoroLockActive
+  val skipOuterScaffoldInsets = isCompactTaskNoteOpen || isFullScreenStudyHelper
 
   LiquidGlassAppBackground(
     isDarkMode = taskViewModel.isDarkMode,
     modifier = Modifier.fillMaxSize()
   ) {
-    Scaffold(
-      modifier = Modifier
-        .fillMaxSize()
-        .testTag("main_scaffold"),
-      containerColor = Color.Transparent,
-      contentWindowInsets = if (isCompactTaskNoteOpen) {
-        WindowInsets(0, 0, 0, 0)
-      } else {
-        WindowInsets.safeDrawing
-      },
-      floatingActionButton = {
-        if (!isCompactTaskNoteOpen && !isPomodoroLockActive) {
-          when (selectedTab) {
-            CeNavTab.TASKS -> {
-              Box(
-                modifier = Modifier
-                  .size(62.dp)
-                  .shadow(
-                    elevation = 14.dp,
-                    shape = CircleShape,
-                    ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
-                    spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
-                  )
-                  .clip(CircleShape)
-                  .background(brush = LiquidOrbBrush, shape = CircleShape)
-                  .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
-                  .clickable { isAddTaskDialogOpen = true }
-                  .testTag("add_task_fab"),
-                contentAlignment = Alignment.Center
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.Add,
-                  contentDescription = stringResource(R.string.add_task_fab_label),
-                  tint = Color.White,
-                  modifier = Modifier.size(28.dp)
-                )
-              }
-            }
-            CeNavTab.SCHEDULE -> {
-              Box(
-                modifier = Modifier
-                  .size(62.dp)
-                  .shadow(
-                    elevation = 14.dp,
-                    shape = CircleShape,
-                    ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
-                    spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
-                  )
-                  .clip(CircleShape)
-                  .background(brush = LiquidOrbBrush, shape = CircleShape)
-                  .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
-                  .clickable {
-                    editingSchedule = null
-                    isAddScheduleDialogOpen = true
-                  }
-                  .testTag("add_schedule_fab"),
-                contentAlignment = Alignment.Center
-              ) {
-                Icon(
-                  imageVector = Icons.Filled.Add,
-                  contentDescription = stringResource(R.string.add_schedule_fab_label),
-                  tint = Color.White,
-                  modifier = Modifier.size(28.dp)
-                )
-              }
-            }
-            else -> {}
-          }
-        }
-      },
-      bottomBar = {
-        val isFullScreenCalculator = selectedTab == CeNavTab.EXTRAS && isCalculatorOpen
-        val isFullScreenUnitConverter = selectedTab == CeNavTab.EXTRAS && isUnitConverterOpen
-        if (!isCompactTaskNoteOpen && !isPomodoroLockActive && !isFullScreenCalculator && !isFullScreenUnitConverter) {
-          CustomDockedBottomTaskBar(
-            selectedTab = selectedTab,
-            onSelectTab = { selectedTab = it },
-            metrics = metrics
-          )
-        }
-      }
-    ) { innerPadding ->
-      Box(
+    Box(modifier = Modifier.fillMaxSize()) {
+      Scaffold(
         modifier = Modifier
           .fillMaxSize()
-          .then(if (isCompactTaskNoteOpen) Modifier else Modifier.padding(innerPadding)),
-        contentAlignment = Alignment.TopCenter
-      ) {
-        val effectiveTab = if (isPomodoroLockActive) CeNavTab.CLOCK else selectedTab
-        when (effectiveTab) {
-          CeNavTab.CLOCK -> ClockScreen(
-            viewModel = taskViewModel,
-            isPomodoroLockActive = isPomodoroLockActive,
-            pomodoroUnlockPin = pomodoroUnlockPin,
-            showPinUnlockDialog = showPinUnlockDialog,
-            onActivatePomodoroLock = { generatedPin ->
-              pomodoroUnlockPin = generatedPin
-              isPomodoroLockActive = true
-              showPinUnlockDialog = false
-              selectedTab = CeNavTab.CLOCK
-              try {
-                (context as? android.app.Activity)?.startLockTask()
-              } catch (_: Exception) {
+          .testTag("main_scaffold"),
+        containerColor = Color.Transparent,
+        contentWindowInsets = if (skipOuterScaffoldInsets) {
+          WindowInsets(0, 0, 0, 0)
+        } else {
+          WindowInsets.safeDrawing
+        },
+        floatingActionButton = {
+          if (!isCompactTaskNoteOpen && !isPomodoroLockActive) {
+            when (selectedTab) {
+              CeNavTab.TASKS -> {
+                Box(
+                  modifier = Modifier
+                    .size(62.dp)
+                    .shadow(
+                      elevation = 14.dp,
+                      shape = CircleShape,
+                      ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
+                      spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
+                    )
+                    .clip(CircleShape)
+                    .background(brush = LiquidOrbBrush, shape = CircleShape)
+                    .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
+                    .clickable { isAddTaskDialogOpen = true }
+                    .testTag("add_task_fab"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = stringResource(R.string.add_task_fab_label),
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                  )
+                }
               }
-            },
-            onReleasePomodoroLock = {
-              isPomodoroLockActive = false
-              showPinUnlockDialog = false
-              try {
-                (context as? android.app.Activity)?.stopLockTask()
-              } catch (_: Exception) {
+              CeNavTab.SCHEDULE -> {
+                Box(
+                  modifier = Modifier
+                    .size(62.dp)
+                    .shadow(
+                      elevation = 14.dp,
+                      shape = CircleShape,
+                      ambientColor = Color(0xFF0284C7).copy(alpha = 0.30f),
+                      spotColor = Color(0xFF2563EB).copy(alpha = 0.45f)
+                    )
+                    .clip(CircleShape)
+                    .background(brush = LiquidOrbBrush, shape = CircleShape)
+                    .border(BorderStroke(1.5.dp, Color.White.copy(alpha = 0.72f)), CircleShape)
+                    .clickable {
+                      editingSchedule = null
+                      isAddScheduleDialogOpen = true
+                    }
+                    .testTag("add_schedule_fab"),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = stringResource(R.string.add_schedule_fab_label),
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                  )
+                }
               }
-            },
-            onRequestPinUnlockDialog = {
-              showPinUnlockDialog = true
-            },
-            onDismissPinUnlockDialog = {
-              showPinUnlockDialog = false
-            },
-            modifier = Modifier
-              .fillMaxSize()
-              .widthIn(max = metrics.landscapeWideMaxWidth)
-          )
-          CeNavTab.EXTRAS -> ExtrasScreen(
-            viewModel = taskViewModel,
-            isCalculatorOpen = isCalculatorOpen,
-            onCalculatorOpenChange = { isCalculatorOpen = it },
-            isUnitConverterOpen = isUnitConverterOpen,
-            onUnitConverterOpenChange = { isUnitConverterOpen = it },
-            modifier = Modifier
-              .fillMaxSize()
-              .widthIn(max = metrics.landscapeWideMaxWidth)
-          )
+              else -> {}
+            }
+          }
+        },
+        bottomBar = {
+          val isFullScreenCalculator = selectedTab == CeNavTab.EXTRAS && isCalculatorOpen
+          val isFullScreenUnitConverter = selectedTab == CeNavTab.EXTRAS && isUnitConverterOpen
+          if (!isCompactTaskNoteOpen && !isPomodoroLockActive && !isFullScreenCalculator && !isFullScreenUnitConverter && !isFullScreenStudyHelper) {
+            CustomDockedBottomTaskBar(
+              selectedTab = selectedTab,
+              onSelectTab = { selectedTab = it },
+              metrics = metrics
+            )
+          }
+        }
+      ) { innerPadding ->
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .then(if (skipOuterScaffoldInsets) Modifier else Modifier.padding(innerPadding)),
+          contentAlignment = Alignment.TopCenter
+        ) {
+          val effectiveTab = if (isPomodoroLockActive) CeNavTab.CLOCK else selectedTab
+          when (effectiveTab) {
+            CeNavTab.CLOCK -> ClockScreen(
+              viewModel = taskViewModel,
+              isPomodoroLockActive = isPomodoroLockActive,
+              pomodoroUnlockPin = pomodoroUnlockPin,
+              showPinUnlockDialog = showPinUnlockDialog,
+              onActivatePomodoroLock = { generatedPin ->
+                pomodoroUnlockPin = generatedPin
+                isPomodoroLockActive = true
+                showPinUnlockDialog = false
+                selectedTab = CeNavTab.CLOCK
+                try {
+                  (context as? android.app.Activity)?.startLockTask()
+                } catch (_: Exception) {
+                }
+              },
+              onReleasePomodoroLock = {
+                isPomodoroLockActive = false
+                showPinUnlockDialog = false
+                try {
+                  (context as? android.app.Activity)?.stopLockTask()
+                } catch (_: Exception) {
+                }
+              },
+              onRequestPinUnlockDialog = {
+                showPinUnlockDialog = true
+              },
+              onDismissPinUnlockDialog = {
+                showPinUnlockDialog = false
+              },
+              modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = metrics.landscapeWideMaxWidth)
+            )
+            CeNavTab.EXTRAS -> ExtrasScreen(
+              viewModel = taskViewModel,
+              isCalculatorOpen = isCalculatorOpen,
+              onCalculatorOpenChange = { isCalculatorOpen = it },
+              isUnitConverterOpen = isUnitConverterOpen,
+              onUnitConverterOpenChange = { isUnitConverterOpen = it },
+              isStudyHelperOpen = isStudyHelperOpen,
+              onStudyHelperOpenChange = { isStudyHelperOpen = it },
+              modifier = Modifier.fillMaxSize()
+            )
           CeNavTab.DASHBOARD -> DashboardScreen(
             viewModel = taskViewModel,
             onProfileIconClick = { isProfileSettingsDialogOpen = true },
@@ -10202,6 +10241,7 @@ private fun MainProductivityScaffold(
             Toast.makeText(context, "Snoozed for 5 minutes", Toast.LENGTH_SHORT).show()
           }
         )
+      }
       }
     }
   }
@@ -13908,7 +13948,9 @@ fun ExtrasScreen(
   isCalculatorOpen: Boolean = false,
   onCalculatorOpenChange: (Boolean) -> Unit = {},
   isUnitConverterOpen: Boolean = false,
-  onUnitConverterOpenChange: (Boolean) -> Unit = {}
+  onUnitConverterOpenChange: (Boolean) -> Unit = {},
+  isStudyHelperOpen: Boolean = false,
+  onStudyHelperOpenChange: (Boolean) -> Unit = {}
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
@@ -13929,6 +13971,8 @@ fun ExtrasScreen(
   var isSurveyingSolverOpen by rememberSaveable { mutableStateOf(false) }
   var localClassWizOpen by rememberSaveable { mutableStateOf(false) }
   val effectiveCalculatorOpen = isCalculatorOpen || localClassWizOpen
+  var localStudyHelperOpen by rememberSaveable { mutableStateOf(false) }
+  val effectiveStudyHelperOpen = isStudyHelperOpen || localStudyHelperOpen
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
 
   val openFlashcardsSignal = pendingOpenFlashcardsAfterImport
@@ -13938,6 +13982,8 @@ fun ExtrasScreen(
       onCalculatorOpenChange(false)
       localUnitConverterOpen = false
       onUnitConverterOpenChange(false)
+      localStudyHelperOpen = false
+      onStudyHelperOpenChange(false)
       isEstimateOpen = false
       isSurveyingSolverOpen = false
       isFormulaVaultOpen = false
@@ -13948,6 +13994,22 @@ fun ExtrasScreen(
   }
 
   val activeStudyDeck = viewModel.flashcardDecks.firstOrNull { it.id == activeStudyDeckId }
+  val subScreenModifier = modifier
+    .fillMaxSize()
+    .widthIn(max = metrics.landscapeWideMaxWidth)
+
+  if (effectiveStudyHelperOpen) {
+    GeminiStudyHelperScreen(
+      viewModel = viewModel,
+      metrics = metrics,
+      onBackToExtras = {
+        localStudyHelperOpen = false
+        onStudyHelperOpenChange(false)
+      },
+      modifier = Modifier.fillMaxSize()
+    )
+    return
+  }
 
   if (effectiveCalculatorOpen) {
     ScientificCalculatorScreen(
@@ -13956,7 +14018,7 @@ fun ExtrasScreen(
         localClassWizOpen = false
         onCalculatorOpenChange(false)
       },
-      modifier = modifier
+      modifier = subScreenModifier
     )
     return
   }
@@ -13968,7 +14030,7 @@ fun ExtrasScreen(
         localUnitConverterOpen = false
         onUnitConverterOpenChange(false)
       },
-      modifier = modifier
+      modifier = subScreenModifier
     )
     return
   }
@@ -13977,7 +14039,7 @@ fun ExtrasScreen(
     ConstructionEstimateScreen(
       metrics = metrics,
       onBackToExtras = { isEstimateOpen = false },
-      modifier = modifier
+      modifier = subScreenModifier
     )
     return
   }
@@ -13986,7 +14048,7 @@ fun ExtrasScreen(
     SurveyingSolverScreen(
       metrics = metrics,
       onBackToExtras = { isSurveyingSolverOpen = false },
-      modifier = modifier
+      modifier = subScreenModifier
     )
     return
   }
@@ -13996,7 +14058,7 @@ fun ExtrasScreen(
       metrics = metrics,
       onBackToExtras = { isFormulaVaultOpen = false },
       viewModel = viewModel,
-      modifier = modifier
+      modifier = subScreenModifier
     )
     return
   }
@@ -14017,7 +14079,7 @@ fun ExtrasScreen(
           viewModel.resetDeckMastery(activeStudyDeck.id)
         },
         onBackToDecks = { activeStudyDeckId = null },
-        modifier = modifier
+        modifier = subScreenModifier
       )
     } else {
       FlashcardMainView(
@@ -14025,7 +14087,7 @@ fun ExtrasScreen(
         metrics = metrics,
         onBackToExtras = { isFlashcardsOpen = false },
         onStartReview = { deck -> activeStudyDeckId = deck.id },
-        modifier = modifier
+        modifier = subScreenModifier
       )
     }
     return
@@ -14048,7 +14110,7 @@ fun ExtrasScreen(
           start = metrics.scaledDp(20),
           end = metrics.scaledDp(20),
           top = if (metrics.isLandscape) 12.dp else metrics.scaledDp(24),
-          bottom = metrics.scaledDp(116)
+          bottom = if (metrics.isLandscape) 92.dp else metrics.scaledDp(116)
         )
         .testTag("extras_tools_page"),
       verticalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
@@ -14434,6 +14496,21 @@ fun ExtrasScreen(
         }
       }
     }
+
+    HolographicGeminiButton(
+      isDarkMode = viewModel.isDarkMode,
+      onClick = {
+        playCardHapticSound(context, localView)
+        localStudyHelperOpen = true
+        onStudyHelperOpenChange(true)
+      },
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(
+          end = if (metrics.isLandscape) 20.dp else 18.dp,
+          bottom = if (metrics.isLandscape) 10.dp else 12.dp
+        )
+    )
   }
 }
 
@@ -30121,7 +30198,7 @@ private fun ExtraToolPlaceholderCard(
             fontWeight = FontWeight.SemiBold
           ),
           color = palette.textPrimary,
-          maxLines = 2,
+          maxLines = 1,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier
             .weight(1f)
@@ -38329,6 +38406,36 @@ fun ClockScreen(
   var isTimerRunning by rememberSaveable { mutableStateOf(false) }
   var activePresetLabel by rememberSaveable { mutableStateOf<String?>(null) }
   var hasFiredAlarm by remember { mutableStateOf(false) }
+
+  val incomingStudyPomodoroTrigger = pendingStudyPomodoroTrigger
+  LaunchedEffect(incomingStudyPomodoroTrigger) {
+    if (incomingStudyPomodoroTrigger > 0L) {
+      selectedSubTab = ClockSubTab.TIMER
+      if (!effectiveLockActive) {
+        stopActiveRingtone()
+        hasFiredAlarm = false
+        timerDigitInput = ""
+        val durationSec = pendingStudyPomodoroMinutes.coerceIn(1, 180) * 60L
+        val selectedDurationMillis = durationSec * 1000L
+        val newTargetEndTime = System.currentTimeMillis() + selectedDurationMillis
+        targetEndTime = newTargetEndTime
+        timerTotalDurationSeconds = durationSec
+        timerRemainingMillis = selectedDurationMillis
+        timerRemainingSeconds = durationSec
+        activePresetLabel = pendingStudyPomodoroLabel.ifBlank { "Pomodoro Focus" }
+        isTimerRunning = true
+        if (isStrictPomodoroLockEnabled) {
+          activateFocusLockWithNewPin()
+        }
+        scheduleTimerExactAlarm(
+          context = context,
+          durationSeconds = durationSec,
+          label = activePresetLabel
+        )
+      }
+      pendingStudyPomodoroTrigger = 0L
+    }
+  }
 
   LaunchedEffect(isTimerRunning, targetEndTime) {
     if (isTimerRunning) {

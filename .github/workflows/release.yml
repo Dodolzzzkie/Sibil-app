@@ -67,9 +67,14 @@ jobs:
 
       - name: Inject Gemini API Key
         env:
-          KEY_VAL: ${{ secrets.GEMINI_KEYS || secrets.GEMINI_KEYS }}
+          KEY_VAL: ${{ secrets.GEMINI_KEYS || secrets.GEMINI_API_KEY }}
         run: |
-          sed -i "s|__KEY_INJECTION_PLACEHOLDER__|$KEY_VAL|g" app/src/main/java/com/example/MainActivity.kt || true
+          if [ -n "$KEY_VAL" ]; then
+            sed -i "s|__KEY_INJECTION_PLACEHOLDER__|$KEY_VAL|g" app/src/main/java/com/example/MainActivity.kt || true
+            echo "Injected Gemini API key pool into MainActivity.kt."
+          else
+            echo "Warning: GEMINI_KEYS / GEMINI_API_KEY secret is empty; leaving CI placeholder intact."
+          fi
 
       - name: Restore Release Keystore
         env:
