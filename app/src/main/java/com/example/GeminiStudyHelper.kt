@@ -115,6 +115,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -475,10 +476,12 @@ object GeminiStudyClient {
   const val SAFETY_REFUSAL_MESSAGE =
     "This topic is restricted by Sibil AI's explicit content safety policy."
 
+  private val keyRotationCursor = AtomicInteger(0)
+
   val MODEL_FALLBACK_ORDER = listOf(
-    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash"
+    "gemini-2.5-flash",
+    "gemini-3.8-flash"
   )
 
   const val GENERAL_SYSTEM_INSTRUCTION =
@@ -520,7 +523,19 @@ object GeminiStudyClient {
     }
   }
 
-  fun getOrderedApiKeys(context: Context): List<String> = resolveInjectedGeminiKeys(context)
+  fun getOrderedApiKeys(context: Context): List<String> = getSharedGeminiApiKeys(context)
+
+  internal fun getRotatedApiKeys(context: Context): List<String> {
+    val overrideKeys = getSharedPersonalOverrideKeys(context)
+    val injectedPool = getSharedInjectedAndBuildConfigKeys()
+    val rotatedInjected = if (injectedPool.size <= 1) {
+      injectedPool
+    } else {
+      val start = (keyRotationCursor.getAndIncrement() and 0x7FFFFFFF) % injectedPool.size
+      injectedPool.drop(start) + injectedPool.take(start)
+    }
+    return (overrideKeys + rotatedInjected).distinct()
+  }
 
   fun hasConfiguredKey(context: Context): Boolean = getOrderedApiKeys(context).isNotEmpty()
 
@@ -838,14 +853,64 @@ object GeminiStudyClient {
     }
   }
 
+  internal fun isInvalidApiKeyError(status: Int, apiMsg: String): Boolean {
+    if (status == 401) return true
+    if (status != 400 && status != 403) return false
+    return apiMsg.contains("API key not valid", ignoreCase = true) ||
+      apiMsg.contains("API_KEY_INVALID", ignoreCase = true) ||
+      apiMsg.contains("API key expired", ignoreCase = true) ||
+      apiMsg.contains("invalid api key", ignoreCase = true)
+  }
+
+  internal fun formatFriendlyFailureMessage(
+    sawQuotaOrRateLimit: Boolean,
+    sawAuthOrKeyError: Boolean,
+    sawNetworkError: Boolean,
+    lastStatus: Int,
+    rawDetail: String
+  ): String {
+    val sanitizedDetail = rawDetail.replace(Regex("""https?://\S+"""), "").trim()
+    return when {
+      sawQuotaOrRateLimit ->
+        "Sibil AI is temporarily busy (high traffic across available Gemini models and keys). Please try again in a few seconds, or paste a personal Gemini API key in Settings (⚙)."
+      sawAuthOrKeyError ->
+        "Unable to verify the Gemini API key. Tap the Settings (⚙) icon at the top right to check or add a valid Gemini API key."
+      sawNetworkError ->
+        "Unable to reach Sibil AI right now. Please check your internet connection and try again."
+      lastStatus > 0 ->
+        "Sibil AI could not complete your request right now (HTTP $lastStatus). Please try again in a moment."
+      sanitizedDetail.isNotBlank() ->
+        "Sibil AI could not complete your request right now. Please try again in a moment."
+      else ->
+        "Unable to reach Sibil AI right now. Please try again in a moment."
+    }
+  }
+
   suspend fun generateReply(
     context: Context,
     userPrompt: String,
     history: List<GeminiMessage>,
     imageBase64: String?
   ): StudyAiCallResult = withContext(Dispatchers.IO) {
+    val rotatedKeys = getRotatedApiKeys(context)
+    generateReplyWithExecutor(
+      apiKeys = rotatedKeys,
+      userPrompt = userPrompt,
+      history = history,
+      imageBase64 = imageBase64,
+      requestExecutor = ::executeGenerateRequest
+    )
+  }
+
+  internal suspend fun generateReplyWithExecutor(
+    apiKeys: List<String>,
+    userPrompt: String,
+    history: List<GeminiMessage>,
+    imageBase64: String?,
+    requestExecutor: (endpoint: String, payloadJson: String) -> Pair<Int, String>
+  ): StudyAiCallResult {
     if (isExplicitOrRestrictedPrompt(userPrompt)) {
-      return@withContext StudyAiCallResult.Success(
+      return StudyAiCallResult.Success(
         GeminiMessage(
           isUser = false,
           text = SAFETY_REFUSAL_MESSAGE,
@@ -854,24 +919,27 @@ object GeminiStudyClient {
       )
     }
 
-    val keys = getOrderedApiKeys(context)
-    if (keys.isEmpty()) {
-      return@withContext StudyAiCallResult.Failure(
+    if (apiKeys.isEmpty()) {
+      return StudyAiCallResult.Failure(
         "No Gemini API key configured yet. Tap the Settings (⚙) icon at the top right to add your Gemini API key."
       )
     }
 
-    var lastError = "Unable to reach Sibil AI right now."
-    for (apiKey in keys) {
-      var keyExhausted = false
-      for (model in MODEL_FALLBACK_ORDER) {
-        if (keyExhausted) break
+    val invalidKeys = mutableSetOf<String>()
+    var sawQuotaOrRateLimit = false
+    var sawAuthOrKeyError = false
+    var sawNetworkError = false
+    var lastStatus = 0
+    var lastError = ""
+
+    for (model in MODEL_FALLBACK_ORDER) {
+      for (apiKey in apiKeys) {
+        if (invalidKeys.contains(apiKey)) continue
+
         val endpoint =
           "https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=$apiKey"
-
         val toolModes = listOf(
           GroundingToolMode.GOOGLE_SEARCH,
-          GroundingToolMode.LEGACY_RETRIEVAL,
           GroundingToolMode.NONE
         )
 
@@ -884,11 +952,11 @@ object GeminiStudyClient {
               groundingMode = toolMode
             ).toString()
 
-            val (status, body) = executeGenerateRequest(endpoint, payloadJson)
+            val (status, body) = requestExecutor(endpoint, payloadJson)
             if (status in 200..299) {
               val root = JSONObject(body)
               if (detectSafetyBlock(root)) {
-                return@withContext StudyAiCallResult.Success(
+                return StudyAiCallResult.Success(
                   GeminiMessage(
                     isUser = false,
                     text = SAFETY_REFUSAL_MESSAGE,
@@ -899,7 +967,7 @@ object GeminiStudyClient {
               val candidateText = extractCandidateText(root)
               if (candidateText.isNotBlank()) {
                 val sources = parseGroundingSources(root)
-                return@withContext StudyAiCallResult.Success(
+                return StudyAiCallResult.Success(
                   GeminiMessage(
                     isUser = false,
                     text = candidateText,
@@ -907,40 +975,61 @@ object GeminiStudyClient {
                   )
                 )
               } else {
+                lastStatus = status
                 lastError = "Empty response returned by $model."
+                Log.w("GeminiStudyClient", lastError)
                 break
               }
             } else {
               val apiMsg = extractErrorMessage(body)
+              lastStatus = status
               lastError = "HTTP $status ($model): $apiMsg"
-              val isToolComplaint = status == 400 && (
-                apiMsg.contains("google_search", ignoreCase = true) ||
-                  apiMsg.contains("googleSearchRetrieval", ignoreCase = true) ||
-                  apiMsg.contains("Search Grounding", ignoreCase = true) ||
-                  apiMsg.contains("tool", ignoreCase = true)
-                )
-              if (isToolComplaint && toolMode != GroundingToolMode.NONE) {
-                // Retry immediately with next grounding tool fallback
+              Log.w("GeminiStudyClient", "Attempt failed: $lastError [toolMode=$toolMode]")
+
+              if (isInvalidApiKeyError(status, apiMsg)) {
+                sawAuthOrKeyError = true
+                invalidKeys.add(apiKey)
+                break
+              }
+
+              if (status == 429 ||
+                apiMsg.contains("quota", ignoreCase = true) ||
+                apiMsg.contains("RESOURCE_EXHAUSTED", ignoreCase = true)
+              ) {
+                sawQuotaOrRateLimit = true
+              } else if (status == 403) {
+                sawAuthOrKeyError = true
+              }
+
+              // If google_search grounding failed with HTTP 400, 429, or 403, immediately retry once without tools
+              val shouldRetryWithoutTools = toolMode == GroundingToolMode.GOOGLE_SEARCH &&
+                (status == 400 || status == 429 || status == 403)
+              if (shouldRetryWithoutTools) {
                 continue
               }
-              when (status) {
-                429 -> keyExhausted = true
-                400, 401, 403 -> {
-                  if (apiMsg.contains("quota", ignoreCase = true) || apiMsg.contains("API key", ignoreCase = true)) {
-                    keyExhausted = true
-                  }
-                }
-              }
+
+              // Continue smoothly to the next API key / fallback model on 429, 404, 403, 503, etc.
               break
             }
           } catch (e: Exception) {
-            lastError = "Network error ($model): ${e.localizedMessage ?: "Connection failed"}"
+            sawNetworkError = true
+            lastError = e.localizedMessage ?: "Connection failed"
+            Log.w("GeminiStudyClient", "Network exception on $model: $lastError")
             break
           }
         }
       }
     }
-    return@withContext StudyAiCallResult.Failure(lastError)
+
+    return StudyAiCallResult.Failure(
+      formatFriendlyFailureMessage(
+        sawQuotaOrRateLimit = sawQuotaOrRateLimit,
+        sawAuthOrKeyError = sawAuthOrKeyError,
+        sawNetworkError = sawNetworkError,
+        lastStatus = lastStatus,
+        rawDetail = lastError
+      )
+    )
   }
 }
 
@@ -1090,7 +1179,7 @@ internal fun GeminiStudyHelperScreen(
         is GeminiStudyClient.StudyAiCallResult.Success -> result.message
         is GeminiStudyClient.StudyAiCallResult.Failure -> GeminiMessage(
           isUser = false,
-          text = "Could not complete request:\n${result.errorMessage}"
+          text = result.errorMessage
         )
       }
 

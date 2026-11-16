@@ -545,6 +545,9 @@ object ApiKeyManager {
 }
 
 internal fun parseValidGeminiKeyTokens(raw: String): List<String> {
+  if (raw.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) && !raw.contains("AIza")) {
+    return emptyList()
+  }
   return raw
     .split(',', '\n', ';', ' ')
     .map {
@@ -558,35 +561,58 @@ internal fun parseValidGeminiKeyTokens(raw: String): List<String> {
         !token.startsWith("__KEY") &&
         !token.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) &&
         !token.equals("MY_GEMINI_API_KEY", ignoreCase = true) &&
-        !token.equals("null", ignoreCase = true)
+        !token.equals("null", ignoreCase = true) &&
+        token.startsWith("AIza")
     }
 }
 
-internal fun resolveInjectedGeminiKeys(context: Context? = null): List<String> {
+internal fun getSharedPersonalOverrideKeys(context: Context? = null): List<String> {
+  if (context == null) return emptyList()
+  val appCtx = context.applicationContext
   val collected = mutableListOf<String>()
-  if (context != null) {
-    val appCtx = context.applicationContext
-    val sibilPrefs = appCtx.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
-    collected += parseValidGeminiKeyTokens(
-      sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty()
-    )
-    val offlinePrefs = appCtx.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
-    collected += parseValidGeminiKeyTokens(
-      offlinePrefs.getString("sibil_gemini_custom_key", "").orEmpty()
-    )
-    collected += parseValidGeminiKeyTokens(
-      offlinePrefs.getString("saved_gemini_api_key", "").orEmpty()
-    )
-  }
+  val sibilPrefs = appCtx.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
+  collected += parseValidGeminiKeyTokens(
+    sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty()
+  )
+  val offlinePrefs = appCtx.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
+  collected += parseValidGeminiKeyTokens(
+    offlinePrefs.getString("sibil_gemini_custom_key", "").orEmpty()
+  )
+  collected += parseValidGeminiKeyTokens(
+    offlinePrefs.getString("saved_gemini_api_key", "").orEmpty()
+  )
+  return collected.distinct()
+}
+
+internal fun getSharedInjectedAndBuildConfigKeys(): List<String> {
+  val collected = mutableListOf<String>()
   collected += parseValidGeminiKeyTokens(INJECTED_API_KEYS)
+
   val buildConfigKey = try {
     BuildConfig.GEMINI_API_KEY
   } catch (_: Throwable) {
     ""
   }
   collected += parseValidGeminiKeyTokens(buildConfigKey)
+
+  for (fieldName in listOf("GEMINI_API_KEYS", "GEMINI_KEYS")) {
+    val extraFieldVal = try {
+      val field = BuildConfig::class.java.getField(fieldName)
+      (field.get(null) as? String).orEmpty()
+    } catch (_: Throwable) {
+      ""
+    }
+    collected += parseValidGeminiKeyTokens(extraFieldVal)
+  }
   return collected.distinct()
 }
+
+internal fun getSharedGeminiApiKeys(context: Context? = null): List<String> {
+  return (getSharedPersonalOverrideKeys(context) + getSharedInjectedAndBuildConfigKeys()).distinct()
+}
+
+internal fun resolveInjectedGeminiKeys(context: Context? = null): List<String> =
+  getSharedGeminiApiKeys(context)
 
 internal fun getSibilCompiledInjectedApiKeys(): String = INJECTED_API_KEYS
 
@@ -2545,16 +2571,13 @@ object GizmoBatchFlashcardEngine {
    * Filters out un-injected placeholders (`!it.startsWith("__KEY_") && it.isNotBlank()`)
    * from `COMPILED_DEVELOPER_KEY_POOL` and combines them with any custom user keys saved in SharedPreferences.
    */
-  fun buildValidKeyPool(userConfiguredKey: String = ""): List<String> {
-    val allValid = ApiKeyManager.getAllValidKeys()
-    val customKeys = userConfiguredKey
-      .split(',', '\n', ';', ' ')
-      .map { it.trim() }
-      .filter { !it.startsWith("__KEY_") && it.isNotBlank() }
+  fun buildValidKeyPool(userConfiguredKey: String = "", context: Context? = null): List<String> {
+    val allValid = getSharedGeminiApiKeys(context)
+    val customKeys = parseValidGeminiKeyTokens(userConfiguredKey)
 
     val combined = (customKeys + allValid).distinct()
     val available = combined.filter { key ->
-      ApiKeyManager.getAvailableKeys().contains(key)
+      ApiKeyManager.getAvailableKeys(context).contains(key)
     }
     return if (available.isNotEmpty()) available else combined
   }
@@ -25753,7 +25776,7 @@ fun FlashcardMainView(
 
   fun launchTextBatchExtraction(deckTitle: String, subjectTag: String, rawText: String) {
     val activeKey = viewModel.getActiveGeminiApiKey()
-    val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey)
+    val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey, context)
     if (validKeyPool.isEmpty() && !ApiKeyManager.hasValidKey(context)) {
       isApiKeyDialogOpen = true
       Toast.makeText(
@@ -25831,7 +25854,7 @@ fun FlashcardMainView(
   ) { uri: Uri? ->
     if (uri != null) {
       val activeKey = viewModel.getActiveGeminiApiKey()
-      val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey)
+      val validKeyPool = GizmoBatchFlashcardEngine.buildValidKeyPool(activeKey, context)
       if (validKeyPool.isEmpty() && !ApiKeyManager.hasValidKey(context)) {
         isApiKeyDialogOpen = true
         Toast.makeText(

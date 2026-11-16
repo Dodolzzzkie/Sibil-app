@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -20,7 +21,7 @@ class GeminiStudyHelperTest {
   fun modelFallbackOrder_and_customKeyPriority_areConfiguredCorrectly() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     assertEquals(
-      listOf("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"),
+      listOf("gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.8-flash"),
       GeminiStudyClient.MODEL_FALLBACK_ORDER
     )
 
@@ -52,7 +53,11 @@ class GeminiStudyHelperTest {
     offlinePrefs.edit().putString("saved_gemini_api_key", "AIzaFlashcardKey1, AIzaFlashcardKey2").commit()
     assertEquals(
       listOf("AIzaFlashcardKey1", "AIzaFlashcardKey2"),
-      resolveInjectedGeminiKeys(context).take(2)
+      getSharedGeminiApiKeys(context).take(2)
+    )
+    assertEquals(
+      getSharedGeminiApiKeys(context),
+      resolveInjectedGeminiKeys(context)
     )
     assertTrue(GeminiStudyClient.hasConfiguredKey(context))
 
@@ -60,6 +65,10 @@ class GeminiStudyHelperTest {
     val ordered = GeminiStudyClient.getOrderedApiKeys(context)
     assertEquals("AIzaStudyOverrideKey", ordered.first())
     assertTrue(ordered.contains("AIzaFlashcardKey1"))
+
+    val flashcardPool = GizmoBatchFlashcardEngine.buildValidKeyPool("", context)
+    assertEquals("AIzaStudyOverrideKey", flashcardPool.first())
+    assertTrue(flashcardPool.contains("AIzaFlashcardKey1"))
 
     sibilPrefs.edit().clear().commit()
     offlinePrefs.edit().clear().commit()
@@ -206,5 +215,82 @@ class GeminiStudyHelperTest {
       put("candidates", JSONArray().put(JSONObject().put("finishReason", "STOP")))
     }
     assertFalse(GeminiStudyClient.detectSafetyBlock(safeStopJson))
+  }
+
+  @Test
+  fun cascadeFallback_retriesWithoutToolsOn429_rotatesKeysAndModels_andSanitizesErrors() = runBlocking {
+    val calls = mutableListOf<Triple<String, String, Boolean>>()
+
+    // 1. If google_search hits HTTP 429 on first model/key, retries without tools on same model/key & succeeds
+    val toolFallbackResult = GeminiStudyClient.generateReplyWithExecutor(
+      apiKeys = listOf("AIzaKeyOne", "AIzaKeyTwo"),
+      userPrompt = "hi",
+      history = emptyList(),
+      imageBase64 = null
+    ) { endpoint, payloadJson ->
+      val hasTools = JSONObject(payloadJson).has("tools")
+      val model = endpoint.substringAfter("/models/").substringBefore(":generateContent")
+      val key = endpoint.substringAfter("?key=")
+      calls += Triple(model, key, hasTools)
+      if (hasTools) {
+        429 to """{"error":{"message":"Quota exceeded for search grounding https://ai.google.dev/gemini-api/docs/rate-limits"}}"""
+      } else {
+        200 to """{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"Hello from Sibil AI!"}]}}]}"""
+      }
+    }
+
+    assertTrue(toolFallbackResult is GeminiStudyClient.StudyAiCallResult.Success)
+    assertEquals(
+      "Hello from Sibil AI!",
+      (toolFallbackResult as GeminiStudyClient.StudyAiCallResult.Success).message.text
+    )
+    assertEquals(
+      listOf(
+        Triple("gemini-3.5-flash-lite", "AIzaKeyOne", true),
+        Triple("gemini-3.5-flash-lite", "AIzaKeyOne", false)
+      ),
+      calls
+    )
+
+    // 2. If all keys hit 429 on first model, cascade falls through to gemini-2.5-flash on remaining keys
+    val modelCascadeCalls = mutableListOf<Triple<String, String, Boolean>>()
+    val modelCascadeResult = GeminiStudyClient.generateReplyWithExecutor(
+      apiKeys = listOf("AIzaKeyA", "AIzaKeyB"),
+      userPrompt = "Explain Darcy's law",
+      history = emptyList(),
+      imageBase64 = null
+    ) { endpoint, payloadJson ->
+      val hasTools = JSONObject(payloadJson).has("tools")
+      val model = endpoint.substringAfter("/models/").substringBefore(":generateContent")
+      val key = endpoint.substringAfter("?key=")
+      modelCascadeCalls += Triple(model, key, hasTools)
+      if (model == "gemini-2.5-flash" && key == "AIzaKeyB") {
+        200 to """{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"Q = k i A"}]}}]}"""
+      } else {
+        429 to """{"error":{"message":"RESOURCE_EXHAUSTED"}}"""
+      }
+    }
+
+    assertTrue(modelCascadeResult is GeminiStudyClient.StudyAiCallResult.Success)
+    assertEquals("Q = k i A", (modelCascadeResult as GeminiStudyClient.StudyAiCallResult.Success).message.text)
+    assertTrue(modelCascadeCalls.any { it.first == "gemini-3.5-flash-lite" && it.second == "AIzaKeyA" })
+    assertTrue(modelCascadeCalls.any { it.first == "gemini-3.5-flash-lite" && it.second == "AIzaKeyB" })
+    assertTrue(modelCascadeCalls.any { it.first == "gemini-2.5-flash" && it.second == "AIzaKeyA" })
+    assertTrue(modelCascadeCalls.any { it.first == "gemini-2.5-flash" && it.second == "AIzaKeyB" })
+
+    // 3. When all models x all keys return 429 with billing URLs, returns clean friendly message without raw URLs
+    val totalExhaustedResult = GeminiStudyClient.generateReplyWithExecutor(
+      apiKeys = listOf("AIzaKeyA", "AIzaKeyB"),
+      userPrompt = "hi",
+      history = emptyList(),
+      imageBase64 = null
+    ) { _, _ ->
+      429 to """{"error":{"message":"You exceeded your current quota. Check https://ai.google.dev/gemini-api/docs/rate-limits"}}"""
+    }
+
+    assertTrue(totalExhaustedResult is GeminiStudyClient.StudyAiCallResult.Failure)
+    val errMsg = (totalExhaustedResult as GeminiStudyClient.StudyAiCallResult.Failure).errorMessage
+    assertFalse(errMsg.contains("https://"))
+    assertTrue(errMsg.contains("temporarily busy", ignoreCase = true))
   }
 }

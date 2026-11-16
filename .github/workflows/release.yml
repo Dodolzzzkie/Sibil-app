@@ -67,14 +67,35 @@ jobs:
 
       - name: Inject Gemini API Key
         env:
-          KEY_VAL: ${{ secrets.GEMINI_KEYS || secrets.GEMINI_API_KEY }}
+          KEY_PRIMARY_POOL: ${{ secrets.GEMINI_API_KEYS }}
+          KEY_ALT_POOL: ${{ secrets.GEMINI_KEYS }}
+          KEY_SINGLE: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -n "$KEY_VAL" ]; then
-            sed -i "s|__KEY_INJECTION_PLACEHOLDER__|$KEY_VAL|g" app/src/main/java/com/example/MainActivity.kt || true
-            echo "Injected Gemini API key pool into MainActivity.kt."
-          else
-            echo "Warning: GEMINI_KEYS / GEMINI_API_KEY secret is empty; leaving CI placeholder intact."
-          fi
+          python3 - <<'PY'
+          import os, pathlib
+
+          target = pathlib.Path("app/src/main/java/com/example/MainActivity.kt")
+          raw_sources = [
+              os.environ.get("KEY_PRIMARY_POOL", ""),
+              os.environ.get("KEY_ALT_POOL", ""),
+              os.environ.get("KEY_SINGLE", ""),
+          ]
+          tokens = []
+          for raw in raw_sources:
+              for line in raw.replace(";", ",").splitlines():
+                  for part in line.split(","):
+                      tok = part.strip().strip('"').strip("'")
+                      if tok and tok not in tokens:
+                          tokens.append(tok)
+
+          if tokens:
+              content = target.read_text(encoding="utf-8")
+              updated = content.replace("__KEY_INJECTION_PLACEHOLDER__", ",".join(tokens))
+              target.write_text(updated, encoding="utf-8")
+              print(f"Injected {len(tokens)} Gemini API key(s) into MainActivity.kt.")
+          else:
+              print("Warning: GEMINI_API_KEYS / GEMINI_KEYS / GEMINI_API_KEY secret is empty; leaving CI placeholder intact.")
+          PY
 
       - name: Restore Release Keystore
         env:
