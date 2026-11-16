@@ -35,43 +35,56 @@ class GeminiStudyHelperTest {
   }
 
   @Test
-  fun resolveInjectedGeminiKeys_filtersPlaceholders_and_readsSharedAndFlashcardPrefs() {
+  fun resolveInjectedGeminiKeys_filtersPlaceholders_and_readsSharedAndFlashcardPrefs() = runBlocking {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val sibilPrefs = context.getSharedPreferences(GeminiStudyClient.SIBIL_PREFS_NAME, Context.MODE_PRIVATE)
     val offlinePrefs = context.getSharedPreferences(GeminiStudyClient.PREFS_NAME, Context.MODE_PRIVATE)
+    GeminiStudyClient.resetDefaultApiKey(context)
     sibilPrefs.edit().clear().commit()
     offlinePrefs.edit().clear().commit()
 
     assertTrue(
       parseValidGeminiKeyTokens("__KEY_INJECTION_PLACEHOLDER__, \"__KEY_INJECTION_PLACEHOLDER__\", 'MY_KEY_INJECTION_PLACEHOLDER_TOKEN', MY_GEMINI_API_KEY, null,  ").isEmpty()
     )
+    // Handles outer quotes around entire comma-separated key list + invisible clipboard characters
     assertEquals(
-      listOf("AIzaPoolKey1", "AIzaPoolKey2"),
-      parseValidGeminiKeyTokens("\"AIzaPoolKey1\", __KEY_INJECTION_PLACEHOLDER__, 'AIzaPoolKey2'").toList()
+      listOf("AIzaPoolKey1", "AIzaPoolKey2", "AIzaPoolKey3"),
+      parseValidGeminiKeyTokens("\"AIzaPoolKey1, __KEY_INJECTION_PLACEHOLDER__, \u200B\uFEFF'AIzaPoolKey2', GEMINI_API_KEY=AIzaPoolKey3\"").toList()
     )
 
     offlinePrefs.edit().putString("saved_gemini_api_key", "AIzaFlashcardKey1, AIzaFlashcardKey2").commit()
     assertEquals(
       listOf("AIzaFlashcardKey1", "AIzaFlashcardKey2"),
-      getSharedGeminiApiKeys(context).take(2)
+      resolveAllGeminiApiKeys(context).take(2)
     )
     assertEquals(
-      getSharedGeminiApiKeys(context),
+      resolveAllGeminiApiKeys(context),
       resolveInjectedGeminiKeys(context)
     )
     assertTrue(GeminiStudyClient.hasConfiguredKey(context))
 
-    GeminiStudyClient.saveCustomApiKey(context, "AIzaStudyOverrideKey")
+    // Saving a custom key with invisible clipboard chars & quotes immediately commits to both stores
+    GeminiStudyClient.saveCustomApiKey(context, "  \"\u200BAIzaStudyOverrideKey\uFEFF\"  ")
+    assertEquals("AIzaStudyOverrideKey", GeminiStudyClient.getCustomApiKey(context))
+    assertEquals(
+      "AIzaStudyOverrideKey",
+      sibilPrefs.getString(GeminiStudyClient.CUSTOM_KEY_PREF, "")
+    )
+    assertEquals(
+      "AIzaStudyOverrideKey",
+      offlinePrefs.getString(GeminiStudyClient.FLASHCARD_KEY_PREF, "")
+    )
     val ordered = GeminiStudyClient.getOrderedApiKeys(context)
     assertEquals("AIzaStudyOverrideKey", ordered.first())
-    assertTrue(ordered.contains("AIzaFlashcardKey1"))
 
     val flashcardPool = GizmoBatchFlashcardEngine.buildValidKeyPool("", context)
     assertEquals("AIzaStudyOverrideKey", flashcardPool.first())
-    assertTrue(flashcardPool.contains("AIzaFlashcardKey1"))
 
-    sibilPrefs.edit().clear().commit()
-    offlinePrefs.edit().clear().commit()
+    // Reset Default clears manual override synchronously
+    GeminiStudyClient.resetDefaultApiKey(context)
+    assertEquals("", GeminiStudyClient.getCustomApiKey(context))
+    assertEquals("", sibilPrefs.getString(GeminiStudyClient.CUSTOM_KEY_PREF, ""))
+    assertEquals("", offlinePrefs.getString(GeminiStudyClient.FLASHCARD_KEY_PREF, ""))
   }
 
   @Test

@@ -74,7 +74,6 @@ jobs:
           python3 - <<'PY'
           import os, pathlib
 
-          target = pathlib.Path("app/src/main/java/com/example/MainActivity.kt")
           raw_sources = [
               os.environ.get("KEY_PRIMARY_POOL", ""),
               os.environ.get("KEY_ALT_POOL", ""),
@@ -84,15 +83,23 @@ jobs:
           for raw in raw_sources:
               for line in raw.replace(";", ",").splitlines():
                   for part in line.split(","):
-                      tok = part.strip().strip('"').strip("'")
+                      tok = part.strip().strip('"').strip("'").strip()
                       if tok and tok not in tokens:
                           tokens.append(tok)
 
           if tokens:
-              content = target.read_text(encoding="utf-8")
-              updated = content.replace("__KEY_INJECTION_PLACEHOLDER__", ",".join(tokens))
-              target.write_text(updated, encoding="utf-8")
-              print(f"Injected {len(tokens)} Gemini API key(s) into MainActivity.kt.")
+              joined = ",".join(tokens)
+              for kt_file in pathlib.Path("app/src/main/java").rglob("*.kt"):
+                  content = kt_file.read_text(encoding="utf-8")
+                  if "__KEY_INJECTION_PLACEHOLDER__" in content:
+                      kt_file.write_text(
+                          content.replace("__KEY_INJECTION_PLACEHOLDER__", joined),
+                          encoding="utf-8"
+                      )
+              env_line = f"GEMINI_API_KEY={joined}\nGEMINI_API_KEYS={joined}\n"
+              pathlib.Path(".env").write_text(env_line, encoding="utf-8")
+              pathlib.Path(".env.example").write_text(env_line, encoding="utf-8")
+              print(f"Injected {len(tokens)} Gemini API key(s) into Kotlin sources and .env.")
           else:
               print("Warning: GEMINI_API_KEYS / GEMINI_KEYS / GEMINI_API_KEY secret is empty; leaving CI placeholder intact.")
           PY
@@ -118,6 +125,9 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || 'sibil12345' }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'sibil' }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'sibil12345' }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_KEYS: ${{ secrets.GEMINI_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: ./gradlew assembleRelease
 
       - name: Prepare Release Artifact

@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Public
@@ -69,6 +70,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -387,7 +389,8 @@ fun SibilAiLogo(
 fun HolographicGeminiButton(
   isDarkMode: Boolean,
   onClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  lockBadgeLabel: String? = null
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "holo_gemini_rim")
   val rotationAngle by infiniteTransition.animateFloat(
@@ -418,41 +421,58 @@ fun HolographicGeminiButton(
   }
 
   Box(
-    modifier = modifier
-      .size(56.dp)
-      .shadow(
-        elevation = 10.dp,
-        shape = CircleShape,
-        ambientColor = GoogleBlue.copy(alpha = 0.38f),
-        spotColor = GoogleGreen.copy(alpha = 0.34f)
-      )
-      .clip(CircleShape)
-      .clickable(
-        onClickLabel = "Open Sibil AI Assistant",
-        onClick = onClick
-      )
-      .testTag("holographic_gemini_fab"),
+    modifier = modifier,
     contentAlignment = Alignment.Center
   ) {
-    // Subtle animated 4-color Google-spectrum outer rim
     Box(
       modifier = Modifier
-        .fillMaxSize()
-        .graphicsLayer { rotationZ = rotationAngle }
-        .border(width = 2.dp, brush = sweepRimBrush, shape = CircleShape)
-    )
-
-    // Translucent frosted-glass inner core + top-left specular sheen
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(2.dp)
+        .padding(top = if (lockBadgeLabel != null) 6.dp else 0.dp, end = if (lockBadgeLabel != null) 6.dp else 0.dp)
+        .size(56.dp)
+        .shadow(
+          elevation = 10.dp,
+          shape = CircleShape,
+          ambientColor = GoogleBlue.copy(alpha = 0.38f),
+          spotColor = GoogleGreen.copy(alpha = 0.34f)
+        )
         .clip(CircleShape)
-        .background(coreColor)
-        .background(specularHighlight),
+        .clickable(
+          onClickLabel = "Open Sibil AI Assistant",
+          onClick = onClick
+        )
+        .testTag("holographic_gemini_fab"),
       contentAlignment = Alignment.Center
     ) {
-      SibilAiLogo(modifier = Modifier.size(28.dp))
+      // Subtle animated 4-color Google-spectrum outer rim
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .graphicsLayer { rotationZ = rotationAngle }
+          .border(width = 2.dp, brush = sweepRimBrush, shape = CircleShape)
+      )
+
+      // Translucent frosted-glass inner core + top-left specular sheen
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(2.dp)
+          .clip(CircleShape)
+          .background(coreColor)
+          .background(specularHighlight),
+        contentAlignment = Alignment.Center
+      ) {
+        SibilAiLogo(modifier = Modifier.size(28.dp))
+      }
+    }
+
+    if (!lockBadgeLabel.isNullOrBlank()) {
+      SibilTierLockPill(
+        label = lockBadgeLabel,
+        isDarkMode = isDarkMode,
+        compact = true,
+        modifier = Modifier
+          .align(Alignment.TopEnd)
+          .testTag("holographic_gemini_lock_badge")
+      )
     }
   }
 }
@@ -469,12 +489,16 @@ object GeminiStudyClient {
   const val PREFS_NAME = "sibil_app_offline_storage"
   const val SESSIONS_PREFS_NAME = "sibil_gemini_sessions"
   const val CUSTOM_KEY_PREF = "sibil_gemini_custom_key"
+  const val FLASHCARD_KEY_PREF = "saved_gemini_api_key"
   private const val THREADS_KEY = "threads_json"
   private const val ACTIVE_THREAD_ID_KEY = "active_thread_id"
   private const val MAX_PERSISTED_THREADS = 40
 
   const val SAFETY_REFUSAL_MESSAGE =
     "This topic is restricted by Sibil AI's explicit content safety policy."
+
+  @Volatile
+  internal var inMemoryCustomKey: String = ""
 
   private val keyRotationCursor = AtomicInteger(0)
 
@@ -501,29 +525,66 @@ object GeminiStudyClient {
   }
 
   fun getCustomApiKey(context: Context): String {
-    val appCtx = context.applicationContext
+    val memTokens = parseValidGeminiKeyTokens(inMemoryCustomKey)
+    if (memTokens.isNotEmpty()) return memTokens.joinToString(", ")
+
+    val appCtx = context.applicationContext ?: context
     val sibilPrefs = appCtx.getSharedPreferences(SIBIL_PREFS_NAME, Context.MODE_PRIVATE)
-    val primary = sibilPrefs.getString(CUSTOM_KEY_PREF, "")?.trim().orEmpty()
-    if (primary.isNotEmpty()) return primary
     val offlinePrefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    return offlinePrefs.getString(CUSTOM_KEY_PREF, "")?.trim().orEmpty()
+
+    val candidates = listOf(
+      sibilPrefs.getString(CUSTOM_KEY_PREF, ""),
+      offlinePrefs.getString(CUSTOM_KEY_PREF, ""),
+      offlinePrefs.getString(FLASHCARD_KEY_PREF, ""),
+      sibilPrefs.getString(FLASHCARD_KEY_PREF, "")
+    )
+    for (raw in candidates) {
+      val valid = parseValidGeminiKeyTokens(raw.orEmpty())
+      if (valid.isNotEmpty()) {
+        return valid.joinToString(", ")
+      }
+    }
+    return ""
   }
 
   fun saveCustomApiKey(context: Context, key: String) {
-    val clean = key.trim()
-    val appCtx = context.applicationContext
+    val parsedTokens = parseValidGeminiKeyTokens(key)
+    val clean = if (parsedTokens.isNotEmpty()) {
+      parsedTokens.joinToString(",")
+    } else {
+      sanitizeSingleGeminiKeyToken(key)
+    }
+    inMemoryCustomKey = clean
+    val appCtx = context.applicationContext ?: context
     val sibilPrefs = appCtx.getSharedPreferences(SIBIL_PREFS_NAME, Context.MODE_PRIVATE)
     val offlinePrefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     if (clean.isEmpty()) {
-      sibilPrefs.edit().remove(CUSTOM_KEY_PREF).apply()
-      offlinePrefs.edit().remove(CUSTOM_KEY_PREF).apply()
+      sibilPrefs.edit()
+        .remove(CUSTOM_KEY_PREF)
+        .remove(FLASHCARD_KEY_PREF)
+        .commit()
+      offlinePrefs.edit()
+        .remove(CUSTOM_KEY_PREF)
+        .remove(FLASHCARD_KEY_PREF)
+        .commit()
     } else {
-      sibilPrefs.edit().putString(CUSTOM_KEY_PREF, clean).apply()
-      offlinePrefs.edit().putString(CUSTOM_KEY_PREF, clean).apply()
+      sibilPrefs.edit()
+        .putString(CUSTOM_KEY_PREF, clean)
+        .putString(FLASHCARD_KEY_PREF, clean)
+        .commit()
+      offlinePrefs.edit()
+        .putString(CUSTOM_KEY_PREF, clean)
+        .putString(FLASHCARD_KEY_PREF, clean)
+        .commit()
     }
+    ApiKeyManager.resetExhaustedKeys()
   }
 
-  fun getOrderedApiKeys(context: Context): List<String> = getSharedGeminiApiKeys(context)
+  fun resetDefaultApiKey(context: Context) {
+    saveCustomApiKey(context, "")
+  }
+
+  fun getOrderedApiKeys(context: Context): List<String> = resolveAllGeminiApiKeys(context)
 
   internal fun getRotatedApiKeys(context: Context): List<String> {
     val overrideKeys = getSharedPersonalOverrideKeys(context)
@@ -534,10 +595,11 @@ object GeminiStudyClient {
       val start = (keyRotationCursor.getAndIncrement() and 0x7FFFFFFF) % injectedPool.size
       injectedPool.drop(start) + injectedPool.take(start)
     }
-    return (overrideKeys + rotatedInjected).distinct()
+    val combined = (overrideKeys + rotatedInjected).distinct()
+    return combined.ifEmpty { resolveAllGeminiApiKeys(context) }
   }
 
-  fun hasConfiguredKey(context: Context): Boolean = getOrderedApiKeys(context).isNotEmpty()
+  fun hasConfiguredKey(context: Context): Boolean = resolveAllGeminiApiKeys(context).isNotEmpty()
 
   fun deriveAutoTitle(prompt: String, hasImage: Boolean = false): String {
     val collapsed = prompt.replace(Regex("\\s+"), " ").trim()
@@ -892,7 +954,9 @@ object GeminiStudyClient {
     history: List<GeminiMessage>,
     imageBase64: String?
   ): StudyAiCallResult = withContext(Dispatchers.IO) {
-    val rotatedKeys = getRotatedApiKeys(context)
+    val rotatedKeys = getRotatedApiKeys(context).ifEmpty {
+      resolveAllGeminiApiKeys(context)
+    }
     generateReplyWithExecutor(
       apiKeys = rotatedKeys,
       userPrompt = userPrompt,
@@ -1072,8 +1136,14 @@ internal fun GeminiStudyHelperScreen(
   var isGenerating by remember { mutableStateOf(false) }
   var isApiSettingsOpen by remember { mutableStateOf(false) }
   var isSavedChatsSheetOpen by remember { mutableStateOf(false) }
-  var customKeyDraft by remember { mutableStateOf(GeminiStudyClient.getCustomApiKey(context)) }
-  var hasReadyKey by remember { mutableStateOf(GeminiStudyClient.hasConfiguredKey(context)) }
+  var keyConfigVersion by remember { mutableStateOf(0) }
+  var customKeyDraft by remember {
+    mutableStateOf(GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY })
+  }
+  val activeKeyList = remember(keyConfigVersion, viewModel.savedGeminiApiKey) {
+    resolveAllGeminiApiKeys(context)
+  }
+  val hasReadyKey = activeKeyList.isNotEmpty()
 
   var savedThreads by remember {
     mutableStateOf(GeminiStudyClient.loadThreads(context))
@@ -1739,7 +1809,7 @@ internal fun GeminiStudyHelperScreen(
             .size(22.dp)
             .clip(CircleShape)
             .clickable {
-              customKeyDraft = GeminiStudyClient.getCustomApiKey(context)
+              customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
               isApiSettingsOpen = true
             }
             .testTag("study_ai_status_dot"),
@@ -1795,7 +1865,7 @@ internal fun GeminiStudyHelperScreen(
 
         IconButton(
           onClick = {
-            customKeyDraft = GeminiStudyClient.getCustomApiKey(context)
+            customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
             isApiSettingsOpen = true
           },
           modifier = Modifier
@@ -2080,6 +2150,61 @@ internal fun GeminiStudyHelperScreen(
 
         Row(
           modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          OutlinedButton(
+            onClick = {
+              val clipText = clipboardManager.getText()?.text
+              if (!clipText.isNullOrBlank()) {
+                val parsed = parseValidGeminiKeyTokens(clipText)
+                customKeyDraft = if (parsed.isNotEmpty()) {
+                  parsed.joinToString(", ")
+                } else {
+                  sanitizeSingleGeminiKeyToken(clipText)
+                }
+              } else {
+                Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+              }
+            },
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .weight(1f)
+              .heightIn(min = 44.dp)
+              .testTag("study_ai_paste_clipboard_button")
+          ) {
+            Icon(
+              imageVector = Icons.Rounded.ContentPaste,
+              contentDescription = null,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("Paste from Clipboard", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
+
+          OutlinedButton(
+            onClick = {
+              GeminiStudyClient.resetDefaultApiKey(context)
+              viewModel.saveGeminiApiKey("")
+              customKeyDraft = DEFAULT_GEMINI_API_KEY
+              keyConfigVersion++
+              Toast.makeText(
+                context,
+                "Reset to built-in Cloud AI key pool",
+                Toast.LENGTH_SHORT
+              ).show()
+            },
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .heightIn(min = 44.dp)
+              .testTag("study_ai_reset_default_key_button")
+          ) {
+            Text("Reset Default", fontSize = 12.sp)
+          }
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.End,
           verticalAlignment = Alignment.CenterVertically
         ) {
@@ -2092,13 +2217,16 @@ internal fun GeminiStudyHelperScreen(
           Spacer(modifier = Modifier.width(8.dp))
           Button(
             onClick = {
-              val sanitized = customKeyDraft.trim()
-                .removeSurrounding("\"")
-                .removeSurrounding("'")
-                .trim()
+              val parsedTokens = parseValidGeminiKeyTokens(customKeyDraft)
+              val sanitized = if (parsedTokens.isNotEmpty()) {
+                parsedTokens.joinToString(",")
+              } else {
+                sanitizeSingleGeminiKeyToken(customKeyDraft)
+              }
               GeminiStudyClient.saveCustomApiKey(context, sanitized)
-              customKeyDraft = sanitized
-              hasReadyKey = GeminiStudyClient.hasConfiguredKey(context)
+              viewModel.saveGeminiApiKey(sanitized)
+              customKeyDraft = sanitized.ifBlank { DEFAULT_GEMINI_API_KEY }
+              keyConfigVersion++
               isApiSettingsOpen = false
               Toast.makeText(
                 context,
@@ -2111,7 +2239,9 @@ internal fun GeminiStudyHelperScreen(
               contentColor = Color.White
             ),
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.heightIn(min = 48.dp)
+            modifier = Modifier
+              .heightIn(min = 48.dp)
+              .testTag("study_ai_save_key_button")
           ) {
             Text("Save Key", fontWeight = FontWeight.Bold)
           }

@@ -176,6 +176,7 @@ import androidx.compose.material.icons.filled.Architecture
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.rounded.AutoAwesome as RoundedAutoAwesome
+import androidx.compose.material.icons.rounded.WorkspacePremium
 import androidx.compose.material.icons.filled.AvTimer
 import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Calculate
@@ -395,6 +396,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.theme.CanvaDarkColorScheme
 import com.example.ui.theme.CanvaLightColorScheme
@@ -494,7 +496,7 @@ object ApiKeyManager {
   }
 
   fun getAllValidKeys(context: Context? = null): List<String> {
-    return resolveInjectedGeminiKeys(context)
+    return resolveAllGeminiApiKeys(context)
   }
 
   fun getAvailableKeys(context: Context? = null): List<String> {
@@ -544,56 +546,93 @@ object ApiKeyManager {
   }
 }
 
-internal fun parseValidGeminiKeyTokens(raw: String): List<String> {
-  if (raw.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) && !raw.contains("AIza")) {
-    return emptyList()
+private val KEY_CLEAN_TRIM_CHARS = charArrayOf(
+  ' ', '\t', '\n', '\r', '"', '\'', '`', '[', ']', '\u200B', '\uFEFF', '\u00A0'
+)
+
+internal fun sanitizeSingleGeminiKeyToken(rawToken: String): String {
+  var cleaned = rawToken.trim(*KEY_CLEAN_TRIM_CHARS)
+  if (cleaned.contains('=')) {
+    val afterEq = cleaned.substringAfter('=').trim(*KEY_CLEAN_TRIM_CHARS)
+    if (afterEq.isNotEmpty()) {
+      cleaned = afterEq
+    }
   }
-  return raw
-    .split(',', '\n', ';', ' ')
-    .map {
-      it.trim()
-        .removeSurrounding("\"")
-        .removeSurrounding("'")
-        .trim()
-    }
-    .filter { token ->
+  val aizaMatch = Regex("""AIza[A-Za-z0-9_\-]{10,}""").find(cleaned)
+  if (aizaMatch != null) {
+    return aizaMatch.value
+  }
+  return cleaned.trim(*KEY_CLEAN_TRIM_CHARS)
+}
+
+internal fun parseValidGeminiKeyTokens(raw: String): List<String> {
+  if (raw.isBlank()) return emptyList()
+  val ordered = LinkedHashSet<String>()
+  val parts = raw.split(',', '\n', '\r', ';', ' ', '\t')
+  for (part in parts) {
+    val token = sanitizeSingleGeminiKeyToken(part)
+    if (
       token.isNotEmpty() &&
-        !token.startsWith("__KEY") &&
-        !token.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) &&
-        !token.equals("MY_GEMINI_API_KEY", ignoreCase = true) &&
-        !token.equals("null", ignoreCase = true) &&
-        token.startsWith("AIza")
+      !token.startsWith("__KEY") &&
+      !token.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true) &&
+      !token.equals("MY_GEMINI_API_KEY", ignoreCase = true) &&
+      !token.equals("YOUR_API_KEY", ignoreCase = true) &&
+      !token.equals("AIzaSy...", ignoreCase = true) &&
+      !token.equals("null", ignoreCase = true)
+    ) {
+      ordered.add(token)
     }
+  }
+  return ordered.toList()
 }
 
 internal fun getSharedPersonalOverrideKeys(context: Context? = null): List<String> {
-  if (context == null) return emptyList()
-  val appCtx = context.applicationContext
-  val collected = mutableListOf<String>()
-  val sibilPrefs = appCtx.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
-  collected += parseValidGeminiKeyTokens(
-    sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty()
-  )
-  val offlinePrefs = appCtx.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
-  collected += parseValidGeminiKeyTokens(
-    offlinePrefs.getString("sibil_gemini_custom_key", "").orEmpty()
-  )
-  collected += parseValidGeminiKeyTokens(
-    offlinePrefs.getString("saved_gemini_api_key", "").orEmpty()
-  )
-  return collected.distinct()
+  val ordered = LinkedHashSet<String>()
+  ordered.addAll(parseValidGeminiKeyTokens(GeminiStudyClient.inMemoryCustomKey))
+  if (context != null) {
+    val appCtx = context.applicationContext ?: context
+    val sibilPrefs = appCtx.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
+    ordered.addAll(
+      parseValidGeminiKeyTokens(sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty())
+    )
+    ordered.addAll(
+      parseValidGeminiKeyTokens(sibilPrefs.getString("saved_gemini_api_key", "").orEmpty())
+    )
+    val offlinePrefs = appCtx.getSharedPreferences("sibil_app_offline_storage", Context.MODE_PRIVATE)
+    ordered.addAll(
+      parseValidGeminiKeyTokens(offlinePrefs.getString("sibil_gemini_custom_key", "").orEmpty())
+    )
+    ordered.addAll(
+      parseValidGeminiKeyTokens(offlinePrefs.getString("saved_gemini_api_key", "").orEmpty())
+    )
+  }
+  return ordered.toList()
 }
 
 internal fun getSharedInjectedAndBuildConfigKeys(): List<String> {
-  val collected = mutableListOf<String>()
-  collected += parseValidGeminiKeyTokens(INJECTED_API_KEYS)
+  val ordered = LinkedHashSet<String>()
+  if (!INJECTED_API_KEYS.contains("KEY_INJECTION_PLACEHOLDER", ignoreCase = true)) {
+    ordered.addAll(parseValidGeminiKeyTokens(INJECTED_API_KEYS))
+  } else {
+    ordered.addAll(parseValidGeminiKeyTokens(INJECTED_API_KEYS))
+  }
+  for (poolEntry in COMPILED_DEVELOPER_KEY_POOL) {
+    ordered.addAll(parseValidGeminiKeyTokens(poolEntry))
+  }
+
+  val ciBuildConfigKeys = try {
+    BuildConfig.CI_INJECTED_GEMINI_KEYS
+  } catch (_: Throwable) {
+    ""
+  }
+  ordered.addAll(parseValidGeminiKeyTokens(ciBuildConfigKeys))
 
   val buildConfigKey = try {
     BuildConfig.GEMINI_API_KEY
   } catch (_: Throwable) {
     ""
   }
-  collected += parseValidGeminiKeyTokens(buildConfigKey)
+  ordered.addAll(parseValidGeminiKeyTokens(buildConfigKey))
 
   for (fieldName in listOf("GEMINI_API_KEYS", "GEMINI_KEYS")) {
     val extraFieldVal = try {
@@ -602,22 +641,28 @@ internal fun getSharedInjectedAndBuildConfigKeys(): List<String> {
     } catch (_: Throwable) {
       ""
     }
-    collected += parseValidGeminiKeyTokens(extraFieldVal)
+    ordered.addAll(parseValidGeminiKeyTokens(extraFieldVal))
   }
-  return collected.distinct()
+  return ordered.toList()
 }
 
-internal fun getSharedGeminiApiKeys(context: Context? = null): List<String> {
-  return (getSharedPersonalOverrideKeys(context) + getSharedInjectedAndBuildConfigKeys()).distinct()
+internal fun resolveAllGeminiApiKeys(context: Context? = null): List<String> {
+  val ordered = LinkedHashSet<String>()
+  ordered.addAll(getSharedPersonalOverrideKeys(context))
+  ordered.addAll(getSharedInjectedAndBuildConfigKeys())
+  return ordered.toList()
 }
+
+internal fun getSharedGeminiApiKeys(context: Context? = null): List<String> =
+  resolveAllGeminiApiKeys(context)
 
 internal fun resolveInjectedGeminiKeys(context: Context? = null): List<String> =
-  getSharedGeminiApiKeys(context)
+  resolveAllGeminiApiKeys(context)
 
 internal fun getSibilCompiledInjectedApiKeys(): String = INJECTED_API_KEYS
 
-private val DEFAULT_GEMINI_API_KEY: String
-  get() = ApiKeyManager.getActiveKey()
+internal val DEFAULT_GEMINI_API_KEY: String
+  get() = getSharedInjectedAndBuildConfigKeys().firstOrNull() ?: ApiKeyManager.getActiveKey()
 
 const val GITHUB_REPO_OWNER = "Dodolzzzkie" // Your GitHub username
 const val GITHUB_REPO_NAME = "Sibil-app"    // Your repository name
@@ -1336,22 +1381,6 @@ class MainActivity : ComponentActivity() {
       FirebaseApp.initializeApp(this)
     }
     ensureFirebaseInitialized(this)
-
-    // Auto-authenticate anonymously if currentUser == null to support instant cross-device workspace syncing
-    try {
-      val auth = FirebaseAuth.getInstance()
-      if (auth.currentUser == null) {
-        auth.signInAnonymously()
-          .addOnSuccessListener {
-            Log.d("SibilSync", "Anonymous sign-in initialized: ${it.user?.uid}")
-          }
-          .addOnFailureListener { e ->
-            Log.w("SibilSync", "Anonymous sign-in skipped: ${e.message}")
-          }
-      }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Safe auto auth failure: ${e.message}", e)
-    }
 
     setContent {
       CivilEngineeringProductivityApp()
@@ -2572,7 +2601,7 @@ object GizmoBatchFlashcardEngine {
    * from `COMPILED_DEVELOPER_KEY_POOL` and combines them with any custom user keys saved in SharedPreferences.
    */
   fun buildValidKeyPool(userConfiguredKey: String = "", context: Context? = null): List<String> {
-    val allValid = getSharedGeminiApiKeys(context)
+    val allValid = resolveAllGeminiApiKeys(context)
     val customKeys = parseValidGeminiKeyTokens(userConfiguredKey)
 
     val combined = (customKeys + allValid).distinct()
@@ -3799,6 +3828,8 @@ class LocalStorageManager(context: Context) {
   private val prefs: SharedPreferences =
     appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+  internal fun getAppContext(): Context = appContext
+
   init {
     migrateTaskSchemaIfNeeded()
     clearLegacyPlaceholderFlashcardDecksIfNeeded()
@@ -4663,11 +4694,40 @@ class LocalStorageManager(context: Context) {
   }
 
   fun saveGeminiApiKey(apiKey: String) {
-    prefs.edit().putString(KEY_GEMINI_API_KEY, apiKey.trim()).apply()
+    val cleaned = parseValidGeminiKeyTokens(apiKey).joinToString(",")
+    GeminiStudyClient.inMemoryCustomKey = cleaned
+    val sibilPrefs = appContext.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
+    if (cleaned.isEmpty()) {
+      prefs.edit()
+        .remove(KEY_GEMINI_API_KEY)
+        .remove("sibil_gemini_custom_key")
+        .commit()
+      sibilPrefs.edit()
+        .remove(KEY_GEMINI_API_KEY)
+        .remove("sibil_gemini_custom_key")
+        .commit()
+    } else {
+      prefs.edit()
+        .putString(KEY_GEMINI_API_KEY, cleaned)
+        .putString("sibil_gemini_custom_key", cleaned)
+        .commit()
+      sibilPrefs.edit()
+        .putString(KEY_GEMINI_API_KEY, cleaned)
+        .putString("sibil_gemini_custom_key", cleaned)
+        .commit()
+    }
+    ApiKeyManager.resetExhaustedKeys()
   }
 
   fun loadSavedGeminiApiKey(): String {
-    return prefs.getString(KEY_GEMINI_API_KEY, "")?.trim().orEmpty()
+    val fromOffline = parseValidGeminiKeyTokens(
+      prefs.getString(KEY_GEMINI_API_KEY, "").orEmpty()
+    ).firstOrNull()
+    if (!fromOffline.isNullOrEmpty()) return fromOffline
+    val sibilPrefs = appContext.getSharedPreferences("sibil_prefs", Context.MODE_PRIVATE)
+    return parseValidGeminiKeyTokens(
+      sibilPrefs.getString("sibil_gemini_custom_key", "").orEmpty()
+    ).firstOrNull().orEmpty()
   }
 
   fun hasSavedGeminiApiKey(): Boolean {
@@ -4676,7 +4736,9 @@ class LocalStorageManager(context: Context) {
 
   fun getActiveGeminiApiKey(): String {
     val saved = loadSavedGeminiApiKey()
-    return saved.ifEmpty { DEFAULT_GEMINI_API_KEY }
+    return saved.ifEmpty {
+      resolveAllGeminiApiKeys(appContext).firstOrNull() ?: DEFAULT_GEMINI_API_KEY
+    }
   }
 
   fun shouldShowWhatsNew(context: Context = appContext, currentVersionCode: Int): Boolean {
@@ -4782,8 +4844,33 @@ class TaskViewModel(
   var isDarkMode by mutableStateOf(false)
     private set
 
+  var activeTier by mutableStateOf(SibilTier.FREE)
+    private set
+
   var savedGeminiApiKey by mutableStateOf("")
     private set
+
+  fun refreshCachedTier(contextOverride: Context? = null) {
+    val ctx = contextOverride ?: storageManager?.getAppContext() ?: return
+    activeTier = SibilEntitlementManager.getCachedTier(ctx)
+  }
+
+  fun syncEntitlementTier(contextOverride: Context? = null) {
+    val ctx = contextOverride ?: storageManager?.getAppContext() ?: return
+    activeTier = SibilEntitlementManager.getCachedTier(ctx)
+    viewModelScope.launch {
+      activeTier = SibilEntitlementManager.syncTierFromCloud(ctx)
+    }
+  }
+
+  fun applyRedeemedTier(context: Context, tier: SibilTier) {
+    SibilEntitlementManager.saveCachedTier(context, tier, isDemoOverride = false)
+    activeTier = tier
+  }
+
+  fun setDemoTierOverride(context: Context, tier: SibilTier) {
+    activeTier = SibilEntitlementManager.setDemoTierOverride(context, tier)
+  }
 
   fun getActiveGeminiApiKey(): String {
     val inMemory = savedGeminiApiKey.trim()
@@ -4876,7 +4963,7 @@ class TaskViewModel(
   val deckList = _flashcardDecks
   val flashcardDecks: List<FlashcardDeck> get() = _flashcardDecks
 
-  // Initial Firestore payload loading states
+  // Firebase Realtime Database Cloud Sync states (`users/{uid}/syncData`)
   var isSyncingTasks by mutableStateOf(false)
     private set
   var isSyncingSchedule by mutableStateOf(false)
@@ -4889,57 +4976,62 @@ class TaskViewModel(
     private set
   var lastSyncedTimestamp by mutableLongStateOf(0L)
     private set
+  var isCloudConnected by mutableStateOf(false)
+    private set
+  var cloudSyncError by mutableStateOf<String?>(null)
+    private set
 
   val isFirestoreSyncing: Boolean
     get() = isSyncingTasks || isSyncingSchedule || isSyncingFlashcards || isSyncingSettings || isManualSyncing
 
-  private var activeFirestoreAccountId: String? = null
+  private var activeSyncAccountId: String? = null
   private var lastObservedAuthUid: String? = null
   private var authStateListener: FirebaseAuth.AuthStateListener? = null
+  private var activePullJob: kotlinx.coroutines.Job? = null
+  private var activePushJob: kotlinx.coroutines.Job? = null
+  internal var realtimeSyncGateway: RealtimeSyncGateway = FirebaseRealtimeSyncGateway
 
-  private var tasksSnapshotListener: ListenerRegistration? = null
-  private var scheduleSnapshotListener: ListenerRegistration? = null
-  private var flashcardsSnapshotListener: ListenerRegistration? = null
-  private var settingsSnapshotListener: ListenerRegistration? = null
-  private var hasSeededTasksForAccount: String? = null
-  private var hasSeededScheduleForAccount: String? = null
-  private var hasSeededFlashcardsForAccount: String? = null
-  private var hasSeededSettingsForAccount: String? = null
-
-  /**
-   * Resolves the active user account identifier for Firestore (`users/{uid}`).
-   * Strictly uses `auth.currentUser?.uid ?: "offline_fallback"`.
-   */
-  fun resolveUserAccountIdentifier(): String {
-    val auth = try {
-      FirebaseAuth.getInstance()
+  fun getAuthenticatedCloudUser(): FirebaseUser? {
+    if (isGuestMode) return null
+    val user = try {
+      FirebaseAuth.getInstance().currentUser
     } catch (_: Throwable) {
       null
     }
-    return auth?.currentUser?.uid ?: "offline_fallback"
+    return user?.takeIf { !it.isAnonymous && it.uid.isNotBlank() }
+  }
+
+  fun isAuthenticatedCloudUser(): Boolean = getAuthenticatedCloudUser() != null
+
+  /**
+   * Resolves the active user account identifier (`auth.currentUser?.uid ?: "offline_fallback"`).
+   */
+  fun resolveUserAccountIdentifier(): String {
+    return getAuthenticatedCloudUser()?.uid ?: "offline_fallback"
   }
 
   /**
-   * Observes `auth.currentUser` and immediately clears local state (`taskList.clear()`,
-   * `scheduleList.clear()`, `deckList.clear()`) and attaches new `addSnapshotListener`s
-   * pointing to the newly authenticated UID when a user logs in on a device.
+   * Observes `auth.currentUser` and pulls/merges Realtime Database `users/{uid}/syncData`
+   * whenever a user signs in or switches accounts.
    */
   fun onAuthenticatedUserChanged(firebaseUser: FirebaseUser?) {
-    val newUid = firebaseUser?.uid ?: "offline_fallback"
+    val validCloudUser = firebaseUser?.takeIf { !it.isAnonymous && it.uid.isNotBlank() }
+    val newUid = validCloudUser?.uid ?: "offline_fallback"
     if (newUid != "offline_fallback" && lastObservedAuthUid != newUid) {
       lastObservedAuthUid = newUid
-      taskList.clear()
-      scheduleList.clear()
-      deckList.clear()
-      hasSeededTasksForAccount = null
-      hasSeededScheduleForAccount = null
-      hasSeededFlashcardsForAccount = null
-      hasSeededSettingsForAccount = null
+      isGuestMode = false
+      isCloudConnected = true
+      cloudSyncError = null
+      storageManager?.let { loadAccountDataForKey(it, currentAccountKey) }
       stopFirestoreSync()
       startFirestoreSync(forceReattach = true)
+      syncEntitlementTier()
     } else if (newUid == "offline_fallback" && lastObservedAuthUid != null && lastObservedAuthUid != "offline_fallback") {
       lastObservedAuthUid = "offline_fallback"
+      isCloudConnected = false
+      cloudSyncError = null
       stopFirestoreSync()
+      refreshCachedTier()
     }
   }
 
@@ -4949,7 +5041,7 @@ class TaskViewModel(
       val auth = FirebaseAuth.getInstance()
       val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
         val currentUser = firebaseAuth.currentUser
-        if (currentUser != null) {
+        if (currentUser != null && !currentUser.isAnonymous) {
           onAuthenticatedUserChanged(currentUser)
         }
       }
@@ -5012,332 +5104,230 @@ class TaskViewModel(
   }
 
   /**
-   * Starts real-time Firestore snapshot listeners strictly targeting:
-   * `FirebaseFirestore.getInstance().collection("users").document(auth.currentUser?.uid ?: "offline_fallback")`
-   * for `/tasks`, `/schedule`, `/flashcards`, and `/settings`.
+   * Pulls and merges `users/{uid}/syncData` from Firebase Realtime Database REST API
+   * (`${dbUrl}/users/${uid}/syncData.json?auth=${idToken}`) whenever an authenticated
+   * Firebase user is signed in. If `currentUser == null` (or anonymous/Guest), skips network sync
+   * and sets guest feedback cleanly.
    */
   fun startFirestoreSync(explicitAccountId: String? = null, forceReattach: Boolean = false) {
     registerAuthStateObserver()
-    try {
-      val auth = FirebaseAuth.getInstance()
-      val targetUid = auth.currentUser?.uid ?: "offline_fallback"
-      if (
-        !forceReattach &&
-        activeFirestoreAccountId == targetUid &&
-        tasksSnapshotListener != null &&
-        scheduleSnapshotListener != null &&
-        flashcardsSnapshotListener != null &&
-        settingsSnapshotListener != null
-      ) {
-        return
-      }
-
-      stopFirestoreSync()
-      activeFirestoreAccountId = targetUid
-      isSyncingTasks = true
-      isSyncingSchedule = true
-      isSyncingFlashcards = true
-      isSyncingSettings = true
-
-      val userDoc = FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-
-      // 1. Real-time Snapshot Listener for Tasks (/users/{uid}/tasks)
-      tasksSnapshotListener = userDoc.collection("tasks")
-        .addSnapshotListener { snapshot, error ->
-          isSyncingTasks = false
-          if (error != null) {
-            Log.e("SibilSync", "Tasks snapshot listener error: ${error.message}", error)
-            return@addSnapshotListener
-          }
-          if (snapshot == null) return@addSnapshotListener
-          val remoteTasks = snapshot.documents.mapNotNull { doc ->
-            doc.toTaskItemOrNull()
-          }.sortedByDescending { it.id }
-
-          if (remoteTasks.isEmpty() && taskList.isNotEmpty() && hasSeededTasksForAccount != targetUid) {
-            hasSeededTasksForAccount = targetUid
-            val localSnapshot = taskList.toList()
-            localSnapshot.forEach { taskItem ->
-              userDoc.collection("tasks")
-                .document(taskItem.id.toString())
-                .set(taskItem.toFirestoreMap())
-                .addOnSuccessListener { markSyncedNow() }
-                .addOnFailureListener { e ->
-                  Log.e("SibilSync", "Failed to upload local task: ${e.message}", e)
-                }
-            }
-            markSyncedNow()
-          } else {
-            hasSeededTasksForAccount = targetUid
-            taskList.clear()
-            taskList.addAll(remoteTasks)
-            nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
-            storageManager?.saveTasks(taskList, currentAccountKey)
-            markSyncedNow()
-          }
-        }
-
-      // 2. Real-time Snapshot Listener for Schedule (/users/{uid}/schedule)
-      scheduleSnapshotListener = userDoc.collection("schedule")
-        .addSnapshotListener { snapshot, error ->
-          isSyncingSchedule = false
-          if (error != null) {
-            Log.e("SibilSync", "Schedule snapshot listener error: ${error.message}", error)
-            return@addSnapshotListener
-          }
-          if (snapshot == null) return@addSnapshotListener
-          val remoteSchedules = snapshot.documents.mapNotNull { doc ->
-            doc.toScheduleItemOrNull()
-          }.sortedBy { parseTimeToFloat(it.startTime) }
-
-          if (
-            remoteSchedules.isEmpty() &&
-            scheduleList.isNotEmpty() &&
-            hasSeededScheduleForAccount != targetUid
-          ) {
-            hasSeededScheduleForAccount = targetUid
-            val localSnapshot = scheduleList.toList()
-            localSnapshot.forEach { scheduleItem ->
-              userDoc.collection("schedule")
-                .document(scheduleItem.id.toString())
-                .set(scheduleItem.toFirestoreMap())
-                .addOnSuccessListener { markSyncedNow() }
-                .addOnFailureListener { e ->
-                  Log.e("SibilSync", "Failed to upload local schedule: ${e.message}", e)
-                }
-            }
-            markSyncedNow()
-          } else {
-            hasSeededScheduleForAccount = targetUid
-            scheduleList.clear()
-            scheduleList.addAll(remoteSchedules)
-            nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
-            storageManager?.saveSchedules(scheduleList, currentAccountKey)
-            val validFolders = getSubjectFolders()
-            if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
-              selectedTaskFolder = DEFAULT_TASK_CATEGORY
-            }
-            markSyncedNow()
-          }
-        }
-
-      // 3. Real-time Snapshot Listener for Flashcards (/users/{uid}/flashcards)
-      flashcardsSnapshotListener = userDoc.collection("flashcards")
-        .addSnapshotListener { snapshot, error ->
-          isSyncingFlashcards = false
-          if (error != null) {
-            Log.e("SibilSync", "Flashcards snapshot listener error: ${error.message}", error)
-            return@addSnapshotListener
-          }
-          if (snapshot == null) return@addSnapshotListener
-          val remoteDecks = snapshot.documents.mapNotNull { doc ->
-            doc.toFlashcardDeckOrNull()
-          }.sortedByDescending { it.id }
-
-          if (
-            remoteDecks.isEmpty() &&
-            deckList.isNotEmpty() &&
-            hasSeededFlashcardsForAccount != targetUid
-          ) {
-            hasSeededFlashcardsForAccount = targetUid
-            val localSnapshot = deckList.toList()
-            localSnapshot.forEach { deck ->
-              userDoc.collection("flashcards")
-                .document(deck.id.toString())
-                .set(deck.toFirestoreMap())
-                .addOnSuccessListener { markSyncedNow() }
-                .addOnFailureListener { e ->
-                  Log.e("SibilSync", "Failed to upload local deck: ${e.message}", e)
-                }
-            }
-            markSyncedNow()
-          } else {
-            hasSeededFlashcardsForAccount = targetUid
-            deckList.clear()
-            deckList.addAll(remoteDecks)
-            nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
-            val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
-            nextCardId = maxOf(1000, maxCardId + 1)
-            storageManager?.saveFlashcardDecks(deckList, currentAccountKey)
-            markSyncedNow()
-          }
-        }
-
-      // 4. Real-time Snapshot Listener for Settings (Dark Mode & Profile Name)
-      settingsSnapshotListener = userDoc.collection("settings")
-        .addSnapshotListener { snapshot, error ->
-          isSyncingSettings = false
-          if (error != null) {
-            Log.e("SibilSync", "Settings snapshot listener error: ${error.message}", error)
-            return@addSnapshotListener
-          }
-          if (snapshot == null) return@addSnapshotListener
-          val settingsDoc = snapshot.documents.firstOrNull { it.id == "preferences" }
-            ?: snapshot.documents.firstOrNull()
-
-          if (settingsDoc == null) {
-            if (hasSeededSettingsForAccount != targetUid) {
-              hasSeededSettingsForAccount = targetUid
-              syncSettingsToFirestore()
-            }
-          } else {
-            hasSeededSettingsForAccount = targetUid
-            val remoteDark = settingsDoc.getBoolean("isDarkMode")
-              ?: settingsDoc.getBoolean("darkMode")
-            if (remoteDark != null && remoteDark != isDarkMode) {
-              isDarkMode = remoteDark
-              storageManager?.saveDarkMode(remoteDark)
-            }
-            val remoteProfileName = (
-              settingsDoc.getString("profileName")
-                ?: settingsDoc.getString("displayName")
-              )?.trim().orEmpty()
-            if (remoteProfileName.isNotEmpty() && remoteProfileName != displayName) {
-              displayName = remoteProfileName
-              storageManager?.saveUserProfile(username, remoteProfileName)
-            }
-            markSyncedNow()
-          }
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Failed to start account sync: ${e.message}", e)
-      isSyncingTasks = false
-      isSyncingSchedule = false
-      isSyncingFlashcards = false
-      isSyncingSettings = false
+    val cloudUser = getAuthenticatedCloudUser()
+    if (cloudUser == null) {
+      isCloudConnected = false
+      clearInitialSyncIndicators()
+      return
     }
+    val targetUid = cloudUser.uid
+    if (!forceReattach && activeSyncAccountId == targetUid) {
+      return
+    }
+    activeSyncAccountId = targetUid
+    isCloudConnected = true
+    pullAndMergeRealtimeCloudData(isManualTrigger = false)
   }
 
   fun startFirestoreSyncForUser(userId: String) {
     startFirestoreSync(userId, forceReattach = true)
   }
 
-  /**
-   * Forces an immediate cloud refresh ("Sync Now"):
-   * Re-attaches all snapshot listeners and fetches the latest snapshot from
-   * `FirebaseFirestore.getInstance().collection("users").document(auth.currentUser?.uid ?: "offline_fallback")`.
-   */
-  fun syncNow(onComplete: ((Boolean) -> Unit)? = null) {
-    isManualSyncing = true
-    stopFirestoreSync()
-    startFirestoreSync(forceReattach = true)
+  private fun buildCurrentSyncPayload(): RemoteSyncPayload {
+    return RemoteSyncPayload(
+      tasks = _tasks.toList(),
+      schedules = _classSchedules.toList(),
+      flashcards = _flashcardDecks.toList(),
+      settings = RemoteSyncSettings(
+        isDarkMode = isDarkMode,
+        profileName = displayName,
+        username = username,
+        updatedAt = System.currentTimeMillis()
+      ),
+      updatedAt = System.currentTimeMillis()
+    )
+  }
 
-    try {
-      val auth = FirebaseAuth.getInstance()
-      val userDoc = FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-      var completedCollections = 0
-      val totalCollections = 3
-
-      fun onCollectionFinished() {
-        completedCollections++
-        if (completedCollections >= totalCollections) {
-          isManualSyncing = false
-          markSyncedNow()
-          onComplete?.invoke(true)
-        }
-      }
-
-      // 1. Force sync Tasks
-      userDoc.collection("tasks").get()
-        .addOnSuccessListener { snapshot ->
-          val remoteTasks = snapshot.documents.mapNotNull { it.toTaskItemOrNull() }
-            .sortedByDescending { it.id }
-          if (remoteTasks.isEmpty() && taskList.isNotEmpty()) {
-            taskList.toList().forEach { taskItem ->
-              userDoc.collection("tasks")
-                .document(taskItem.id.toString())
-                .set(taskItem.toFirestoreMap())
-            }
-          } else {
-            taskList.clear()
-            taskList.addAll(remoteTasks)
-            nextId = (remoteTasks.maxOfOrNull { it.id } ?: 0) + 1
-            storageManager?.saveTasks(taskList, currentAccountKey)
-          }
-          onCollectionFinished()
-        }
-        .addOnFailureListener {
-          onCollectionFinished()
-        }
-
-      // 2. Force sync Schedule
-      userDoc.collection("schedule").get()
-        .addOnSuccessListener { snapshot ->
-          val remoteSchedules = snapshot.documents.mapNotNull { it.toScheduleItemOrNull() }
-            .sortedBy { parseTimeToFloat(it.startTime) }
-          if (remoteSchedules.isEmpty() && scheduleList.isNotEmpty()) {
-            scheduleList.toList().forEach { scheduleItem ->
-              userDoc.collection("schedule")
-                .document(scheduleItem.id.toString())
-                .set(scheduleItem.toFirestoreMap())
-            }
-          } else {
-            scheduleList.clear()
-            scheduleList.addAll(remoteSchedules)
-            nextScheduleId = (remoteSchedules.maxOfOrNull { it.id } ?: 99) + 1
-            storageManager?.saveSchedules(scheduleList, currentAccountKey)
-          }
-          onCollectionFinished()
-        }
-        .addOnFailureListener {
-          onCollectionFinished()
-        }
-
-      // 3. Force sync Flashcards
-      userDoc.collection("flashcards").get()
-        .addOnSuccessListener { snapshot ->
-          val remoteDecks = snapshot.documents.mapNotNull { it.toFlashcardDeckOrNull() }
-            .sortedByDescending { it.id }
-          if (remoteDecks.isEmpty() && deckList.isNotEmpty()) {
-            deckList.toList().forEach { deck ->
-              userDoc.collection("flashcards")
-                .document(deck.id.toString())
-                .set(deck.toFirestoreMap())
-            }
-          } else {
-            deckList.clear()
-            deckList.addAll(remoteDecks)
-            nextDeckId = (remoteDecks.maxOfOrNull { it.id } ?: 0) + 1
-            val maxCardId = remoteDecks.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
-            nextCardId = maxOf(1000, maxCardId + 1)
-            storageManager?.saveFlashcardDecks(deckList, currentAccountKey)
-          }
-          onCollectionFinished()
-        }
-        .addOnFailureListener {
-          onCollectionFinished()
-        }
-
-      syncSettingsToFirestore()
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in manual syncNow: ${e.message}", e)
-      isManualSyncing = false
+  private fun pullAndMergeRealtimeCloudData(
+    isManualTrigger: Boolean = false,
+    onComplete: ((Boolean) -> Unit)? = null
+  ) {
+    val cloudUser = getAuthenticatedCloudUser()
+    if (cloudUser == null) {
+      isCloudConnected = false
+      cloudSyncError = null
+      clearInitialSyncIndicators()
       onComplete?.invoke(false)
+      return
+    }
+
+    activePullJob?.cancel()
+    isCloudConnected = true
+    isSyncingTasks = true
+    isSyncingSchedule = true
+    isSyncingFlashcards = true
+    isSyncingSettings = true
+    if (isManualTrigger) {
+      isManualSyncing = true
+    }
+
+    val uid = cloudUser.uid
+    val accountKeySnapshot = currentAccountKey
+    val localTasksSnapshot = _tasks.toList()
+    val localSchedulesSnapshot = _classSchedules.toList()
+    val localDecksSnapshot = _flashcardDecks.toList()
+    val localDarkSnapshot = isDarkMode
+    val localDisplaySnapshot = displayName
+    val localUsernameSnapshot = username
+
+    activePullJob = viewModelScope.launch {
+      try {
+        val idToken = SibilRealtimeDbRest.fetchIdToken(cloudUser, forceRefresh = isManualTrigger).orEmpty()
+        if (idToken.isBlank()) {
+          cloudSyncError = "Session token unavailable — Sign in again to sync"
+          clearInitialSyncIndicators()
+          onComplete?.invoke(false)
+          return@launch
+        }
+
+        val remotePayload = realtimeSyncGateway.pullSyncData(uid, idToken)
+        val merged = SibilRealtimeSyncMerger.mergeOnPull(
+          localTasks = localTasksSnapshot,
+          localSchedules = localSchedulesSnapshot,
+          localDecks = localDecksSnapshot,
+          localDarkMode = localDarkSnapshot,
+          localDisplayName = localDisplaySnapshot,
+          localUsername = localUsernameSnapshot,
+          remote = remotePayload
+        )
+
+        _tasks.clear()
+        _tasks.addAll(merged.tasks)
+        nextId = (merged.tasks.maxOfOrNull { it.id } ?: 0) + 1
+        storageManager?.saveTasks(_tasks, accountKeySnapshot)
+
+        _classSchedules.clear()
+        _classSchedules.addAll(merged.schedules)
+        nextScheduleId = (merged.schedules.maxOfOrNull { it.id } ?: 99) + 1
+        storageManager?.saveSchedules(_classSchedules, accountKeySnapshot)
+
+        _flashcardDecks.clear()
+        _flashcardDecks.addAll(merged.flashcards)
+        nextDeckId = (merged.flashcards.maxOfOrNull { it.id } ?: 0) + 1
+        val maxCardId = merged.flashcards.flatMap { it.cards }.maxOfOrNull { it.id } ?: 999
+        nextCardId = maxOf(1000, maxCardId + 1)
+        storageManager?.saveFlashcardDecks(_flashcardDecks, accountKeySnapshot)
+
+        val validFolders = getSubjectFolders()
+        if (validFolders.none { it.equals(selectedTaskFolder, ignoreCase = true) }) {
+          selectedTaskFolder = DEFAULT_TASK_CATEGORY
+        }
+
+        val remoteSettings = merged.settings
+        if (remoteSettings != null) {
+          if (remoteSettings.isDarkMode != null && remoteSettings.isDarkMode != isDarkMode) {
+            isDarkMode = remoteSettings.isDarkMode
+            storageManager?.saveDarkMode(remoteSettings.isDarkMode)
+          }
+          if (remoteSettings.profileName.isNotBlank() && remoteSettings.profileName != displayName) {
+            displayName = remoteSettings.profileName
+            storageManager?.saveUserProfile(username, remoteSettings.profileName)
+          }
+        }
+
+        if (merged.shouldPushBackMergedToCloud) {
+          val pushPayload = RemoteSyncPayload(
+            tasks = merged.tasks,
+            schedules = merged.schedules,
+            flashcards = merged.flashcards,
+            settings = RemoteSyncSettings(
+              isDarkMode = isDarkMode,
+              profileName = displayName,
+              username = username,
+              updatedAt = System.currentTimeMillis()
+            ),
+            updatedAt = System.currentTimeMillis()
+          )
+          realtimeSyncGateway.pushSyncData(uid, idToken, pushPayload)
+        }
+
+        cloudSyncError = null
+        markSyncedNow()
+        clearInitialSyncIndicators()
+        onComplete?.invoke(true)
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        clearInitialSyncIndicators()
+        throw e
+      } catch (e: RealtimeDbHttpException) {
+        Log.e("SibilSync", "RTDB sync error HTTP ${e.statusCode}: ${e.responseBody}", e)
+        cloudSyncError = if (e.statusCode == 401 || e.statusCode == 403) {
+          "Cloud Sync permission denied (HTTP ${e.statusCode})"
+        } else {
+          "Cloud Sync unavailable (HTTP ${e.statusCode})"
+        }
+        clearInitialSyncIndicators()
+        onComplete?.invoke(false)
+      } catch (e: Throwable) {
+        Log.e("SibilSync", "RTDB pull/merge failed (working offline): ${e.message}", e)
+        cloudSyncError = "Offline — Saved locally on device"
+        clearInitialSyncIndicators()
+        onComplete?.invoke(false)
+      }
+    }
+  }
+
+  private fun scheduleRealtimePushSync(settingsOnly: Boolean = false) {
+    val cloudUser = getAuthenticatedCloudUser() ?: return
+    val uid = cloudUser.uid
+    val payloadSnapshot = buildCurrentSyncPayload()
+    val settingsSnapshot = payloadSnapshot.settings ?: RemoteSyncSettings(
+      isDarkMode = isDarkMode,
+      profileName = displayName,
+      username = username,
+      updatedAt = System.currentTimeMillis()
+    )
+
+    activePushJob?.cancel()
+    activePushJob = viewModelScope.launch {
+      try {
+        val idToken = SibilRealtimeDbRest.fetchIdToken(cloudUser, forceRefresh = false).orEmpty()
+        if (idToken.isBlank()) return@launch
+        if (settingsOnly) {
+          realtimeSyncGateway.patchSettings(uid, idToken, settingsSnapshot)
+        } else {
+          realtimeSyncGateway.pushSyncData(uid, idToken, payloadSnapshot)
+        }
+        isCloudConnected = true
+        cloudSyncError = null
+        markSyncedNow()
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Throwable) {
+        Log.w("SibilSync", "Deferred cloud push error (retained locally): ${e.message}")
+      }
     }
   }
 
   /**
-   * Detaches all active Firestore snapshot listeners and resets syncing states.
+   * Forces an immediate Firebase Realtime Database sync ("Sync Now"):
+   * Pushes local edits, pulls/merges `users/{uid}/syncData`, and refreshes tier entitlement.
    */
+  fun syncNow(onComplete: ((Boolean) -> Unit)? = null) {
+    val cloudUser = getAuthenticatedCloudUser()
+    if (cloudUser == null) {
+      isCloudConnected = false
+      clearInitialSyncIndicators()
+      onComplete?.invoke(false)
+      return
+    }
+    syncEntitlementTier()
+    pullAndMergeRealtimeCloudData(isManualTrigger = true, onComplete = onComplete)
+  }
+
   fun stopFirestoreSync() {
-    tasksSnapshotListener?.remove()
-    tasksSnapshotListener = null
-    scheduleSnapshotListener?.remove()
-    scheduleSnapshotListener = null
-    flashcardsSnapshotListener?.remove()
-    flashcardsSnapshotListener = null
-    settingsSnapshotListener?.remove()
-    settingsSnapshotListener = null
-    activeFirestoreAccountId = null
-    isSyncingTasks = false
-    isSyncingSchedule = false
-    isSyncingFlashcards = false
-    isSyncingSettings = false
-    isManualSyncing = false
+    activePullJob?.cancel()
+    activePullJob = null
+    activePushJob?.cancel()
+    activePushJob = null
+    activeSyncAccountId = null
+    clearInitialSyncIndicators()
   }
 
   fun clearInitialSyncIndicators() {
@@ -5349,29 +5339,7 @@ class TaskViewModel(
   }
 
   private fun syncSettingsToFirestore() {
-    try {
-      val auth = FirebaseAuth.getInstance()
-      val settingsPayload = hashMapOf(
-        "isDarkMode" to isDarkMode,
-        "darkMode" to isDarkMode,
-        "profileName" to displayName,
-        "displayName" to displayName,
-        "username" to username,
-        "updatedAt" to System.currentTimeMillis()
-      )
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("settings")
-        .document("preferences")
-        .set(settingsPayload, SetOptions.merge())
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to sync settings: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in syncSettingsToFirestore: ${e.message}", e)
-    }
+    scheduleRealtimePushSync(settingsOnly = true)
   }
 
   override fun onCleared() {
@@ -5431,7 +5399,7 @@ class TaskViewModel(
     }
 
     val savedUserName = manager.loadUserName()
-    if (firebaseUser != null) {
+    if (firebaseUser != null && !firebaseUser.isAnonymous) {
       val resolvedUser = extractUsernameFromFirebaseUser(
         user = firebaseUser,
         fallbackEmail = savedUserName.orEmpty()
@@ -5462,13 +5430,14 @@ class TaskViewModel(
       displayName = LocalStorageManager.GUEST_DISPLAY_NAME
       hasSavedSession = true
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
-      startFirestoreSync()
+      isCloudConnected = false
     } else {
       isGuestMode = false
       hasSavedSession = false
       loadFlashcardsForKey(manager, currentAccountKey)
       startFirestoreSync()
     }
+    syncEntitlementTier(manager.getAppContext())
   }
 
   /**
@@ -5487,6 +5456,7 @@ class TaskViewModel(
     isGuestMode = false
     loginWithUsername(resolvedUser, resolvedDisplay)
     onAuthenticatedUserChanged(firebaseUser)
+    syncEntitlementTier()
   }
 
   private fun loadFlashcardsForKey(manager: LocalStorageManager, accountKey: String) {
@@ -5603,21 +5573,7 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("schedule")
-          .document(newSchedule.id.toString())
-          .set(newSchedule.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to write schedule: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in addClassSchedule: ${e.message}", e)
-      }
+      scheduleRealtimePushSync()
     }
   }
 
@@ -5659,42 +5615,14 @@ class TaskViewModel(
       _classSchedules.clear()
       _classSchedules.addAll(sorted)
       storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("schedule")
-          .document(updatedSchedule.id.toString())
-          .set(updatedSchedule.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to update schedule: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in updateClassSchedule: ${e.message}", e)
-      }
+      scheduleRealtimePushSync()
     }
   }
 
   fun deleteClassSchedule(scheduleId: Int) {
     _classSchedules.removeAll { it.id == scheduleId }
     storageManager?.saveSchedules(_classSchedules, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("schedule")
-        .document(scheduleId.toString())
-        .delete()
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to delete schedule: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in deleteClassSchedule: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   /**
@@ -5919,31 +5847,26 @@ class TaskViewModel(
       loadAccountDataForKey(manager, currentAccountKey)
       manager.saveUserProfile(username, displayName)
     }
-    val currentUser = try {
-      FirebaseAuth.getInstance().currentUser
-    } catch (_: Throwable) {
-      null
-    }
+    val currentUser = getAuthenticatedCloudUser()
     if (currentUser != null) {
-      taskList.clear()
-      scheduleList.clear()
-      deckList.clear()
-      hasSeededTasksForAccount = null
-      hasSeededScheduleForAccount = null
-      hasSeededFlashcardsForAccount = null
-      hasSeededSettingsForAccount = null
       lastObservedAuthUid = currentUser.uid
+      isCloudConnected = true
       stopFirestoreSync()
       startFirestoreSync(forceReattach = true)
     } else {
-      startFirestoreSync(forceReattach = true)
+      isCloudConnected = false
     }
     if (explicitDisplayName.isNotBlank()) {
       syncSettingsToFirestore()
     }
+    syncEntitlementTier()
   }
 
   fun loginAsGuest() {
+    stopFirestoreSync()
+    lastObservedAuthUid = null
+    isCloudConnected = false
+    cloudSyncError = null
     isGuestMode = true
     username = LocalStorageManager.GUEST_DISPLAY_NAME
     displayName = LocalStorageManager.GUEST_DISPLAY_NAME
@@ -5952,7 +5875,7 @@ class TaskViewModel(
       loadAccountDataForKey(manager, LocalStorageManager.GUEST_ACCOUNT_KEY)
       manager.saveUserProfile(LocalStorageManager.GUEST_ACCOUNT_KEY)
     }
-    startFirestoreSync(forceReattach = true)
+    refreshCachedTier()
   }
 
   /**
@@ -5971,6 +5894,7 @@ class TaskViewModel(
     hasSavedSession = false
     storageManager?.clearUserProfile()
     selectedTaskFolder = DEFAULT_TASK_CATEGORY
+    refreshCachedTier()
   }
 
   fun addAlarm(
@@ -6092,21 +6016,7 @@ class TaskViewModel(
     )
     _flashcardDecks.add(0, newDeck)
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("flashcards")
-        .document(newDeck.id.toString())
-        .set(newDeck.toFirestoreMap())
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to write deck: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in addFlashcardDeck: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
     return newDeck
   }
 
@@ -6186,19 +6096,7 @@ class TaskViewModel(
     }
 
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    try {
-      val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "offline_fallback"
-      FirebaseFirestore.getInstance()
-        .collection("users").document(uid)
-        .collection("flashcards").document(finalDeck.id.toString())
-        .set(finalDeck.toFirestoreMap())
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to write imported deck: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in importSharedFlashcardDeck: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
     return finalDeck
   }
 
@@ -6229,21 +6127,7 @@ class TaskViewModel(
       )
       _flashcardDecks[index] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("flashcards")
-          .document(updatedDeck.id.toString())
-          .set(updatedDeck.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to update deck cards: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in addCardToDeck: ${e.message}", e)
-      }
+      scheduleRealtimePushSync()
     }
   }
 
@@ -6323,21 +6207,7 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("flashcards")
-          .document(updatedDeck.id.toString())
-          .set(updatedDeck.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to update flashcard mastery: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in updateFlashcardMastery: ${e.message}", e)
-      }
+      scheduleRealtimePushSync()
     }
   }
 
@@ -6356,42 +6226,14 @@ class TaskViewModel(
       )
       _flashcardDecks[deckIndex] = updatedDeck
       storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-      try {
-        val auth = FirebaseAuth.getInstance()
-        FirebaseFirestore.getInstance()
-          .collection("users")
-          .document(auth.currentUser?.uid ?: "offline_fallback")
-          .collection("flashcards")
-          .document(updatedDeck.id.toString())
-          .set(updatedDeck.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to reset deck mastery: ${e.message}", e)
-          }
-      } catch (e: Throwable) {
-        Log.e("SibilSync", "Error in resetDeckMastery: ${e.message}", e)
-      }
+      scheduleRealtimePushSync()
     }
   }
 
   fun deleteFlashcardDeck(deckId: Int) {
     _flashcardDecks.removeAll { it.id == deckId }
     storageManager?.saveFlashcardDecks(_flashcardDecks, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("flashcards")
-        .document(deckId.toString())
-        .delete()
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to delete deck: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in deleteFlashcardDeck: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   var selectedTaskIdForDetail by mutableStateOf<Int?>(null)
@@ -6402,21 +6244,7 @@ class TaskViewModel(
   }
 
   private fun persistTaskToFirestore(task: Task) {
-    try {
-      val auth = FirebaseAuth.getInstance()
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("tasks")
-        .document(task.id.toString())
-        .set(task.toFirestoreMap())
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to persist task ${task.id}: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error persisting task ${task.id}: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   fun addTask(
@@ -6507,26 +6335,12 @@ class TaskViewModel(
     _tasks.removeAll { it.id == taskId }
     storageManager?.saveAlarms(_alarms, currentAccountKey)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("tasks")
-        .document(taskId.toString())
-        .delete()
-        .addOnSuccessListener { markSyncedNow() }
-        .addOnFailureListener { e ->
-          Log.e("SibilSync", "Failed to delete task: ${e.message}", e)
-        }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in deleteTask: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   /**
    * Resets completed tasks at the start of a new study block by unchecking all completed tasks
-   * (`isCompleted = false`) and syncing the updated state to local storage and Firestore.
+   * (`isCompleted = false`) and syncing the updated state to local storage and Realtime Database.
    */
   fun resetTaskProgress() {
     var hasChanges = false
@@ -6542,28 +6356,12 @@ class TaskViewModel(
     _tasks.clear()
     _tasks.addAll(resetTasks)
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      val tasksCol = FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("tasks")
-      resetTasks.forEach { updatedTask ->
-        tasksCol.document(updatedTask.id.toString())
-          .set(updatedTask.toFirestoreMap())
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to reset task progress: ${e.message}", e)
-          }
-      }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in resetTaskProgress: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   /**
-   * Clears all completed tasks from the active list and Firestore so the scholar can start
-   * a fresh study block with 0/0 Done when desired.
+   * Clears all completed tasks from the active list and syncs to Realtime Database so the scholar can
+   * start a fresh study block with 0/0 Done when desired.
    */
   fun clearCompletedTasks() {
     val completedIds = _tasks.filter { it.isCompleted }.map { it.id }
@@ -6573,23 +6371,7 @@ class TaskViewModel(
     }
     _tasks.removeAll { it.isCompleted }
     storageManager?.saveTasks(_tasks, currentAccountKey)
-    try {
-      val auth = FirebaseAuth.getInstance()
-      val tasksCol = FirebaseFirestore.getInstance()
-        .collection("users")
-        .document(auth.currentUser?.uid ?: "offline_fallback")
-        .collection("tasks")
-      completedIds.forEach { id ->
-        tasksCol.document(id.toString())
-          .delete()
-          .addOnSuccessListener { markSyncedNow() }
-          .addOnFailureListener { e ->
-            Log.e("SibilSync", "Failed to clear completed task: ${e.message}", e)
-          }
-      }
-    } catch (e: Throwable) {
-      Log.e("SibilSync", "Error in clearCompletedTasks: ${e.message}", e)
-    }
+    scheduleRealtimePushSync()
   }
 
   companion object {
@@ -6739,7 +6521,7 @@ fun parseTimeToFloat(timeString: String): Float {
 /**
  * Splits a raw `timeRange` string (e.g., `"7:00 AM - 9:00 AM"`) into `(startTime, endTime)`.
  */
-private fun extractStartEndTimeTokens(timeRange: String): Pair<String, String> {
+internal fun extractStartEndTimeTokens(timeRange: String): Pair<String, String> {
   val parts = timeRange.split("-", "–")
   val startToken = parts.getOrNull(0)?.trim().orEmpty().ifEmpty { "7:00 AM" }
   val endToken = parts.getOrNull(1)?.trim().orEmpty().ifEmpty { "9:00 AM" }
@@ -7094,9 +6876,9 @@ fun CivilEngineeringProductivityApp(
       // 3. If user == null AND !isGuestMode: show the Liquid Glass Auth Screen.
       val initialFirebaseUser = remember {
         try {
-          FirebaseAuth.getInstance().currentUser
+          FirebaseAuth.getInstance().currentUser?.takeIf { !it.isAnonymous }
         } catch (_: Throwable) {
-          getFirebaseAuthOrNull(context)?.currentUser
+          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { !it.isAnonymous }
         }
       }
       var isGuestMode by rememberSaveable {
@@ -7108,9 +6890,9 @@ fun CivilEngineeringProductivityApp(
 
       LaunchedEffect(Unit) {
         val user = try {
-          FirebaseAuth.getInstance().currentUser
+          FirebaseAuth.getInstance().currentUser?.takeIf { !it.isAnonymous }
         } catch (_: Throwable) {
-          getFirebaseAuthOrNull(context)?.currentUser
+          getFirebaseAuthOrNull(context)?.currentUser?.takeIf { !it.isAnonymous }
         }
         if (user != null) {
           isGuestMode = false
@@ -7125,7 +6907,7 @@ fun CivilEngineeringProductivityApp(
         resolvedViewModel.startFirestoreSync()
       }
 
-      // Observe auth.currentUser and connect real-time Firestore snapshot listeners for the workspace
+      // Observe auth.currentUser and connect Firebase Realtime Database cloud sync for the workspace
       DisposableEffect(resolvedViewModel) {
         val auth = try {
           FirebaseAuth.getInstance()
@@ -7134,7 +6916,7 @@ fun CivilEngineeringProductivityApp(
         }
         val authListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
           val currentUser = firebaseAuth.currentUser
-          if (currentUser != null) {
+          if (currentUser != null && !currentUser.isAnonymous) {
             isGuestMode = false
             isLoggedIn = true
             resolvedViewModel.onAuthenticatedUserChanged(currentUser)
@@ -9843,6 +9625,8 @@ private fun MainProductivityScaffold(
     }
   }
 
+  var pendingQuotaUpgradeTier by remember { mutableStateOf<SibilTier?>(null) }
+
   // Handle incoming `.sibil` flashcard deck file shared via Quick Share, Bluetooth, or Android File Manager
   val incomingDeckUri = pendingImportedDeckUri
   LaunchedEffect(incomingDeckUri) {
@@ -9858,14 +9642,25 @@ private fun MainProductivityScaffold(
       }
       pendingImportedDeckUri = null
       if (decodedDeck != null && decodedDeck.cards.isNotEmpty()) {
-        val savedDeck = taskViewModel.importSharedFlashcardDeck(decodedDeck)
-        selectedTab = CeNavTab.EXTRAS
-        pendingOpenFlashcardsAfterImport = true
-        Toast.makeText(
-          context,
-          "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
-          Toast.LENGTH_LONG
-        ).show()
+        val currentDecks = taskViewModel.flashcardDecks
+        val mergesExisting = currentDecks.any {
+          it.title.trim().equals(decodedDeck.title.trim(), ignoreCase = true)
+        }
+        val currentTier = taskViewModel.activeTier
+        if (!mergesExisting && currentDecks.size >= currentTier.maxFlashcardDecks) {
+          selectedTab = CeNavTab.EXTRAS
+          pendingOpenFlashcardsAfterImport = true
+          pendingQuotaUpgradeTier = if (currentTier == SibilTier.FREE) SibilTier.TIER_49 else SibilTier.TIER_99
+        } else {
+          val savedDeck = taskViewModel.importSharedFlashcardDeck(decodedDeck)
+          selectedTab = CeNavTab.EXTRAS
+          pendingOpenFlashcardsAfterImport = true
+          Toast.makeText(
+            context,
+            "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
+            Toast.LENGTH_LONG
+          ).show()
+        }
       } else {
         Toast.makeText(
           context,
@@ -10095,6 +9890,9 @@ private fun MainProductivityScaffold(
               onUnitConverterOpenChange = { isUnitConverterOpen = it },
               isStudyHelperOpen = isStudyHelperOpen,
               onStudyHelperOpenChange = { isStudyHelperOpen = it },
+              externalUpgradeTier = pendingQuotaUpgradeTier,
+              onExternalUpgradeTierConsumed = { pendingQuotaUpgradeTier = null },
+              onRequestSignIn = { onLogout() },
               modifier = Modifier.fillMaxSize()
             )
           CeNavTab.DASHBOARD -> DashboardScreen(
@@ -13973,7 +13771,10 @@ fun ExtrasScreen(
   isUnitConverterOpen: Boolean = false,
   onUnitConverterOpenChange: (Boolean) -> Unit = {},
   isStudyHelperOpen: Boolean = false,
-  onStudyHelperOpenChange: (Boolean) -> Unit = {}
+  onStudyHelperOpenChange: (Boolean) -> Unit = {},
+  externalUpgradeTier: SibilTier? = null,
+  onExternalUpgradeTierConsumed: () -> Unit = {},
+  onRequestSignIn: (() -> Unit)? = null
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
@@ -13986,6 +13787,8 @@ fun ExtrasScreen(
 
   val metrics = rememberResponsiveMetrics()
   val palette = currentGlassPalette()
+  val activeTier = viewModel.activeTier
+  var upgradeSheetHighlightedTier by remember { mutableStateOf<SibilTier?>(null) }
   var isFlashcardsOpen by rememberSaveable { mutableStateOf(false) }
   var isFormulaVaultOpen by rememberSaveable { mutableStateOf(false) }
   var localUnitConverterOpen by rememberSaveable { mutableStateOf(false) }
@@ -13997,6 +13800,13 @@ fun ExtrasScreen(
   var localStudyHelperOpen by rememberSaveable { mutableStateOf(false) }
   val effectiveStudyHelperOpen = isStudyHelperOpen || localStudyHelperOpen
   var activeStudyDeckId by rememberSaveable { mutableStateOf<Int?>(null) }
+
+  LaunchedEffect(externalUpgradeTier) {
+    if (externalUpgradeTier != null) {
+      upgradeSheetHighlightedTier = externalUpgradeTier
+      onExternalUpgradeTierConsumed()
+    }
+  }
 
   val openFlashcardsSignal = pendingOpenFlashcardsAfterImport
   LaunchedEffect(openFlashcardsSignal) {
@@ -14021,100 +13831,98 @@ fun ExtrasScreen(
     .fillMaxSize()
     .widthIn(max = metrics.landscapeWideMaxWidth)
 
-  if (effectiveStudyHelperOpen) {
-    GeminiStudyHelperScreen(
-      viewModel = viewModel,
-      metrics = metrics,
-      onBackToExtras = {
-        localStudyHelperOpen = false
-        onStudyHelperOpenChange(false)
-      },
-      modifier = Modifier.fillMaxSize()
-    )
-    return
-  }
+  Box(modifier = Modifier.fillMaxSize()) {
+    when {
+      effectiveStudyHelperOpen -> {
+        GeminiStudyHelperScreen(
+          viewModel = viewModel,
+          metrics = metrics,
+          onBackToExtras = {
+            localStudyHelperOpen = false
+            onStudyHelperOpenChange(false)
+          },
+          modifier = Modifier.fillMaxSize()
+        )
+      }
 
-  if (effectiveCalculatorOpen) {
-    ScientificCalculatorScreen(
-      metrics = metrics,
-      onBackToExtras = {
-        localClassWizOpen = false
-        onCalculatorOpenChange(false)
-      },
-      modifier = subScreenModifier
-    )
-    return
-  }
-
-  if (effectiveUnitConverterOpen) {
-    UnitConverterScreen(
-      metrics = metrics,
-      onBackToExtras = {
-        localUnitConverterOpen = false
-        onUnitConverterOpenChange(false)
-      },
-      modifier = subScreenModifier
-    )
-    return
-  }
-
-  if (isEstimateOpen) {
-    ConstructionEstimateScreen(
-      metrics = metrics,
-      onBackToExtras = { isEstimateOpen = false },
-      modifier = subScreenModifier
-    )
-    return
-  }
-
-  if (isSurveyingSolverOpen) {
-    SurveyingSolverScreen(
-      metrics = metrics,
-      onBackToExtras = { isSurveyingSolverOpen = false },
-      modifier = subScreenModifier
-    )
-    return
-  }
-
-  if (isFormulaVaultOpen) {
-    FormulaVaultMainView(
-      metrics = metrics,
-      onBackToExtras = { isFormulaVaultOpen = false },
-      viewModel = viewModel,
-      modifier = subScreenModifier
-    )
-    return
-  }
-
-  if (isFlashcardsOpen) {
-    if (activeStudyDeck != null) {
-      FlashcardStudyScreen(
-        deck = activeStudyDeck,
+      effectiveCalculatorOpen -> {
+      ScientificCalculatorScreen(
         metrics = metrics,
-        onRateCard = { cardId, rating ->
-          viewModel.updateFlashcardMastery(
-            deckId = activeStudyDeck.id,
-            cardId = cardId,
-            newMasteryLevel = rating
-          )
+        onBackToExtras = {
+          localClassWizOpen = false
+          onCalculatorOpenChange(false)
         },
-        onResetMastery = {
-          viewModel.resetDeckMastery(activeStudyDeck.id)
-        },
-        onBackToDecks = { activeStudyDeckId = null },
-        modifier = subScreenModifier
-      )
-    } else {
-      FlashcardMainView(
-        viewModel = viewModel,
-        metrics = metrics,
-        onBackToExtras = { isFlashcardsOpen = false },
-        onStartReview = { deck -> activeStudyDeckId = deck.id },
         modifier = subScreenModifier
       )
     }
-    return
-  }
+
+    effectiveUnitConverterOpen -> {
+      UnitConverterScreen(
+        metrics = metrics,
+        onBackToExtras = {
+          localUnitConverterOpen = false
+          onUnitConverterOpenChange(false)
+        },
+        modifier = subScreenModifier
+      )
+    }
+
+    isEstimateOpen -> {
+      ConstructionEstimateScreen(
+        metrics = metrics,
+        onBackToExtras = { isEstimateOpen = false },
+        modifier = subScreenModifier
+      )
+    }
+
+    isSurveyingSolverOpen -> {
+      SurveyingSolverScreen(
+        metrics = metrics,
+        onBackToExtras = { isSurveyingSolverOpen = false },
+        modifier = subScreenModifier
+      )
+    }
+
+    isFormulaVaultOpen -> {
+      FormulaVaultMainView(
+        metrics = metrics,
+        onBackToExtras = { isFormulaVaultOpen = false },
+        viewModel = viewModel,
+        modifier = subScreenModifier
+      )
+    }
+
+    isFlashcardsOpen -> {
+      if (activeStudyDeck != null) {
+        FlashcardStudyScreen(
+          deck = activeStudyDeck,
+          metrics = metrics,
+          onRateCard = { cardId, rating ->
+            viewModel.updateFlashcardMastery(
+              deckId = activeStudyDeck.id,
+              cardId = cardId,
+              newMasteryLevel = rating
+            )
+          },
+          onResetMastery = {
+            viewModel.resetDeckMastery(activeStudyDeck.id)
+          },
+          onBackToDecks = { activeStudyDeckId = null },
+          modifier = subScreenModifier
+        )
+      } else {
+        FlashcardMainView(
+          viewModel = viewModel,
+          metrics = metrics,
+          onBackToExtras = { isFlashcardsOpen = false },
+          onStartReview = { deck -> activeStudyDeckId = deck.id },
+          onOpenUpgradeSheet = { tier -> upgradeSheetHighlightedTier = tier },
+          modifier = subScreenModifier
+        )
+      }
+    }
+
+    else -> {
 
   val deckCount = viewModel.flashcardDecks.size
   val totalCardCount = viewModel.flashcardDecks.sumOf { it.cards.size }
@@ -14313,53 +14121,80 @@ fun ExtrasScreen(
       }
     }
 
-      val toolEntries: List<Pair<ExtraToolItem, () -> Unit>> = listOf(
-        ExtraToolItem(
-          id = "scientific_calculator",
-          title = "Scientific Calculator",
-          subtitle = "",
-          icon = Icons.Filled.Calculate
-        ) to {
+      val toolEntries: List<Triple<ExtraToolItem, SibilTier?, () -> Unit>> = listOf(
+        Triple(
+          ExtraToolItem(
+            id = "scientific_calculator",
+            title = "Scientific Calculator",
+            subtitle = "",
+            icon = Icons.Filled.Calculate
+          ),
+          null
+        ) {
           playCardHapticSound(context, localView)
           localClassWizOpen = true
           onCalculatorOpenChange(true)
         },
-        ExtraToolItem(
-          id = "ce_formula_vault",
-          title = "CE Formula Vault",
-          subtitle = "",
-          icon = Icons.Filled.Functions
-        ) to {
+        Triple(
+          ExtraToolItem(
+            id = "ce_formula_vault",
+            title = "CE Formula Vault",
+            subtitle = "",
+            icon = Icons.Filled.Functions
+          ),
+          null
+        ) {
           playCardHapticSound(context, localView)
           isFormulaVaultOpen = true
         },
-        ExtraToolItem(
-          id = "unit_converter",
-          title = "Unit Converter",
-          subtitle = "",
-          icon = Icons.Filled.SwapHoriz
-        ) to {
+        Triple(
+          ExtraToolItem(
+            id = "unit_converter",
+            title = "Unit Converter",
+            subtitle = "",
+            icon = Icons.Filled.SwapHoriz
+          ),
+          SibilTier.TIER_49
+        ) {
           playCardHapticSound(context, localView)
-          localUnitConverterOpen = true
-          onUnitConverterOpenChange(true)
+          if (activeTier.level >= SibilTier.TIER_49.level) {
+            localUnitConverterOpen = true
+            onUnitConverterOpenChange(true)
+          } else {
+            upgradeSheetHighlightedTier = SibilTier.TIER_49
+          }
         },
-        ExtraToolItem(
-          id = "construction_estimate",
-          title = "Estimate",
-          subtitle = "",
-          icon = Icons.Filled.RequestQuote
-        ) to {
+        Triple(
+          ExtraToolItem(
+            id = "construction_estimate",
+            title = "Estimate",
+            subtitle = "",
+            icon = Icons.Filled.RequestQuote
+          ),
+          SibilTier.TIER_99
+        ) {
           playCardHapticSound(context, localView)
-          isEstimateOpen = true
+          if (activeTier.level >= SibilTier.TIER_99.level) {
+            isEstimateOpen = true
+          } else {
+            upgradeSheetHighlightedTier = SibilTier.TIER_99
+          }
         },
-        ExtraToolItem(
-          id = "surveying_curve_solver",
-          title = "Surveying & Curve Solver",
-          subtitle = "",
-          icon = Icons.Filled.Explore
-        ) to {
+        Triple(
+          ExtraToolItem(
+            id = "surveying_curve_solver",
+            title = "Surveying & Curve Solver",
+            subtitle = "",
+            icon = Icons.Filled.Explore
+          ),
+          SibilTier.TIER_49
+        ) {
           playCardHapticSound(context, localView)
-          isSurveyingSolverOpen = true
+          if (activeTier.level >= SibilTier.TIER_49.level) {
+            isSurveyingSolverOpen = true
+          } else {
+            upgradeSheetHighlightedTier = SibilTier.TIER_49
+          }
         }
       )
 
@@ -14370,11 +14205,13 @@ fun ExtrasScreen(
             horizontalArrangement = Arrangement.spacedBy(metrics.scaledDp(14)),
             verticalAlignment = Alignment.Top
           ) {
-            pair.forEach { (item, action) ->
+            pair.forEach { (item, requiredTier, action) ->
               ExtraToolPlaceholderCard(
                 tool = item,
                 metrics = metrics,
                 isComingSoon = false,
+                requiredTier = requiredTier,
+                activeTier = activeTier,
                 onClick = action,
                 modifier = Modifier.weight(1f)
               )
@@ -14385,11 +14222,13 @@ fun ExtrasScreen(
           }
         }
       } else {
-        toolEntries.forEach { (item, action) ->
+        toolEntries.forEach { (item, requiredTier, action) ->
           ExtraToolPlaceholderCard(
             tool = item,
             metrics = metrics,
             isComingSoon = false,
+            requiredTier = requiredTier,
+            activeTier = activeTier,
             onClick = action,
             modifier = Modifier
               .fillMaxWidth()
@@ -14522,10 +14361,15 @@ fun ExtrasScreen(
 
     HolographicGeminiButton(
       isDarkMode = viewModel.isDarkMode,
+      lockBadgeLabel = if (activeTier.level < SibilTier.TIER_99.level) "₱99" else null,
       onClick = {
         playCardHapticSound(context, localView)
-        localStudyHelperOpen = true
-        onStudyHelperOpenChange(true)
+        if (activeTier.level >= SibilTier.TIER_99.level) {
+          localStudyHelperOpen = true
+          onStudyHelperOpenChange(true)
+        } else {
+          upgradeSheetHighlightedTier = SibilTier.TIER_99
+        }
       },
       modifier = Modifier
         .align(Alignment.BottomEnd)
@@ -14534,6 +14378,22 @@ fun ExtrasScreen(
           bottom = if (metrics.isLandscape) 10.dp else 12.dp
         )
     )
+        }
+      }
+    }
+
+    val targetUpgradeTier = upgradeSheetHighlightedTier
+    if (targetUpgradeTier != null) {
+      SibilUpgradeSheet(
+        activeTier = activeTier,
+        highlightedTier = targetUpgradeTier,
+        onDismiss = { upgradeSheetHighlightedTier = null },
+        onTierUnlocked = { unlockedTier ->
+          viewModel.applyRedeemedTier(context, unlockedTier)
+        },
+        onRequestSignIn = onRequestSignIn
+      )
+    }
   }
 }
 
@@ -25676,13 +25536,17 @@ fun FlashcardMainView(
   metrics: ResponsiveMetrics,
   onBackToExtras: () -> Unit,
   onStartReview: (FlashcardDeck) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  onOpenUpgradeSheet: (SibilTier) -> Unit = {}
 ) {
   val context = LocalContext.current
   val localView = LocalView.current
   val coroutineScope = rememberCoroutineScope()
   val palette = currentGlassPalette()
   val decks = viewModel.flashcardDecks.toList()
+  val activeTier = viewModel.activeTier
+  val isAtDeckLimit = decks.size >= activeTier.maxFlashcardDecks
+  val nextQuotaUpgradeTier = if (activeTier == SibilTier.FREE) SibilTier.TIER_49 else SibilTier.TIER_99
 
   var isNewDeckDialogOpen by rememberSaveable { mutableStateOf(false) }
   var isImportDeckCodeDialogOpen by rememberSaveable { mutableStateOf(false) }
@@ -25973,17 +25837,46 @@ fun FlashcardMainView(
         }
 
         Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = "Smart Flashcards",
-            style = MaterialTheme.typography.headlineLarge.copy(
-              fontSize = metrics.scaledSp(24),
-              fontWeight = FontWeight.Bold
-            ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.testTag("flashcards_header_title")
-          )
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Text(
+              text = "Smart Flashcards",
+              style = MaterialTheme.typography.headlineLarge.copy(
+                fontSize = metrics.scaledSp(24),
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier
+                .weight(1f, fill = false)
+                .testTag("flashcards_header_title")
+            )
+            val quotaLabel = when (activeTier) {
+              SibilTier.FREE -> "${decks.size}/10 Decks"
+              SibilTier.TIER_49 -> "${decks.size}/25 Decks"
+              SibilTier.TIER_99 -> "${decks.size} Decks • Unlimited"
+            }
+            RecessedGlassPill(
+              isDarkMode = palette.isDark,
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+              modifier = Modifier.testTag("flashcards_deck_quota_pill")
+            ) {
+              Text(
+                text = quotaLabel,
+                style = MaterialTheme.typography.labelSmall.copy(
+                  fontFamily = JetBrainsMonoFamily,
+                  fontSize = 10.5.sp,
+                  fontWeight = FontWeight.Bold
+                ),
+                color = if (isAtDeckLimit) palette.accentRed else palette.accentIndigo,
+                maxLines = 1,
+                softWrap = false
+              )
+            }
+          }
           Text(
             text = "Gizmo-Style Multi-Batch AI Flashcard Generator",
             style = MaterialTheme.typography.bodyMedium.copy(
@@ -26041,12 +25934,16 @@ fun FlashcardMainView(
         Surface(
           onClick = {
             playCardHapticSound(context, localView)
-            try {
-              documentPickerLauncher.launch(GizmoBatchFlashcardEngine.SUPPORTED_DOCUMENT_MIME_TYPES)
-            } catch (_: Exception) {
-              pasteDialogInitialTitle = ""
-              pasteDialogNoticeMessage = null
-              isPasteTextDialogOpen = true
+            if (isAtDeckLimit) {
+              onOpenUpgradeSheet(nextQuotaUpgradeTier)
+            } else {
+              try {
+                documentPickerLauncher.launch(GizmoBatchFlashcardEngine.SUPPORTED_DOCUMENT_MIME_TYPES)
+              } catch (_: Exception) {
+                pasteDialogInitialTitle = ""
+                pasteDialogNoticeMessage = null
+                isPasteTextDialogOpen = true
+              }
             }
           },
           shape = CircleShape,
@@ -26082,7 +25979,11 @@ fun FlashcardMainView(
         Surface(
           onClick = {
             playCardHapticSound(context, localView)
-            isImportDeckCodeDialogOpen = true
+            if (isAtDeckLimit) {
+              onOpenUpgradeSheet(nextQuotaUpgradeTier)
+            } else {
+              isImportDeckCodeDialogOpen = true
+            }
           },
           shape = CircleShape,
           color = palette.nestedCardFill,
@@ -26117,7 +26018,11 @@ fun FlashcardMainView(
         Surface(
           onClick = {
             playCardHapticSound(context, localView)
-            isNewDeckDialogOpen = true
+            if (isAtDeckLimit) {
+              onOpenUpgradeSheet(nextQuotaUpgradeTier)
+            } else {
+              isNewDeckDialogOpen = true
+            }
           },
           shape = CircleShape,
           color = palette.nestedCardFill,
@@ -27082,13 +26987,21 @@ fun FlashcardMainView(
       metrics = metrics,
       onDismiss = { isImportDeckCodeDialogOpen = false },
       onImportDeck = { importedDeck ->
-        val savedDeck = viewModel.importSharedFlashcardDeck(importedDeck)
-        isImportDeckCodeDialogOpen = false
-        Toast.makeText(
-          context,
-          "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
-          Toast.LENGTH_LONG
-        ).show()
+        val mergesExisting = decks.any {
+          it.title.trim().equals(importedDeck.title.trim(), ignoreCase = true)
+        }
+        if (!mergesExisting && decks.size >= activeTier.maxFlashcardDecks) {
+          isImportDeckCodeDialogOpen = false
+          onOpenUpgradeSheet(nextQuotaUpgradeTier)
+        } else {
+          val savedDeck = viewModel.importSharedFlashcardDeck(importedDeck)
+          isImportDeckCodeDialogOpen = false
+          Toast.makeText(
+            context,
+            "Imported '${savedDeck.title}' (${savedDeck.cards.size} cards)",
+            Toast.LENGTH_LONG
+          ).show()
+        }
       }
     )
   }
@@ -30100,10 +30013,13 @@ private fun ExtraToolPlaceholderCard(
   tool: ExtraToolItem,
   metrics: ResponsiveMetrics,
   isComingSoon: Boolean = false,
+  requiredTier: SibilTier? = null,
+  activeTier: SibilTier = SibilTier.FREE,
   onClick: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val palette = currentGlassPalette()
+  val isLocked = requiredTier != null && activeTier.level < requiredTier.level
   if (isComingSoon) {
     Row(
       modifier = modifier
@@ -30217,39 +30133,53 @@ private fun ExtraToolPlaceholderCard(
           text = tool.title,
           style = MaterialTheme.typography.titleMedium.copy(
             fontFamily = AppleSansFamily,
-            fontSize = 16.sp,
+            fontSize = 15.5.sp,
             fontWeight = FontWeight.SemiBold
           ),
           color = palette.textPrimary,
-          maxLines = 1,
+          maxLines = 2,
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier
             .weight(1f)
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = 12.dp)
         )
 
-        RecessedGlassPill(
-          isDarkMode = palette.isDark,
-          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-          modifier = Modifier.height(34.dp)
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-          Text(
-            text = "Open",
-            style = MaterialTheme.typography.labelMedium.copy(
-              fontFamily = AppleSansFamily,
-              fontSize = 12.sp,
-              fontWeight = FontWeight.Bold
-            ),
-            color = palette.textPrimary,
-            maxLines = 1,
-            softWrap = false
-          )
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-            contentDescription = null,
-            tint = palette.accentIndigo,
-            modifier = Modifier.size(15.dp)
-          )
+          if (isLocked && requiredTier != null) {
+            SibilTierLockPill(
+              label = requiredTier.compactLockLabel(),
+              isDarkMode = palette.isDark,
+              compact = true,
+              modifier = Modifier.testTag("tool_lock_badge_${tool.id}")
+            )
+          }
+
+          RecessedGlassPill(
+            isDarkMode = palette.isDark,
+            contentPadding = PaddingValues(horizontal = if (isLocked) 11.dp else 14.dp, vertical = 0.dp),
+            modifier = Modifier.height(34.dp)
+          ) {
+            Text(
+              text = "Open",
+              style = MaterialTheme.typography.labelMedium.copy(
+                fontFamily = AppleSansFamily,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+              ),
+              color = palette.textPrimary,
+              maxLines = 1,
+              softWrap = false
+            )
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+              contentDescription = null,
+              tint = palette.accentIndigo,
+              modifier = Modifier.size(15.dp)
+            )
+          }
         }
       }
     }
@@ -33746,11 +33676,13 @@ private fun ProfileAndSettingsDialog(
     mutableStateOf(if (isGuest) "" else viewModel.username)
   }
 
-  // Manual "Check for Updates" state
+  // Manual "Check for Updates" & Upgrade Sheet state
   var isCheckingUpdates by remember { mutableStateOf(false) }
   var updateStatusMessage by remember { mutableStateOf<String?>(null) }
   var isUpdateStatusError by remember { mutableStateOf(false) }
   var manualUpdateRelease by remember { mutableStateOf<GitHubReleaseUpdateInfo?>(null) }
+  var isProfileUpgradeSheetOpen by remember { mutableStateOf(false) }
+  val activeTier = viewModel.activeTier
 
   // Animated rotation for the Cloud Sync "Sync Now" refresh icon
   val isCloudSyncingActive = viewModel.isManualSyncing || viewModel.isFirestoreSyncing
@@ -34072,6 +34004,200 @@ private fun ProfileAndSettingsDialog(
 
             GlassHairlineDivider(isDarkMode = isDarkMode)
 
+            // 1B. "SUBSCRIPTION & PLAN" CARD + CAPSTONE PANEL DEFENSE DEMO SWITCHER
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp)
+                .testTag("profile_subscription_card"),
+              verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  modifier = Modifier.weight(1f),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                  Surface(
+                    color = iconBadgeFill,
+                    shape = RoundedCornerShape(10.dp),
+                    border = iconBadgeBorder,
+                    modifier = Modifier.size(34.dp)
+                  ) {
+                    Box(contentAlignment = Alignment.Center) {
+                      Icon(
+                        imageVector = Icons.Rounded.WorkspacePremium,
+                        contentDescription = null,
+                        tint = iconBadgeTint,
+                        modifier = Modifier.size(18.dp)
+                      )
+                    }
+                  }
+
+                  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                      text = "Subscription & Plan",
+                      style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                      ),
+                      color = titleTextColor,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                      text = "${activeTier.title} • ${activeTier.price}",
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = subtitleTextColor,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                }
+
+                Surface(
+                  color = if (activeTier == SibilTier.FREE) {
+                    subtitleTextColor.copy(alpha = 0.14f)
+                  } else {
+                    Color(0xFF10B981).copy(alpha = 0.16f)
+                  },
+                  shape = CircleShape,
+                  border = BorderStroke(
+                    1.dp,
+                    if (activeTier == SibilTier.FREE) {
+                      subtitleTextColor.copy(alpha = 0.35f)
+                    } else {
+                      Color(0xFF10B981).copy(alpha = 0.45f)
+                    }
+                  )
+                ) {
+                  Text(
+                    text = activeTier.badge,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                      fontFamily = JetBrainsMonoFamily,
+                      fontSize = 11.sp,
+                      fontWeight = FontWeight.ExtraBold
+                    ),
+                    color = if (activeTier == SibilTier.FREE) {
+                      subtitleTextColor
+                    } else if (isDarkMode) {
+                      Color(0xFF34D399)
+                    } else {
+                      Color(0xFF047857)
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                      .padding(horizontal = 9.dp, vertical = 4.dp)
+                      .testTag("profile_active_tier_badge")
+                  )
+                }
+              }
+
+              OutlinedButton(
+                onClick = { isProfileUpgradeSheetOpen = true },
+                shape = RoundedCornerShape(14.dp),
+                border = actionButtonBorder,
+                colors = ButtonDefaults.outlinedButtonColors(
+                  containerColor = actionButtonFill,
+                  contentColor = actionButtonContentColor
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .heightIn(min = 40.dp)
+                  .testTag("profile_upgrade_voucher_button")
+              ) {
+                Text(
+                  text = "Upgrade / Redeem Voucher",
+                  fontSize = 12.5.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = actionButtonContentColor,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+
+              // Compact Panel Defense Demo Switcher (1-tap offline tier preview for thesis panelists)
+              Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+              ) {
+                Text(
+                  text = "Panel Defense Demo Switcher",
+                  style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                  ),
+                  color = subtitleTextColor
+                )
+
+                Surface(
+                  color = if (isDarkMode) Color(0xFF0F172A).copy(alpha = 0.65f) else Color(0xFFE2E8F0).copy(alpha = 0.65f),
+                  shape = CircleShape,
+                  border = unifiedInnerBorder,
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    val demoOptions = listOf(
+                      SibilTier.FREE to "Free",
+                      SibilTier.TIER_49 to "₱49",
+                      SibilTier.TIER_99 to "₱99"
+                    )
+                    demoOptions.forEach { (demoTier, pillLabel) ->
+                      val isSelected = activeTier == demoTier
+                      Surface(
+                        onClick = {
+                          viewModel.setDemoTierOverride(context, demoTier)
+                          Toast.makeText(
+                            context,
+                            "Demo Mode: ${demoTier.title} (${demoTier.price})",
+                            Toast.LENGTH_SHORT
+                          ).show()
+                        },
+                        shape = CircleShape,
+                        color = if (isSelected) Color(0xFF0284C7) else Color.Transparent,
+                        modifier = Modifier
+                          .weight(1f)
+                          .heightIn(min = 34.dp)
+                          .testTag("demo_switcher_${demoTier.name}")
+                      ) {
+                        Box(contentAlignment = Alignment.Center) {
+                          Text(
+                            text = pillLabel,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                              fontFamily = AppleSansFamily,
+                              fontSize = 12.sp,
+                              fontWeight = FontWeight.Bold
+                            ),
+                            color = if (isSelected) Color.White else subtitleTextColor,
+                            maxLines = 1,
+                            softWrap = false
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            GlassHairlineDivider(isDarkMode = isDarkMode)
+
             // 2. "DARK MODE" COMPACT LIST TILE
             Row(
               modifier = Modifier
@@ -34135,9 +34261,35 @@ private fun ProfileAndSettingsDialog(
 
             GlassHairlineDivider(isDarkMode = isDarkMode)
 
-            // 3. SEAMLESS ACCOUNT-BASED "CLOUD SYNC" CARD (RESPONSIVE LAYOUT)
+            // 3. SEAMLESS ACCOUNT-BASED "CLOUD SYNC" CARD (FIREBASE REALTIME DATABASE)
+            val isSignedInCloudUser = viewModel.isAuthenticatedCloudUser()
             val connectedAccountEmail = viewModel.getConnectedAccountLabel()
             val lastSyncedText = viewModel.formatLastSyncedLabel()
+            val cloudSyncErrorText = viewModel.cloudSyncError
+            val cloudPrimarySubtitle = if (isSignedInCloudUser) {
+              connectedAccountEmail
+            } else {
+              "Signed in as Guest — Sign in to enable Cloud Sync"
+            }
+            val cloudStatusChipLabel = when {
+              !isSignedInCloudUser -> "Guest Mode"
+              isCloudSyncingActive -> "Syncing..."
+              cloudSyncErrorText != null -> "Sync Issue"
+              viewModel.lastSyncedTimestamp > 0L -> "Synced to Cloud"
+              else -> "Cloud Ready"
+            }
+            val cloudStatusAccent = when {
+              !isSignedInCloudUser -> Color(0xFF64748B)
+              isCloudSyncingActive -> Color(0xFF0284C7)
+              cloudSyncErrorText != null -> Color(0xFFF59E0B)
+              else -> Color(0xFF10B981)
+            }
+            val cloudStatusDetailText = when {
+              !isSignedInCloudUser -> "Tasks, schedules & decks are stored locally on this device."
+              cloudSyncErrorText != null -> cloudSyncErrorText
+              viewModel.lastSyncedTimestamp > 0L -> "Synced to Cloud • $lastSyncedText"
+              else -> "Ready to sync tasks, schedules & flashcards"
+            }
             Column(
               modifier = Modifier
                 .fillMaxWidth()
@@ -34187,38 +34339,39 @@ private fun ProfileAndSettingsDialog(
                       softWrap = true,
                       overflow = TextOverflow.Ellipsis
                     )
-                    Row(
-                      modifier = Modifier.fillMaxWidth(),
-                      verticalAlignment = Alignment.CenterVertically
-                    ) {
-                      Text(
-                        text = connectedAccountEmail,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                          fontSize = 12.sp,
-                          fontWeight = FontWeight.Medium
-                        ),
-                        color = subtitleTextColor,
-                        maxLines = 1,
-                        softWrap = true,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                          .weight(1f, fill = false)
-                          .testTag("cloud_sync_connected_account_text")
-                      )
-                    }
+                    Text(
+                      text = cloudPrimarySubtitle,
+                      style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                      ),
+                      color = subtitleTextColor,
+                      maxLines = 2,
+                      softWrap = true,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.testTag("cloud_sync_connected_account_text")
+                    )
                   }
                 }
 
                 Surface(
-                  color = Color(0xFF10B981).copy(alpha = 0.14f),
+                  color = cloudStatusAccent.copy(alpha = 0.14f),
                   shape = CircleShape,
-                  border = BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.38f))
+                  border = BorderStroke(1.dp, cloudStatusAccent.copy(alpha = 0.38f))
                 ) {
                   Text(
-                    text = "Connected & Synced",
+                    text = cloudStatusChipLabel,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (isDarkMode) Color(0xFF34D399) else Color(0xFF047857),
+                    color = if (!isSignedInCloudUser) {
+                      subtitleTextColor
+                    } else if (cloudSyncErrorText != null) {
+                      if (isDarkMode) Color(0xFFFBBF24) else Color(0xFFB45309)
+                    } else if (isCloudSyncingActive) {
+                      if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
+                    } else {
+                      if (isDarkMode) Color(0xFF34D399) else Color(0xFF047857)
+                    },
                     maxLines = 1,
                     softWrap = true,
                     modifier = Modifier
@@ -34230,19 +34383,34 @@ private fun ProfileAndSettingsDialog(
 
               Spacer(modifier = Modifier.height(8.dp))
 
+              val onCloudSyncActionClick: () -> Unit = {
+                if (!isSignedInCloudUser) {
+                  onSwitchAccount()
+                } else {
+                  viewModel.syncNow { success ->
+                    val toastMsg = if (success) {
+                      "Synced to Cloud ($connectedAccountEmail)"
+                    } else {
+                      viewModel.cloudSyncError ?: "Unable to sync right now. Saved locally."
+                    }
+                    Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                  }
+                }
+              }
+
               if (isCompactDialog) {
                 Column(
                   modifier = Modifier.fillMaxWidth(),
                   verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                   Text(
-                    text = "Last synced: $lastSyncedText",
+                    text = cloudStatusDetailText,
                     style = MaterialTheme.typography.bodySmall.copy(
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Medium
                     ),
                     color = subtitleTextColor,
-                    maxLines = 1,
+                    maxLines = 2,
                     softWrap = true,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -34251,15 +34419,7 @@ private fun ProfileAndSettingsDialog(
                   )
 
                   OutlinedButton(
-                    onClick = {
-                      viewModel.syncNow {
-                        Toast.makeText(
-                          context,
-                          "Cloud Sync complete ($connectedAccountEmail)",
-                          Toast.LENGTH_SHORT
-                        ).show()
-                      }
-                    },
+                    onClick = onCloudSyncActionClick,
                     shape = RoundedCornerShape(14.dp),
                     border = actionButtonBorder,
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -34278,7 +34438,7 @@ private fun ProfileAndSettingsDialog(
                     ) {
                       Icon(
                         imageVector = Icons.Filled.Refresh,
-                        contentDescription = "Sync Now",
+                        contentDescription = if (isSignedInCloudUser) "Sync Now" else "Sign In to Sync",
                         tint = actionButtonContentColor,
                         modifier = Modifier
                           .size(14.dp)
@@ -34287,7 +34447,11 @@ private fun ProfileAndSettingsDialog(
                           }
                       )
                       Text(
-                        text = if (isCloudSyncingActive) "Syncing..." else "Sync Now",
+                        text = when {
+                          !isSignedInCloudUser -> "Sign In to Sync"
+                          isCloudSyncingActive -> "Syncing..."
+                          else -> "Sync Now"
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = actionButtonContentColor,
@@ -34304,13 +34468,13 @@ private fun ProfileAndSettingsDialog(
                   verticalAlignment = Alignment.CenterVertically
                 ) {
                   Text(
-                    text = "Last synced: $lastSyncedText",
+                    text = cloudStatusDetailText,
                     style = MaterialTheme.typography.bodySmall.copy(
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Medium
                     ),
                     color = subtitleTextColor,
-                    maxLines = 1,
+                    maxLines = 2,
                     softWrap = true,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
@@ -34320,15 +34484,7 @@ private fun ProfileAndSettingsDialog(
                   )
 
                   OutlinedButton(
-                    onClick = {
-                      viewModel.syncNow {
-                        Toast.makeText(
-                          context,
-                          "Cloud Sync complete ($connectedAccountEmail)",
-                          Toast.LENGTH_SHORT
-                        ).show()
-                      }
-                    },
+                    onClick = onCloudSyncActionClick,
                     shape = RoundedCornerShape(14.dp),
                     border = actionButtonBorder,
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -34347,7 +34503,7 @@ private fun ProfileAndSettingsDialog(
                     ) {
                       Icon(
                         imageVector = Icons.Filled.Refresh,
-                        contentDescription = "Sync Now",
+                        contentDescription = if (isSignedInCloudUser) "Sync Now" else "Sign In to Sync",
                         tint = actionButtonContentColor,
                         modifier = Modifier
                           .size(14.dp)
@@ -34356,7 +34512,11 @@ private fun ProfileAndSettingsDialog(
                           }
                       )
                       Text(
-                        text = if (isCloudSyncingActive) "Syncing..." else "Sync Now",
+                        text = when {
+                          !isSignedInCloudUser -> "Sign In to Sync"
+                          isCloudSyncingActive -> "Syncing..."
+                          else -> "Sync Now"
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = actionButtonContentColor,
@@ -34774,6 +34934,21 @@ private fun ProfileAndSettingsDialog(
         dismissedSessionUpdateTag = activeManualRelease.tagName
         hasDismissedUpdateForSession = true
         manualUpdateRelease = null
+      }
+    )
+  }
+
+  if (isProfileUpgradeSheetOpen) {
+    SibilUpgradeSheet(
+      activeTier = activeTier,
+      highlightedTier = if (activeTier == SibilTier.FREE) SibilTier.TIER_49 else SibilTier.TIER_99,
+      onDismiss = { isProfileUpgradeSheetOpen = false },
+      onTierUnlocked = { unlockedTier ->
+        viewModel.applyRedeemedTier(context, unlockedTier)
+      },
+      onRequestSignIn = {
+        isProfileUpgradeSheetOpen = false
+        onSwitchAccount()
       }
     )
   }

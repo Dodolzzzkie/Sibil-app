@@ -19,6 +19,19 @@ android {
     versionCode = 105
     versionName = "1.0.5"
 
+    val ciEnvKeys = listOfNotNull(
+      System.getenv("GEMINI_API_KEYS"),
+      System.getenv("GEMINI_KEYS"),
+      System.getenv("GEMINI_API_KEY")
+    )
+      .joinToString(",")
+      .replace("\"", "")
+      .replace("'", "")
+      .replace("\n", ",")
+      .replace("\r", "")
+      .trim()
+    buildConfigField("String", "CI_INJECTED_GEMINI_KEYS", "\"$ciEnvKeys\"")
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
