@@ -15924,12 +15924,13 @@ internal data class FormulaVariableNote(
 internal data class ReferenceFormulaCardData(
   val id: String,
   val title: String,
-  val categoryTab: String, // "Mathematics", "PSAD", "HPGE"
-  val mathSubTab: String,  // "Algebra", "Trigonometry", "Geometry", "Analytic Geometry", "Custom"
+  val categoryTab: String, // "MSTE", "PSAD", or "HPGE"
+  val mathSubTab: String,  // Topic or sub-volume tag
   val equationBanner: String,
   val summaryTag: String,
   val variableNotes: List<FormulaVariableNote>,
-  val isCustom: Boolean = false
+  val isCustom: Boolean = false,
+  val referenceNote: String = "Custom Scholar Formula • $categoryTab"
 )
 
 private data class GeometryShapeEntry(
@@ -15958,6 +15959,69 @@ private fun saveStarredFormulaIds(context: Context, ids: Set<String>) {
   prefs.edit().putStringSet(PREF_STARRED_FORMULAS_KEY, ids).apply()
 }
 
+private fun sanitizeFormulaToUnicode(rawText: String): String {
+  val trimmed = rawText.trim()
+  if (trimmed.isEmpty()) return ""
+  if (!trimmed.contains('\\') && !trimmed.contains('{') && !trimmed.contains('}')) {
+    return trimmed
+  }
+  return trimmed
+    .replace("\\\\", "\n")
+    .replace("\\quad", "  ")
+    .replace("\\;", " ")
+    .replace("\\,", " ")
+    .replace("\\!", "")
+    .replace("\\left", "")
+    .replace("\\right", "")
+    .replace("\\text{", "")
+    .replace("\\dfrac{", "(")
+    .replace("\\frac{", "(")
+    .replace("}{", ") / (")
+    .replace("\\sqrt{", "√(")
+    .replace("\\bar{r}", "r̄")
+    .replace("\\bar{h}", "h̄")
+    .replace("\\bar{y}", "ȳ")
+    .replace("\\sigma", "σ")
+    .replace("\\tau", "τ")
+    .replace("\\phi", "φ")
+    .replace("\\theta", "θ")
+    .replace("\\Delta", "Δ")
+    .replace("\\delta", "δ")
+    .replace("\\pi", "π")
+    .replace("\\alpha", "α")
+    .replace("\\beta", "β")
+    .replace("\\gamma", "γ")
+    .replace("\\varepsilon", "ε")
+    .replace("\\lambda", "λ")
+    .replace("\\mu", "μ")
+    .replace("\\nu", "ν")
+    .replace("\\rho", "ρ")
+    .replace("\\omega", "ω")
+    .replace("\\sum", "Σ")
+    .replace("\\int", "∫")
+    .replace("\\cdot", "·")
+    .replace("\\times", "×")
+    .replace("\\div", "÷")
+    .replace("\\pm", "±")
+    .replace("\\mp", "∓")
+    .replace("\\le", "≤")
+    .replace("\\ge", "≥")
+    .replace("\\neq", "≠")
+    .replace("\\approx", "≈")
+    .replace("^\\circ", "°")
+    .replace("^{2}", "²")
+    .replace("^2", "²")
+    .replace("^{3}", "³")
+    .replace("^3", "³")
+    .replace("^{4}", "⁴")
+    .replace("^4", "⁴")
+    .replace("^{-1}", "⁻¹")
+    .replace("\\", "")
+    .replace("{", "")
+    .replace("}", "")
+    .trim()
+}
+
 private fun loadCustomFormulas(context: Context): List<ReferenceFormulaCardData> {
   val prefs = context.getSharedPreferences("sibil_app_prefs", Context.MODE_PRIVATE)
   val rawJson = prefs.getString(PREF_CUSTOM_FORMULAS_JSON_KEY, null) ?: return emptyList()
@@ -15968,9 +16032,13 @@ private fun loadCustomFormulas(context: Context): List<ReferenceFormulaCardData>
       val obj = array.optJSONObject(i) ?: continue
       val id = obj.optString("id").ifBlank { "custom_$i" }
       val title = obj.optString("title").trim()
-      val categoryTab = obj.optString("categoryTab", "Mathematics").trim()
+      val categoryTab = obj.optString("categoryTab", "MSTE").trim()
       val mathSubTab = obj.optString("mathSubTab", "Algebra").trim()
-      val equationBanner = obj.optString("equationBanner").trim()
+      val rawEquation = obj.optString("equationBanner").trim()
+      val legacyFallback = obj.optString("fallbackText").trim()
+      val equationBanner = sanitizeFormulaToUnicode(legacyFallback.ifBlank { rawEquation })
+      val storedReferenceNote = obj.optString("referenceNote").trim()
+        .ifBlank { "Custom Scholar Formula • $categoryTab • $mathSubTab" }
       val variableNotesRaw = obj.optString("variableNotesRaw").trim()
       if (title.isNotEmpty() && equationBanner.isNotEmpty()) {
         val parsedNotes = variableNotesRaw
@@ -16009,9 +16077,10 @@ private fun loadCustomFormulas(context: Context): List<ReferenceFormulaCardData>
             categoryTab = categoryTab,
             mathSubTab = mathSubTab,
             equationBanner = equationBanner,
-            summaryTag = "Custom Scholar Formula • $mathSubTab",
+            summaryTag = storedReferenceNote,
             variableNotes = parsedNotes,
-            isCustom = true
+            isCustom = true,
+            referenceNote = storedReferenceNote
           )
         )
       }
@@ -16032,6 +16101,7 @@ private fun saveCustomFormulas(context: Context, customList: List<ReferenceFormu
     obj.put("categoryTab", item.categoryTab)
     obj.put("mathSubTab", item.mathSubTab)
     obj.put("equationBanner", item.equationBanner)
+    obj.put("referenceNote", item.referenceNote)
     val rawLines = item.variableNotes.joinToString("\n") { "${it.symbol}: ${it.meaning}" }
     obj.put("variableNotesRaw", rawLines)
     array.put(obj)
@@ -16518,7 +16588,7 @@ fun FormulaVaultMainView(
   val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
   // 3-Tier PRC Board Exam Hierarchy State:
-  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF" -> "ALGEBRA_A4_SHEET" / "TRIGONOMETRY_A4_SHEET" / "GEOMETRY_VOLUMES" -> "PLANE_GEOMETRY" / "SOLID_GEOMETRY"
+  // "MASTER_VOLUMES" -> "MSTE_SUB_SHELF"/"PSAD_SUB_SHELF"/"HPGE_SUB_SHELF" -> reference sheets
   var currentTierName by rememberSaveable { mutableStateOf(FormulaVaultTier.MASTER_VOLUMES.name) }
   var activeEngineeringSubVolumeId by rememberSaveable { mutableStateOf("psad_strength_of_materials") }
   val currentTier = remember(currentTierName) {
@@ -16689,6 +16759,7 @@ fun FormulaVaultMainView(
         it.searchKeywords.contains(trimmedQuery, ignoreCase = true)
     }
 
+  val isRootVaultScreen = currentTier == FormulaVaultTier.MASTER_VOLUMES
   val isGeometryScreen = currentTier == FormulaVaultTier.GEOMETRY_VOLUMES ||
     currentTier == FormulaVaultTier.PLANE_GEOMETRY ||
     currentTier == FormulaVaultTier.SOLID_GEOMETRY
@@ -16699,11 +16770,12 @@ fun FormulaVaultMainView(
     currentTier == FormulaVaultTier.PSAD_SUB_SHELF ||
     currentTier == FormulaVaultTier.HPGE_SUB_SHELF
 
-  val showAnalyticDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+  val canJumpDirectlyFromMsteShelf = !isRootVaultScreen && !isGeometryScreen && !isEngineeringSubScreen
+  val showAnalyticDirectlyFromSearch = canJumpDirectlyFromMsteShelf &&
     noShelfMatchesQuery && analyticMatchesQuery && !trigMatchesQuery && !algebraMatchesQuery
-  val showTrigDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+  val showTrigDirectlyFromSearch = canJumpDirectlyFromMsteShelf &&
     noShelfMatchesQuery && trigMatchesQuery && !algebraMatchesQuery
-  val showAlgebraDirectlyFromSearch = !isGeometryScreen && !isEngineeringSubScreen &&
+  val showAlgebraDirectlyFromSearch = canJumpDirectlyFromMsteShelf &&
     noShelfMatchesQuery && algebraMatchesQuery
 
   val isShowingAnalyticSheet = currentTier == FormulaVaultTier.ANALYTIC_GEOMETRY_SHEET ||
@@ -17248,7 +17320,7 @@ fun FormulaVaultMainView(
             notebooks = masterVolumes,
             searchQuery = trimmedQuery,
             customFormulasCount = customFormulas.size,
-            customFormulas = customFormulas,
+            customFormulas = if (trimmedQuery.isNotEmpty()) customFormulas else emptyList(),
             starredIds = starredIds,
             onToggleStar = { toggleStarFormula(it) },
             metrics = metrics,
@@ -21581,7 +21653,7 @@ private val MATH_OPERATOR_CHARS = setOf(
   '=', '+', '-', '·', '/', '÷', '×', '⇔', '⇒', '⟹', '≈', '<', '>', '±', '∓', '≠', '≤', '≥', ':'
 )
 
-private fun buildMathAnnotatedString(
+internal fun buildMathAnnotatedString(
   rawEquation: String,
   isDark: Boolean,
   operatorColor: Color
@@ -24555,23 +24627,31 @@ internal fun InteractiveReferenceFormulaCard(
         )
       }
 
-      // High-Contrast Equation Banner (JetBrainsMonoFamily)
+      // Native Jetpack Compose Equation Banner
       LiquidGlassContainer(
         shape = RoundedCornerShape(16.dp),
-        fillAlpha = 0.82f,
+        fillAlpha = 0.84f,
         elevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
       ) {
+        val cleanEquation = remember(formula.equationBanner) {
+          sanitizeFormulaToUnicode(formula.equationBanner)
+        }
+        val operatorHighlight = if (palette.isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+        val styledMath = remember(cleanEquation, palette.isDark, operatorHighlight) {
+          buildMathAnnotatedString(
+            rawEquation = cleanEquation,
+            isDark = palette.isDark,
+            operatorColor = operatorHighlight
+          )
+        }
         Text(
-          text = formula.equationBanner,
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontFamily = JetBrainsMonoFamily,
-            fontSize = metrics.scaledSp(14),
-            lineHeight = metrics.scaledSp(20),
-            fontWeight = FontWeight.ExtraBold
-          ),
-          color = palette.accentIndigo,
-          modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+          text = styledMath,
+          lineHeight = 24.sp,
+          softWrap = true,
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp)
         )
       }
 

@@ -306,4 +306,41 @@ class GeminiStudyHelperTest {
     assertFalse(errMsg.contains("https://"))
     assertTrue(errMsg.contains("temporarily busy", ignoreCase = true))
   }
+
+  @Test
+  fun systemPromptAndDelimiterNormalizer_enforceStandardLatexAndNormalizeLegacyYen() {
+    val prompt = GeminiStudyClient.GENERAL_SYSTEM_INSTRUCTION
+    assertTrue(prompt.contains("$ ... $"))
+    assertTrue(prompt.contains("$$ ... $$"))
+    assertTrue(prompt.contains("###"))
+    assertTrue(prompt.contains("---"))
+
+    val legacyResponse =
+      "### Axial Stress\nGiven ¥P = 100\\text{ kN}¥ and ¥\\sigma¥ in ¥\\text{MPa}¥:\n¥¥\\sigma = \\frac{P}{A}¥¥"
+    val normalized = normalizeAiLatexDelimiters(legacyResponse)
+    assertFalse(normalized.contains("¥"))
+    assertTrue(normalized.contains("\$P = 100\\text{ kN}\$"))
+    assertTrue(normalized.contains("\$\\sigma\$"))
+    assertTrue(normalized.contains("\$\\text{MPa}\$"))
+    assertTrue(normalized.contains("\$\$\\sigma = \\frac{P}{A}\$\$"))
+  }
+
+  @Test
+  fun aiMessageRendererAsset_includesMarkedKatexAutoRenderPlusJakartaAndHeightBridge() {
+    val candidates = listOf(
+      java.io.File("app/src/main/assets/ai_message_renderer.html"),
+      java.io.File("src/main/assets/ai_message_renderer.html")
+    )
+    val htmlFile = candidates.firstOrNull { it.exists() }
+    assertTrue("ai_message_renderer.html asset should exist", htmlFile != null)
+    val content = htmlFile!!.readText()
+    assertTrue(content.contains("marked"))
+    assertTrue(content.contains("katex"))
+    assertTrue(content.contains("auto-render"))
+    assertTrue(content.contains("Plus Jakarta Sans"))
+    assertTrue(content.contains("ResizeObserver"))
+    assertTrue(content.contains("AndroidBridge.onHeightChanged"))
+    assertTrue(content.contains("background: transparent"))
+    assertTrue(content.contains("overflow-y: hidden"))
+  }
 }

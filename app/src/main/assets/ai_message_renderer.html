@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Sibil AI Message Renderer</title>
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap"
+    crossorigin="anonymous"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    crossorigin="anonymous"
+  />
+  <script
+    src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+    crossorigin="anonymous"
+    defer
+    onload="window.__onRendererDepLoaded && window.__onRendererDepLoaded()"
+    onerror="window.__onMarkedLoadError && window.__onMarkedLoadError()"
+  ></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+    crossorigin="anonymous"
+    defer
+    onload="window.__onRendererDepLoaded && window.__onRendererDepLoaded()"
+    onerror="window.__onKatexLoadError && window.__onKatexLoadError()"
+  ></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    crossorigin="anonymous"
+    defer
+    onload="window.__onRendererDepLoaded && window.__onRendererDepLoaded()"
+    onerror="window.__onKatexLoadError && window.__onKatexLoadError()"
+  ></script>
+  <style>
+    :root {
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --heading-color: #0F172A;
+      --accent: #0284C7;
+      --rule-color: rgba(15, 23, 42, 0.14);
+      --code-bg: rgba(15, 23, 42, 0.06);
+      --code-block-bg: rgba(15, 23, 42, 0.045);
+      --code-border: rgba(15, 23, 42, 0.12);
+      --quote-bg: rgba(2, 132, 199, 0.06);
+      --table-border: rgba(15, 23, 42, 0.14);
+      --table-head-bg: rgba(2, 132, 199, 0.10);
+      --table-stripe: rgba(15, 23, 42, 0.025);
+      --math-card-bg: rgba(2, 132, 199, 0.05);
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      background: transparent !important;
+      color: var(--text-primary);
+      font-family: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14.5px;
+      font-weight: 400;
+      line-height: 1.62;
+      letter-spacing: -0.005em;
+      overflow-x: hidden;
+      overflow-y: hidden;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-text-size-adjust: 100%;
+      user-select: text;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+
+    body.light {
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --heading-color: #0F172A;
+      --accent: #0284C7;
+      --rule-color: rgba(15, 23, 42, 0.14);
+      --code-bg: rgba(15, 23, 42, 0.065);
+      --code-block-bg: rgba(15, 23, 42, 0.045);
+      --code-border: rgba(15, 23, 42, 0.12);
+      --quote-bg: rgba(2, 132, 199, 0.06);
+      --table-border: rgba(15, 23, 42, 0.14);
+      --table-head-bg: rgba(2, 132, 199, 0.10);
+      --table-stripe: rgba(15, 23, 42, 0.025);
+      --math-card-bg: rgba(2, 132, 199, 0.05);
+    }
+
+    body.dark {
+      --text-primary: #F8FAFC;
+      --text-secondary: #CBD5E1;
+      --heading-color: #FFFFFF;
+      --accent: #38BDF8;
+      --rule-color: rgba(148, 163, 184, 0.24);
+      --code-bg: rgba(248, 250, 252, 0.11);
+      --code-block-bg: rgba(15, 23, 42, 0.52);
+      --code-border: rgba(148, 163, 184, 0.22);
+      --quote-bg: rgba(56, 189, 248, 0.10);
+      --table-border: rgba(148, 163, 184, 0.24);
+      --table-head-bg: rgba(56, 189, 248, 0.15);
+      --table-stripe: rgba(248, 250, 252, 0.03);
+      --math-card-bg: rgba(56, 189, 248, 0.08);
+    }
+
+    #ai-stage {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+      background: transparent;
+    }
+
+    #ai-content {
+      width: 100%;
+      box-sizing: border-box;
+      color: var(--text-primary);
+    }
+
+    #ai-content > *:first-child {
+      margin-top: 0 !important;
+    }
+
+    #ai-content > *:last-child {
+      margin-bottom: 0 !important;
+    }
+
+    #ai-content p {
+      margin: 0 0 10px 0;
+    }
+
+    #ai-content h1,
+    #ai-content h2,
+    #ai-content h3,
+    #ai-content h4 {
+      color: var(--heading-color);
+      font-family: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+      font-weight: 700;
+      line-height: 1.32;
+      letter-spacing: -0.015em;
+      margin: 14px 0 6px 0;
+    }
+
+    #ai-content h1 {
+      font-size: 18px;
+    }
+
+    #ai-content h2 {
+      font-size: 16.5px;
+    }
+
+    #ai-content h3 {
+      font-size: 15.2px;
+      color: var(--accent);
+    }
+
+    #ai-content h4 {
+      font-size: 14.5px;
+    }
+
+    #ai-content strong,
+    #ai-content b {
+      font-weight: 700;
+      color: var(--heading-color);
+    }
+
+    #ai-content em {
+      font-style: italic;
+    }
+
+    #ai-content ul,
+    #ai-content ol {
+      margin: 6px 0 10px 0;
+      padding-left: 20px;
+    }
+
+    #ai-content li {
+      margin: 4px 0;
+      padding-left: 2px;
+    }
+
+    #ai-content li > p {
+      margin: 2px 0;
+    }
+
+    #ai-content hr {
+      border: none;
+      border-top: 1px solid var(--rule-color);
+      margin: 14px 0;
+    }
+
+    #ai-content blockquote {
+      margin: 10px 0;
+      padding: 8px 12px;
+      border-left: 3px solid var(--accent);
+      background: var(--quote-bg);
+      border-radius: 0 10px 10px 0;
+      color: var(--text-secondary);
+    }
+
+    #ai-content blockquote > *:last-child {
+      margin-bottom: 0;
+    }
+
+    #ai-content a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      pointer-events: none;
+    }
+
+    #ai-content code {
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 12.8px;
+      background: var(--code-bg);
+      padding: 1.5px 5px;
+      border-radius: 5px;
+    }
+
+    #ai-content pre {
+      margin: 10px 0;
+      padding: 10px 12px;
+      background: var(--code-block-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 12px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    #ai-content pre::-webkit-scrollbar {
+      display: none;
+    }
+
+    #ai-content pre code {
+      background: transparent;
+      padding: 0;
+      border-radius: 0;
+      font-size: 12.5px;
+      line-height: 1.5;
+      white-space: pre;
+    }
+
+    .table-wrap {
+      width: 100%;
+      margin: 10px 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border: 1px solid var(--table-border);
+      border-radius: 10px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .table-wrap::-webkit-scrollbar {
+      display: none;
+    }
+
+    #ai-content table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.2px;
+      line-height: 1.45;
+    }
+
+    #ai-content th,
+    #ai-content td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--table-border);
+      border-right: 1px solid var(--table-border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    #ai-content th:last-child,
+    #ai-content td:last-child {
+      border-right: none;
+    }
+
+    #ai-content tr:last-child td {
+      border-bottom: none;
+    }
+
+    #ai-content thead th {
+      background: var(--table-head-bg);
+      color: var(--heading-color);
+      font-weight: 700;
+    }
+
+    #ai-content tbody tr:nth-child(even) {
+      background: var(--table-stripe);
+    }
+
+    /* Centered Display Math & Crisp Inline Math */
+    #ai-content .katex-display {
+      display: block;
+      margin: 12px 0 !important;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: var(--math-card-bg);
+      text-align: center !important;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    #ai-content .katex-display::-webkit-scrollbar {
+      display: none;
+    }
+
+    #ai-content .katex-display > .katex {
+      display: inline-block;
+      text-align: center;
+      white-space: nowrap;
+      max-width: none;
+    }
+
+    #ai-content .katex {
+      color: var(--text-primary);
+      font-size: 1.04em;
+    }
+
+    #ai-content .katex .mord,
+    #ai-content .katex .mop,
+    #ai-content .katex .mbin,
+    #ai-content .katex .mrel,
+    #ai-content .katex .mopen,
+    #ai-content .katex .mclose,
+    #ai-content .katex .mpunct,
+    #ai-content .katex .minner {
+      color: inherit;
+    }
+
+    .fallback-plain {
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.62;
+    }
+  </style>
+</head>
+<body class="light">
+  <div id="ai-stage">
+    <div id="ai-content"></div>
+  </div>
+
+  <script>
+    (function () {
+      var pendingState = {
+        markdown: "",
+        theme: "light"
+      };
+      var lastReportedHeight = -1;
+      var markedLoadFailed = false;
+      var katexLoadFailed = false;
+
+      function getStage() {
+        return document.getElementById("ai-stage");
+      }
+
+      function getContent() {
+        return document.getElementById("ai-content");
+      }
+
+      function normalizeDelimiters(raw) {
+        if (typeof raw !== "string") return "";
+        return raw.replace(/\u00a5\u00a5/g, "$$").replace(/\u00a5/g, "$");
+      }
+
+      function escapeHtml(text) {
+        return text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function applyTheme(theme) {
+        document.body.className = theme === "dark" ? "dark" : "light";
+      }
+
+      function reportHeight() {
+        var stage = getStage();
+        if (!stage) return;
+        var rectHeight = stage.getBoundingClientRect().height || 0;
+        var scrollHeight = stage.scrollHeight || 0;
+        var measured = Math.ceil(Math.max(rectHeight, scrollHeight, 24)) + 2;
+        if (measured !== lastReportedHeight) {
+          lastReportedHeight = measured;
+          if (
+            window.AndroidBridge &&
+            typeof window.AndroidBridge.onHeightChanged === "function"
+          ) {
+            window.AndroidBridge.onHeightChanged(measured);
+          }
+        }
+      }
+
+      function scheduleHeightSync() {
+        reportHeight();
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(function () {
+            reportHeight();
+          });
+        }
+        setTimeout(reportHeight, 50);
+        setTimeout(reportHeight, 180);
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () {
+            reportHeight();
+          }).catch(function () {});
+        }
+      }
+
+      function isLikelyInlineCurrency(inner) {
+        if (!inner) return true;
+        var trimmed = inner.trim();
+        if (/^[0-9][0-9,.]*$/.test(trimmed)) {
+          return true;
+        }
+        return false;
+      }
+
+      /**
+       * Protects fenced/inline code and LaTeX blocks (`$$...$$`, `$...$`, `\[...\]`, `\(...\)`)
+       * before calling Marked.js so Markdown never alters subscripts (`_`), `*`, or `\\`.
+       */
+      function extractCodeAndMathTokens(src) {
+        var codeTokens = [];
+        var mathTokens = [];
+
+        function pushCode(full) {
+          var token = "SIBILCODE_" + codeTokens.length + "_TOKEN";
+          codeTokens.push(full);
+          return token;
+        }
+
+        function pushMath(full) {
+          var token = "SIBILMATH_" + mathTokens.length + "_TOKEN";
+          mathTokens.push(full);
+          return token;
+        }
+
+        // 1. Protect fenced code blocks ```...```
+        var working = src.replace(/```[\s\S]*?```/g, function (match) {
+          return pushCode(match);
+        });
+
+        // 2. Protect inline code `...`
+        working = working.replace(/`[^`\n]+`/g, function (match) {
+          return pushCode(match);
+        });
+
+        // 3. Protect display math $$...$$ and \[...\]
+        working = working.replace(/\$\$([\s\S]*?)\$\$/g, function (match) {
+          return "\n\n" + pushMath(match) + "\n\n";
+        });
+        working = working.replace(/\\\[([\s\S]*?)\\\]/g, function (match) {
+          return "\n\n" + pushMath(match) + "\n\n";
+        });
+
+        // 4. Protect inline math \(...\)
+        working = working.replace(/\\\(([\s\S]*?)\\\)/g, function (match) {
+          return pushMath(match);
+        });
+
+        // 5. Protect inline math $...$ (single line, unescaped)
+        var out = "";
+        var i = 0;
+        var len = working.length;
+        while (i < len) {
+          var ch = working[i];
+          if (ch === "$" && (i === 0 || working[i - 1] !== "\\") && working[i + 1] !== "$") {
+            var closeIdx = -1;
+            var j = i + 1;
+            while (j < len) {
+              var cj = working[j];
+              if (cj === "\n" && working[j + 1] === "\n") {
+                break;
+              }
+              if (cj === "\n") {
+                break;
+              }
+              if (cj === "$" && working[j - 1] !== "\\" && working[j + 1] !== "$") {
+                var nextChar = j + 1 < len ? working[j + 1] : "";
+                if (!(nextChar >= "0" && nextChar <= "9")) {
+                  closeIdx = j;
+                  break;
+                }
+              }
+              j++;
+            }
+            if (closeIdx !== -1) {
+              var inner = working.slice(i + 1, closeIdx);
+              if (inner.trim().length > 0 && !isLikelyInlineCurrency(inner)) {
+                out += pushMath(working.slice(i, closeIdx + 1));
+                i = closeIdx + 1;
+                continue;
+              }
+            }
+          }
+          out += ch;
+          i++;
+        }
+
+        // Restore code blocks so Marked.js renders them properly
+        for (var k = codeTokens.length - 1; k >= 0; k--) {
+          out = out.split("SIBILCODE_" + k + "_TOKEN").join(codeTokens[k]);
+        }
+
+        return {
+          preparedMarkdown: out,
+          mathTokens: mathTokens
+        };
+      }
+
+      function restoreMathTokensInHtml(html, mathTokens) {
+        var result = html;
+        for (var i = 0; i < mathTokens.length; i++) {
+          var token = "SIBILMATH_" + i + "_TOKEN";
+          var escapedMath = escapeHtml(mathTokens[i]);
+          result = result.split(token).join(escapedMath);
+        }
+        return result;
+      }
+
+      function renderFallbackMarkdownHtml(text) {
+        var escaped = escapeHtml(text);
+        escaped = escaped
+          .replace(/^####\s+(.+)$/gm, "<h4>$1</h4>")
+          .replace(/^###\s+(.+)$/gm, "<h3>$1</h3>")
+          .replace(/^##\s+(.+)$/gm, "<h2>$1</h2>")
+          .replace(/^#\s+(.+)$/gm, "<h1>$1</h1>")
+          .replace(/^---$/gm, "<hr />")
+          .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+          .replace(/\n/g, "<br />");
+        return '<div class="fallback-plain">' + escaped + "</div>";
+      }
+
+      function wrapTables(container) {
+        var tables = container.querySelectorAll("table");
+        for (var i = 0; i < tables.length; i++) {
+          var table = tables[i];
+          if (table.parentNode && table.parentNode.className === "table-wrap") continue;
+          var wrapper = document.createElement("div");
+          wrapper.className = "table-wrap";
+          table.parentNode.insertBefore(wrapper, table);
+          wrapper.appendChild(table);
+        }
+      }
+
+      function sanitizeDangerousHtml(container) {
+        var blocked = container.querySelectorAll("script, iframe, object, embed, form, style");
+        for (var i = 0; i < blocked.length; i++) {
+          if (blocked[i].parentNode) {
+            blocked[i].parentNode.removeChild(blocked[i]);
+          }
+        }
+      }
+
+      window.renderAiMessage = function (markdownText, theme) {
+        pendingState.markdown = normalizeDelimiters(
+          typeof markdownText === "string" ? markdownText : ""
+        );
+        pendingState.theme = theme === "dark" ? "dark" : "light";
+
+        applyTheme(pendingState.theme);
+
+        var content = getContent();
+        if (!content) return;
+
+        var extracted = extractCodeAndMathTokens(pendingState.markdown);
+
+        if (!markedLoadFailed && typeof window.marked !== "undefined" && typeof window.marked.parse === "function") {
+          try {
+            var parsedHtml = window.marked.parse(extracted.preparedMarkdown, {
+              gfm: true,
+              breaks: true
+            });
+            content.innerHTML = restoreMathTokensInHtml(parsedHtml, extracted.mathTokens);
+            sanitizeDangerousHtml(content);
+            wrapTables(content);
+          } catch (err) {
+            content.innerHTML = renderFallbackMarkdownHtml(pendingState.markdown);
+          }
+        } else {
+          content.innerHTML = renderFallbackMarkdownHtml(pendingState.markdown);
+        }
+
+        if (
+          !katexLoadFailed &&
+          typeof window.renderMathInElement === "function"
+        ) {
+          try {
+            window.renderMathInElement(content, {
+              delimiters: [
+                { left: "$$", right: "$$", display: true },
+                { left: "$", right: "$", display: false },
+                { left: "\\[", right: "\\]", display: true },
+                { left: "\\(", right: "\\)", display: false }
+              ],
+              throwOnError: false,
+              strict: false,
+              trust: false,
+              ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+            });
+          } catch (err) {
+            // Keep readable text if KaTeX fails on malformed snippet
+          }
+        }
+
+        scheduleHeightSync();
+      };
+
+      window.__onRendererDepLoaded = function () {
+        if (pendingState.markdown) {
+          window.renderAiMessage(pendingState.markdown, pendingState.theme);
+        }
+      };
+
+      window.__onMarkedLoadError = function () {
+        markedLoadFailed = true;
+        if (pendingState.markdown) {
+          window.renderAiMessage(pendingState.markdown, pendingState.theme);
+        }
+      };
+
+      window.__onKatexLoadError = function () {
+        katexLoadFailed = true;
+        if (pendingState.markdown) {
+          window.renderAiMessage(pendingState.markdown, pendingState.theme);
+        }
+      };
+
+      window.addEventListener("load", function () {
+        if (pendingState.markdown) {
+          window.renderAiMessage(pendingState.markdown, pendingState.theme);
+        } else {
+          reportHeight();
+        }
+      });
+
+      window.addEventListener("resize", function () {
+        scheduleHeightSync();
+      });
+
+      if (typeof ResizeObserver !== "undefined") {
+        var observer = new ResizeObserver(function () {
+          reportHeight();
+        });
+        var stageEl = getStage();
+        if (stageEl) {
+          observer.observe(stageEl);
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

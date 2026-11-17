@@ -1,11 +1,20 @@
 package com.example
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -75,17 +84,21 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Typography
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -99,17 +112,20 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.JetBrainsMonoFamily
+import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -118,6 +134,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -131,7 +148,46 @@ import org.json.JSONObject
 // - Multi-Chat Thread Persistence (`sibil_gemini_sessions`)
 // - Live Google Search Grounding (`google_search`) + Clickable Source Pills
 // - Open-Topic Freedom + Strict Explicit Content Censorship (`safetySettings`)
+// - Plus Jakarta Sans Geometric Typography + Marked.js & KaTeX Rich Rendering
 // ============================================================================
+
+private const val AI_MESSAGE_RENDERER_ASSET_URL = "file:///android_asset/ai_message_renderer.html"
+
+val SibilAiSansFamily: FontFamily = FontFamily(
+  Font(R.font.plus_jakarta_sans, FontWeight.Normal),
+  Font(R.font.plus_jakarta_sans, FontWeight.Medium),
+  Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
+  Font(R.font.plus_jakarta_sans, FontWeight.Bold)
+)
+
+private val SibilAiTypography = Typography(
+  displayLarge = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 36.sp, lineHeight = 44.sp),
+  displayMedium = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 30.sp, lineHeight = 36.sp),
+  displaySmall = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 24.sp, lineHeight = 32.sp),
+  headlineLarge = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 22.sp, lineHeight = 28.sp),
+  headlineMedium = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 20.sp, lineHeight = 26.sp),
+  headlineSmall = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 24.sp),
+  titleLarge = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold, fontSize = 18.sp, lineHeight = 24.sp),
+  titleMedium = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 22.sp),
+  titleSmall = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 20.sp),
+  bodyLarge = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 22.sp),
+  bodyMedium = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Normal, fontSize = 14.5.sp, lineHeight = 21.5.sp),
+  bodySmall = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Normal, fontSize = 12.5.sp, lineHeight = 18.sp),
+  labelLarge = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 20.sp),
+  labelMedium = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, lineHeight = 18.sp),
+  labelSmall = TextStyle(fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Medium, fontSize = 11.5.sp, lineHeight = 16.sp)
+)
+
+/**
+ * Normalizes legacy yen-style math delimiters (`¥¥` / `¥`) into standard LaTeX delimiters
+ * (`$$` / `$`) before rendering or copying Sibil AI messages, including older saved chats.
+ */
+fun normalizeAiLatexDelimiters(rawText: String): String {
+  if (rawText.isEmpty()) return rawText
+  return rawText
+    .replace("\u00A5\u00A5", "$$")
+    .replace("\u00A5", "$")
+}
 
 data class WebSource(
   val title: String,
@@ -509,7 +565,7 @@ object GeminiStudyClient {
   )
 
   const val GENERAL_SYSTEM_INSTRUCTION =
-    "You are Sibil AI, an intelligent, helpful assistant built into Sibil CE. Give users full freedom to ask about any topic—including Civil Engineering (MSTE, PSAD, HPGE, NSCP 2015, Surveying, Max Fajardo Estimating, Casio fx-570ES PLUS shortcuts), programming, science, history, writing, or general everyday questions. Use Google Search grounding for current or factual queries. However, you must strictly refuse and censor any sexually explicit, NSFW, pornographic, erotic, violent, self-harm, or hate-speech content."
+    "You are Sibil AI, an intelligent, helpful assistant built into Sibil CE. Give users full freedom to ask about any topic—including Civil Engineering (MSTE, PSAD, HPGE, NSCP 2015, Surveying, Max Fajardo Estimating, Casio fx-570ES PLUS shortcuts), programming, science, history, writing, or general everyday questions. Use Google Search grounding for current or factual queries. However, you must strictly refuse and censor any sexually explicit, NSFW, pornographic, erotic, violent, self-harm, or hate-speech content. Formatting rules: Format responses cleanly with Markdown (### headings, **bold**, - bullet lists, tables, and --- horizontal rules). Always write mathematical notation using standard LaTeX delimiters: $ ... $ for inline symbols and units (e.g., $\\sigma$, $\\tau$, $\\text{MPa}$) and $$ ... $$ for standalone display equations (e.g., $$\\sigma = \\frac{P}{A}$$). Never replace $ with ¥."
 
   private val EXPLICIT_CONTENT_PATTERNS = listOf(
     Regex("""\b(porn|pornography|pornographic|hentai|nsfw|xxx|nudes?|nudity|onlyfans)\b""", RegexOption.IGNORE_CASE),
@@ -862,7 +918,7 @@ object GeminiStudyClient {
       val parts = candidates.optJSONObject(0)
         ?.optJSONObject("content")
         ?.optJSONArray("parts") ?: return ""
-      buildString {
+      val rawJoined = buildString {
         for (i in 0 until parts.length()) {
           val textPart = parts.optJSONObject(i)?.optString("text").orEmpty()
           if (textPart.isNotEmpty()) {
@@ -871,6 +927,7 @@ object GeminiStudyClient {
           }
         }
       }.trim()
+      normalizeAiLatexDelimiters(rawJoined)
     } catch (_: Exception) {
       ""
     }
@@ -1112,6 +1169,234 @@ private fun formatRelativeTimestamp(timestampMillis: Long): String {
   }
 }
 
+private class AiRenderStateHolder {
+  var isPageLoaded: Boolean = false
+  var lastRenderedSignature: String? = null
+}
+
+private object AiMessageHeightCache {
+  private val cache = object : LinkedHashMap<String, Float>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Float>?): Boolean {
+      return size > 120
+    }
+  }
+
+  @Synchronized
+  fun get(key: String): Float? = cache[key]
+
+  @Synchronized
+  fun put(key: String, heightDp: Float) {
+    cache[key] = heightDp
+  }
+}
+
+private class AiMessageHeightJsBridge(
+  private val onHeightUpdate: (Float) -> Unit
+) {
+  private val mainHandler = Handler(Looper.getMainLooper())
+
+  @JavascriptInterface
+  fun onHeightChanged(heightDp: Float) {
+    if (heightDp.isFinite() && heightDp > 0f) {
+      val clamped = heightDp.coerceIn(24f, 16000f)
+      mainHandler.post {
+        onHeightUpdate(clamped)
+      }
+    }
+  }
+}
+
+private fun buildRenderAiMessageJavascript(
+  markdownText: String,
+  isDarkTheme: Boolean
+): String {
+  val themeArg = if (isDarkTheme) "dark" else "light"
+  return "window.renderAiMessage(${JSONObject.quote(markdownText)}, ${JSONObject.quote(themeArg)});"
+}
+
+/**
+ * Reusable auto-sizing transparent WebView composable for rendering Sibil AI Markdown + KaTeX
+ * responses without inner vertical scrollbars, zoom controls, or external navigation.
+ */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun AiRichTextView(
+  markdownText: String,
+  isDarkTheme: Boolean = currentGlassPalette().isDark,
+  modifier: Modifier = Modifier,
+  cacheKey: String? = null
+) {
+  val normalizedMarkdown = remember(markdownText) {
+    normalizeAiLatexDelimiters(markdownText)
+  }
+  val isInspectionMode = LocalInspectionMode.current
+  val heightCacheKey = remember(cacheKey, normalizedMarkdown, isDarkTheme) {
+    "${cacheKey.orEmpty()}:${normalizedMarkdown.hashCode()}:$isDarkTheme"
+  }
+
+  val initialEstimatedHeight = remember(heightCacheKey, normalizedMarkdown) {
+    AiMessageHeightCache.get(heightCacheKey) ?: run {
+      val lineCount = maxOf(normalizedMarkdown.lines().size, 1)
+      val wrappedLines = (normalizedMarkdown.length / 38)
+      ((lineCount + wrappedLines) * 20f + 16f).coerceIn(36f, 640f)
+    }
+  }
+
+  var renderedHeightDp by remember { mutableFloatStateOf(initialEstimatedHeight) }
+  var hasJsHeight by remember { mutableStateOf(AiMessageHeightCache.get(heightCacheKey) != null) }
+  var webViewInitFailed by remember { mutableStateOf(false) }
+
+  LaunchedEffect(heightCacheKey) {
+    val cached = AiMessageHeightCache.get(heightCacheKey)
+    if (cached != null) {
+      renderedHeightDp = cached
+      hasJsHeight = true
+    } else {
+      renderedHeightDp = initialEstimatedHeight
+      hasJsHeight = false
+    }
+  }
+
+  val latestMarkdown by rememberUpdatedState(normalizedMarkdown)
+  val latestDark by rememberUpdatedState(isDarkTheme)
+  val latestCacheKey by rememberUpdatedState(heightCacheKey)
+
+  val fallbackTextColor = if (isDarkTheme) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+
+  if (isInspectionMode || webViewInitFailed) {
+    Text(
+      text = normalizedMarkdown,
+      style = TextStyle(
+        fontFamily = SibilAiSansFamily,
+        fontSize = 14.5.sp,
+        lineHeight = 21.5.sp,
+        color = fallbackTextColor
+      ),
+      modifier = modifier.fillMaxWidth()
+    )
+    return
+  }
+
+  val renderHolder = remember { AiRenderStateHolder() }
+
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(renderedHeightDp.dp),
+    contentAlignment = Alignment.TopStart
+  ) {
+    AndroidView(
+      modifier = Modifier
+        .fillMaxSize()
+        .alpha(if (hasJsHeight) 1f else 0.02f),
+      factory = { ctx ->
+        try {
+          WebView(ctx).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isHapticFeedbackEnabled = false
+
+            settings.apply {
+              javaScriptEnabled = true
+              domStorageEnabled = true
+              cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+              allowFileAccess = true
+              allowContentAccess = false
+              setSupportZoom(false)
+              builtInZoomControls = false
+              displayZoomControls = false
+              useWideViewPort = false
+              loadWithOverviewMode = false
+              @Suppress("DEPRECATION")
+              allowFileAccessFromFileURLs = false
+              @Suppress("DEPRECATION")
+              allowUniversalAccessFromFileURLs = false
+            }
+
+            val bridge = AiMessageHeightJsBridge { newHeightDp ->
+              AiMessageHeightCache.put(latestCacheKey, newHeightDp)
+              if (!hasJsHeight || abs(renderedHeightDp - newHeightDp) >= 1f) {
+                renderedHeightDp = newHeightDp
+                hasJsHeight = true
+              }
+            }
+            addJavascriptInterface(bridge, "AndroidBridge")
+
+            webViewClient = object : WebViewClient() {
+              override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+              ): Boolean {
+                val targetUrl = request?.url?.toString().orEmpty()
+                return targetUrl != AI_MESSAGE_RENDERER_ASSET_URL && targetUrl != "about:blank"
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                val targetUrl = url.orEmpty()
+                return targetUrl != AI_MESSAGE_RENDERER_ASSET_URL && targetUrl != "about:blank"
+              }
+
+              override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (view == null) return
+                renderHolder.isPageLoaded = true
+                val signature = "${latestMarkdown}\u0000${latestDark}"
+                renderHolder.lastRenderedSignature = signature
+                view.evaluateJavascript(
+                  buildRenderAiMessageJavascript(latestMarkdown, latestDark),
+                  null
+                )
+              }
+            }
+
+            loadUrl(AI_MESSAGE_RENDERER_ASSET_URL)
+          }
+        } catch (_: Throwable) {
+          webViewInitFailed = true
+          View(ctx)
+        }
+      },
+      update = { view ->
+        val webView = view as? WebView ?: return@AndroidView
+        val signature = "${normalizedMarkdown}\u0000${isDarkTheme}"
+        if (renderHolder.isPageLoaded && renderHolder.lastRenderedSignature != signature) {
+          renderHolder.lastRenderedSignature = signature
+          webView.evaluateJavascript(
+            buildRenderAiMessageJavascript(normalizedMarkdown, isDarkTheme),
+            null
+          )
+        }
+      },
+      onRelease = { view ->
+        val webView = view as? WebView ?: return@AndroidView
+        renderHolder.isPageLoaded = false
+        renderHolder.lastRenderedSignature = null
+        runCatching {
+          webView.stopLoading()
+          webView.removeJavascriptInterface("AndroidBridge")
+          webView.destroy()
+        }
+      }
+    )
+
+    if (!hasJsHeight) {
+      Text(
+        text = normalizedMarkdown,
+        style = TextStyle(
+          fontFamily = SibilAiSansFamily,
+          fontSize = 14.5.sp,
+          lineHeight = 21.5.sp,
+          color = fallbackTextColor
+        ),
+        modifier = Modifier.fillMaxWidth()
+      )
+    }
+  }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun GeminiStudyHelperScreen(
@@ -1311,7 +1596,7 @@ internal fun GeminiStudyHelperScreen(
             Text(
               text = msg.text,
               style = MaterialTheme.typography.bodyMedium.copy(
-                fontFamily = AppleSansFamily,
+                fontFamily = SibilAiSansFamily,
                 fontSize = 14.5.sp,
                 lineHeight = 20.5.sp
               ),
@@ -1321,6 +1606,10 @@ internal fun GeminiStudyHelperScreen(
         }
       }
       return
+    }
+
+    val normalizedAssistantText = remember(msg.id, msg.text) {
+      normalizeAiLatexDelimiters(msg.text)
     }
 
     Column(
@@ -1376,7 +1665,7 @@ internal fun GeminiStudyHelperScreen(
               Text(
                 text = if (msg.isSafetyBlocked) "Safety Policy" else "Sibil AI",
                 style = MaterialTheme.typography.labelLarge.copy(
-                  fontFamily = AppleSansFamily,
+                  fontFamily = SibilAiSansFamily,
                   fontWeight = FontWeight.Bold
                 ),
                 color = if (msg.isSafetyBlocked) Color(0xFFF59E0B) else palette.textPrimary
@@ -1386,7 +1675,7 @@ internal fun GeminiStudyHelperScreen(
             if (!msg.isSafetyBlocked) {
               IconButton(
                 onClick = {
-                  clipboardManager.setText(AnnotatedString(msg.text))
+                  clipboardManager.setText(AnnotatedString(normalizedAssistantText))
                   Toast.makeText(context, "Copied response", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier
@@ -1403,15 +1692,26 @@ internal fun GeminiStudyHelperScreen(
             }
           }
 
-          Text(
-            text = msg.text,
-            style = MaterialTheme.typography.bodyMedium.copy(
-              fontFamily = AppleSansFamily,
-              fontSize = 14.5.sp,
-              lineHeight = 21.5.sp
-            ),
-            color = bubbleTextColor
-          )
+          if (msg.isSafetyBlocked) {
+            Text(
+              text = normalizedAssistantText,
+              style = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = SibilAiSansFamily,
+                fontSize = 14.5.sp,
+                lineHeight = 21.5.sp
+              ),
+              color = bubbleTextColor
+            )
+          } else {
+            AiRichTextView(
+              markdownText = normalizedAssistantText,
+              isDarkTheme = palette.isDark,
+              cacheKey = msg.id,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("study_ai_rich_text_${msg.id}")
+            )
+          }
         }
       }
 
@@ -1456,7 +1756,7 @@ internal fun GeminiStudyHelperScreen(
                 Text(
                   text = source.title,
                   style = MaterialTheme.typography.labelMedium.copy(
-                    fontFamily = AppleSansFamily,
+                    fontFamily = SibilAiSansFamily,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                   ),
@@ -1497,7 +1797,7 @@ internal fun GeminiStudyHelperScreen(
           Text(
             text = "Sibil AI",
             style = MaterialTheme.typography.titleMedium.copy(
-              fontFamily = AppleSansFamily,
+              fontFamily = SibilAiSansFamily,
               fontWeight = FontWeight.Bold,
               fontSize = 18.sp
             ),
@@ -1506,7 +1806,7 @@ internal fun GeminiStudyHelperScreen(
           Text(
             text = "Ask anything — CELE formulas, code, research, or everyday questions",
             style = MaterialTheme.typography.bodySmall.copy(
-              fontFamily = AppleSansFamily,
+              fontFamily = SibilAiSansFamily,
               fontSize = 13.sp
             ),
             color = palette.textSecondary,
@@ -1544,7 +1844,7 @@ internal fun GeminiStudyHelperScreen(
                 Text(
                   text = "Sibil AI is thinking...",
                   style = MaterialTheme.typography.bodyMedium.copy(
-                    fontFamily = AppleSansFamily,
+                    fontFamily = SibilAiSansFamily,
                     fontWeight = FontWeight.SemiBold
                   ),
                   color = palette.textSecondary
@@ -1590,6 +1890,7 @@ internal fun GeminiStudyHelperScreen(
               Column(modifier = Modifier.weight(1f)) {
                 Text(
                   text = "Photo Attached",
+                  fontFamily = SibilAiSansFamily,
                   fontWeight = FontWeight.Bold,
                   fontSize = 12.sp,
                   color = palette.textPrimary
@@ -1597,7 +1898,7 @@ internal fun GeminiStudyHelperScreen(
                 Text(
                   text = "${attachment.width}×${attachment.height}px JPEG",
                   fontSize = 11.sp,
-                  fontFamily = JetBrainsMonoFamily,
+                  fontFamily = SibilAiSansFamily,
                   color = palette.textSecondary
                 )
               }
@@ -1615,6 +1916,7 @@ internal fun GeminiStudyHelperScreen(
               CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
               Text(
                 text = "Optimizing photo...",
+                fontFamily = SibilAiSansFamily,
                 fontSize = 12.sp,
                 color = palette.textSecondary
               )
@@ -1660,7 +1962,7 @@ internal fun GeminiStudyHelperScreen(
             singleLine = false,
             maxLines = 5,
             textStyle = TextStyle(
-              fontFamily = AppleSansFamily,
+              fontFamily = SibilAiSansFamily,
               fontSize = 15.sp,
               lineHeight = 20.sp,
               fontWeight = FontWeight.Normal,
@@ -1684,7 +1986,7 @@ internal fun GeminiStudyHelperScreen(
                   Text(
                     text = "Ask Sibil AI anything...",
                     style = TextStyle(
-                      fontFamily = AppleSansFamily,
+                      fontFamily = SibilAiSansFamily,
                       fontSize = 14.5.sp,
                       lineHeight = 20.sp,
                       color = placeholderTextColor
@@ -1735,214 +2037,113 @@ internal fun GeminiStudyHelperScreen(
     }
   }
 
-  // Clean Full-Screen Gemini Assistant Canvas (Zero Top Clutter)
-  Column(
-    modifier = modifier
-      .fillMaxSize()
-      .statusBarsPadding()
-      .navigationBarsPadding()
-      .imePadding()
-      .testTag("gemini_study_helper_screen")
+  MaterialTheme(
+    colorScheme = MaterialTheme.colorScheme,
+    shapes = MaterialTheme.shapes,
+    typography = SibilAiTypography
   ) {
-    // Flat, Borderless & Airy Top Header Bar (54dp, flush on background)
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .height(54.dp)
-        .background(Color.Transparent)
-        .padding(horizontal = 12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween
+    // Clean Full-Screen Gemini Assistant Canvas (Zero Top Clutter)
+    Column(
+      modifier = modifier
+        .fillMaxSize()
+        .statusBarsPadding()
+        .navigationBarsPadding()
+        .imePadding()
+        .testTag("gemini_study_helper_screen")
     ) {
-      // Left Cluster: Back, Saved Chats, SibilAiLogo, Title & Tappable Key Status Dot
+      // Flat, Borderless & Airy Top Header Bar (54dp, flush on background)
       Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.weight(1f, fill = false)
-      ) {
-        IconButton(
-          onClick = onBackToExtras,
-          modifier = Modifier
-            .size(38.dp)
-            .testTag("study_ai_back_button")
-        ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-            contentDescription = "Close Sibil AI",
-            tint = palette.textPrimary
-          )
-        }
-
-        IconButton(
-          onClick = {
-            savedThreads = GeminiStudyClient.loadThreads(context)
-            isSavedChatsSheetOpen = true
-          },
-          modifier = Modifier
-            .size(38.dp)
-            .testTag("study_ai_history_button")
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.History,
-            contentDescription = "Saved Chats",
-            tint = palette.textPrimary
-          )
-        }
-
-        SibilAiLogo(modifier = Modifier.size(22.dp))
-
-        Text(
-          text = "Sibil AI",
-          style = MaterialTheme.typography.titleMedium.copy(
-            fontFamily = AppleSansFamily,
-            fontSize = 17.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = (-0.2).sp
-          ),
-          color = palette.textPrimary,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis
-        )
-
-        Box(
-          modifier = Modifier
-            .size(22.dp)
-            .clip(CircleShape)
-            .clickable {
-              customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
-              isApiSettingsOpen = true
-            }
-            .testTag("study_ai_status_dot"),
-          contentAlignment = Alignment.Center
-        ) {
-          Box(
-            modifier = Modifier
-              .size(6.dp)
-              .clip(CircleShape)
-              .background(if (hasReadyKey) GoogleGreen else Color(0xFFF59E0B))
-          )
-        }
-      }
-
-      // Right Cluster: Subtle Tinted + New Chat Pill & Borderless Settings Button
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-      ) {
-        val newChatTextColor = if (palette.isDark) Color(0xFF8AB4F8) else Color(0xFF1A73E8)
-        Surface(
-          onClick = { startNewBlankChat() },
-          shape = RoundedCornerShape(16.dp),
-          color = GoogleBlue.copy(alpha = 0.14f),
-          modifier = Modifier
-            .height(32.dp)
-            .testTag("study_ai_new_chat_button")
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-          ) {
-            Icon(
-              imageVector = Icons.Rounded.Add,
-              contentDescription = null,
-              tint = newChatTextColor,
-              modifier = Modifier.size(15.dp)
-            )
-            Text(
-              text = "New Chat",
-              style = MaterialTheme.typography.labelMedium.copy(
-                fontFamily = AppleSansFamily,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.SemiBold
-              ),
-              color = newChatTextColor,
-              maxLines = 1,
-              softWrap = false
-            )
-          }
-        }
-
-        IconButton(
-          onClick = {
-            customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
-            isApiSettingsOpen = true
-          },
-          modifier = Modifier
-            .size(36.dp)
-            .testTag("study_ai_settings_button")
-        ) {
-          Icon(
-            imageVector = Icons.Rounded.Settings,
-            contentDescription = "Gemini API Key Settings",
-            tint = palette.textPrimary
-          )
-        }
-      }
-    }
-
-    // Full-bleed Chat Canvas + Docked Composer
-    Box(
-      modifier = Modifier
-        .weight(1f)
-        .fillMaxWidth()
-    ) {
-      renderChatFeed(modifier = Modifier.fillMaxSize())
-    }
-
-    renderInputComposer()
-  }
-
-  // Saved Chats Bottom Sheet
-  if (isSavedChatsSheetOpen) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-      onDismissRequest = { isSavedChatsSheetOpen = false },
-      sheetState = sheetState,
-      containerColor = palette.dialogSurface,
-      shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
-    ) {
-      Column(
         modifier = Modifier
           .fillMaxWidth()
-          .navigationBarsPadding()
-          .padding(horizontal = 18.dp)
-          .padding(bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+          .height(54.dp)
+          .background(Color.Transparent)
+          .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
       ) {
+        // Left Cluster: Back, Saved Chats, SibilAiLogo, Title & Tappable Key Status Dot
         Row(
-          modifier = Modifier.fillMaxWidth(),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.weight(1f, fill = false)
         ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          IconButton(
+            onClick = onBackToExtras,
+            modifier = Modifier
+              .size(38.dp)
+              .testTag("study_ai_back_button")
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+              contentDescription = "Close Sibil AI",
+              tint = palette.textPrimary
+            )
+          }
+
+          IconButton(
+            onClick = {
+              savedThreads = GeminiStudyClient.loadThreads(context)
+              isSavedChatsSheetOpen = true
+            },
+            modifier = Modifier
+              .size(38.dp)
+              .testTag("study_ai_history_button")
           ) {
             Icon(
               imageVector = Icons.Rounded.History,
-              contentDescription = null,
-              tint = Color(0xFF38BDF8)
-            )
-            Text(
-              text = "Saved Chats",
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = AppleSansFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-              ),
-              color = palette.textPrimary
+              contentDescription = "Saved Chats",
+              tint = palette.textPrimary
             )
           }
+
+          SibilAiLogo(modifier = Modifier.size(22.dp))
+
+          Text(
+            text = "Sibil AI",
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontFamily = SibilAiSansFamily,
+              fontSize = 17.sp,
+              fontWeight = FontWeight.SemiBold,
+              letterSpacing = (-0.2).sp
+            ),
+            color = palette.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+
+          Box(
+            modifier = Modifier
+              .size(22.dp)
+              .clip(CircleShape)
+              .clickable {
+                customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
+                isApiSettingsOpen = true
+              }
+              .testTag("study_ai_status_dot"),
+            contentAlignment = Alignment.Center
+          ) {
+            Box(
+              modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(if (hasReadyKey) GoogleGreen else Color(0xFFF59E0B))
+            )
+          }
+        }
+
+        // Right Cluster: Subtle Tinted + New Chat Pill & Borderless Settings Button
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          val newChatTextColor = if (palette.isDark) Color(0xFF8AB4F8) else Color(0xFF1A73E8)
           Surface(
-            onClick = {
-              isSavedChatsSheetOpen = false
-              startNewBlankChat()
-            },
+            onClick = { startNewBlankChat() },
             shape = RoundedCornerShape(16.dp),
-            color = palette.nestedCardFill,
-            border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.45f)),
-            modifier = Modifier.height(36.dp)
+            color = GoogleBlue.copy(alpha = 0.14f),
+            modifier = Modifier
+              .height(32.dp)
+              .testTag("study_ai_new_chat_button")
           ) {
             Row(
               modifier = Modifier.padding(horizontal = 12.dp),
@@ -1950,122 +2151,237 @@ internal fun GeminiStudyHelperScreen(
               horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
               Icon(
-                imageVector = Icons.Filled.Add,
+                imageVector = Icons.Rounded.Add,
                 contentDescription = null,
-                tint = Color(0xFF38BDF8),
-                modifier = Modifier.size(16.dp)
+                tint = newChatTextColor,
+                modifier = Modifier.size(15.dp)
               )
               Text(
                 text = "New Chat",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                color = palette.textPrimary
+                style = MaterialTheme.typography.labelMedium.copy(
+                  fontFamily = SibilAiSansFamily,
+                  fontSize = 12.5.sp,
+                  fontWeight = FontWeight.SemiBold
+                ),
+                color = newChatTextColor,
+                maxLines = 1,
+                softWrap = false
               )
             }
           }
-        }
 
-        if (savedThreads.isEmpty()) {
-          Box(
+          IconButton(
+            onClick = {
+              customKeyDraft = GeminiStudyClient.getCustomApiKey(context).ifBlank { DEFAULT_GEMINI_API_KEY }
+              isApiSettingsOpen = true
+            },
             modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 28.dp),
-            contentAlignment = Alignment.Center
+              .size(36.dp)
+              .testTag("study_ai_settings_button")
           ) {
-            Text(
-              text = "No saved conversations yet.",
-              style = MaterialTheme.typography.bodyMedium,
-              color = palette.textSecondary
+            Icon(
+              imageVector = Icons.Rounded.Settings,
+              contentDescription = "Gemini API Key Settings",
+              tint = palette.textPrimary
             )
           }
-        } else {
-          LazyColumn(
+        }
+      }
+
+      // Full-bleed Chat Canvas + Docked Composer
+      Box(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+      ) {
+        renderChatFeed(modifier = Modifier.fillMaxSize())
+      }
+
+      renderInputComposer()
+    }
+
+    // Saved Chats Bottom Sheet
+    if (isSavedChatsSheetOpen) {
+      val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+      ModalBottomSheet(
+        onDismissRequest = { isSavedChatsSheetOpen = false },
+        sheetState = sheetState,
+        containerColor = palette.dialogSurface,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
+      ) {
+        MaterialTheme(
+          colorScheme = MaterialTheme.colorScheme,
+          shapes = MaterialTheme.shapes,
+          typography = SibilAiTypography
+        ) {
+          Column(
             modifier = Modifier
               .fillMaxWidth()
-              .heightIn(max = 420.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+              .navigationBarsPadding()
+              .padding(horizontal = 18.dp)
+              .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
           ) {
-            items(savedThreads, key = { it.id }) { thread ->
-              val isCurrent = thread.id == activeThread.id
-              val lastSnippet = thread.messages.lastOrNull()?.text
-                ?.replace('\n', ' ')
-                ?.trim()
-                ?.ifEmpty { "Photo message" }
-                ?: "Empty conversation"
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.History,
+                  contentDescription = null,
+                  tint = Color(0xFF38BDF8)
+                )
+                Text(
+                  text = "Saved Chats",
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontFamily = SibilAiSansFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                  ),
+                  color = palette.textPrimary
+                )
+              }
               Surface(
-                onClick = { switchToThread(thread) },
-                shape = RoundedCornerShape(16.dp),
-                color = if (isCurrent) {
-                  Color(0xFF0284C7).copy(alpha = if (palette.isDark) 0.20f else 0.10f)
-                } else {
-                  palette.nestedCardFill
+                onClick = {
+                  isSavedChatsSheetOpen = false
+                  startNewBlankChat()
                 },
-                border = BorderStroke(
-                  width = if (isCurrent) 1.4.dp else 1.dp,
-                  color = if (isCurrent) Color(0xFF38BDF8) else palette.nestedBorderColor
-                ),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("saved_chat_thread_${thread.id}")
+                shape = RoundedCornerShape(16.dp),
+                color = palette.nestedCardFill,
+                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.45f)),
+                modifier = Modifier.height(36.dp)
               ) {
                 Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                  modifier = Modifier.padding(horizontal = 12.dp),
                   verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+                  horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                  Box(
-                    modifier = Modifier
-                      .size(8.dp)
-                      .clip(CircleShape)
-                      .background(if (isCurrent) Color(0xFF38BDF8) else palette.textSecondary.copy(alpha = 0.35f))
+                  Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(16.dp)
                   )
-                  Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                  ) {
-                    Text(
-                      text = thread.title,
-                      style = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = AppleSansFamily,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                      ),
-                      color = palette.textPrimary,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                      text = "${formatRelativeTimestamp(thread.updatedAt)} • $lastSnippet",
-                      style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = AppleSansFamily,
-                        fontSize = 12.sp
-                      ),
-                      color = palette.textSecondary,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
-                    )
-                  }
-                  IconButton(
-                    onClick = {
-                      val updated = GeminiStudyClient.deleteThread(context, thread.id)
-                      savedThreads = updated
-                      if (thread.id == activeThread.id) {
-                        val fallback = updated.firstOrNull() ?: GeminiChatThread(title = "New Chat")
-                        activeThread = fallback
-                        GeminiStudyClient.saveActiveThreadId(context, fallback.id)
-                      }
+                  Text(
+                    text = "New Chat",
+                    fontFamily = SibilAiSansFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textPrimary
+                  )
+                }
+              }
+            }
+
+            if (savedThreads.isEmpty()) {
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 28.dp),
+                contentAlignment = Alignment.Center
+              ) {
+                Text(
+                  text = "No saved conversations yet.",
+                  style = MaterialTheme.typography.bodyMedium.copy(fontFamily = SibilAiSansFamily),
+                  color = palette.textSecondary
+                )
+              }
+            } else {
+              LazyColumn(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                items(savedThreads, key = { it.id }) { thread ->
+                  val isCurrent = thread.id == activeThread.id
+                  val lastSnippet = thread.messages.lastOrNull()?.text
+                    ?.let(::normalizeAiLatexDelimiters)
+                    ?.replace('\n', ' ')
+                    ?.trim()
+                    ?.ifEmpty { "Photo message" }
+                    ?: "Empty conversation"
+                  Surface(
+                    onClick = { switchToThread(thread) },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isCurrent) {
+                      Color(0xFF0284C7).copy(alpha = if (palette.isDark) 0.20f else 0.10f)
+                    } else {
+                      palette.nestedCardFill
                     },
+                    border = BorderStroke(
+                      width = if (isCurrent) 1.4.dp else 1.dp,
+                      color = if (isCurrent) Color(0xFF38BDF8) else palette.nestedBorderColor
+                    ),
                     modifier = Modifier
-                      .size(48.dp)
-                      .testTag("delete_chat_thread_${thread.id}")
+                      .fillMaxWidth()
+                      .testTag("saved_chat_thread_${thread.id}")
                   ) {
-                    Icon(
-                      imageVector = Icons.Rounded.DeleteOutline,
-                      contentDescription = "Delete conversation",
-                      tint = palette.textSecondary
-                    )
+                    Row(
+                      modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                      Box(
+                        modifier = Modifier
+                          .size(8.dp)
+                          .clip(CircleShape)
+                          .background(if (isCurrent) Color(0xFF38BDF8) else palette.textSecondary.copy(alpha = 0.35f))
+                      )
+                      Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                      ) {
+                        Text(
+                          text = thread.title,
+                          style = MaterialTheme.typography.bodyMedium.copy(
+                            fontFamily = SibilAiSansFamily,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                          ),
+                          color = palette.textPrimary,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                          text = "${formatRelativeTimestamp(thread.updatedAt)} • $lastSnippet",
+                          style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = SibilAiSansFamily,
+                            fontSize = 12.sp
+                          ),
+                          color = palette.textSecondary,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis
+                        )
+                      }
+                      IconButton(
+                        onClick = {
+                          val updated = GeminiStudyClient.deleteThread(context, thread.id)
+                          savedThreads = updated
+                          if (thread.id == activeThread.id) {
+                            val fallback = updated.firstOrNull() ?: GeminiChatThread(title = "New Chat")
+                            activeThread = fallback
+                            GeminiStudyClient.saveActiveThreadId(context, fallback.id)
+                          }
+                        },
+                        modifier = Modifier
+                          .size(48.dp)
+                          .testTag("delete_chat_thread_${thread.id}")
+                      ) {
+                        Icon(
+                          imageVector = Icons.Rounded.DeleteOutline,
+                          contentDescription = "Delete conversation",
+                          tint = palette.textSecondary
+                        )
+                      }
+                    }
                   }
                 }
               }
@@ -2074,176 +2390,190 @@ internal fun GeminiStudyHelperScreen(
         }
       }
     }
-  }
 
-  // Clean 1-Field "Paste Gemini API Key" Bottom Sheet (Tappable via Status Dot or Settings)
-  if (isApiSettingsOpen) {
-    val connectionLabel = if (hasReadyKey) "Cloud AI Ready" else "Add API Key"
-    val keySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-      onDismissRequest = { isApiSettingsOpen = false },
-      sheetState = keySheetState,
-      containerColor = palette.dialogSurface,
-      shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
-    ) {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .navigationBarsPadding()
-          .imePadding()
-          .padding(horizontal = 20.dp)
-          .padding(bottom = 22.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    // Clean 1-Field "Paste Gemini API Key" Bottom Sheet (Tappable via Status Dot or Settings)
+    if (isApiSettingsOpen) {
+      val connectionLabel = if (hasReadyKey) "Cloud AI Ready" else "Add API Key"
+      val keySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+      ModalBottomSheet(
+        onDismissRequest = { isApiSettingsOpen = false },
+        sheetState = keySheetState,
+        containerColor = palette.dialogSurface,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
       ) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween
+        MaterialTheme(
+          colorScheme = MaterialTheme.colorScheme,
+          shapes = MaterialTheme.shapes,
+          typography = SibilAiTypography
         ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .navigationBarsPadding()
+              .imePadding()
+              .padding(horizontal = 20.dp)
+              .padding(bottom = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
           ) {
-            SibilAiLogo(modifier = Modifier.size(22.dp))
-            Text(
-              text = "Paste Gemini API Key",
-              style = MaterialTheme.typography.titleMedium.copy(
-                fontFamily = AppleSansFamily,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-              ),
-              color = palette.textPrimary
-            )
-          }
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                SibilAiLogo(modifier = Modifier.size(22.dp))
+                Text(
+                  text = "Paste Gemini API Key",
+                  style = MaterialTheme.typography.titleMedium.copy(
+                    fontFamily = SibilAiSansFamily,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                  ),
+                  color = palette.textPrimary
+                )
+              }
 
-          RecessedGlassPill(
-            isDarkMode = palette.isDark,
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
-          ) {
-            Box(
+              RecessedGlassPill(
+                isDarkMode = palette.isDark,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp)
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(if (hasReadyKey) GoogleGreen else Color(0xFFF59E0B))
+                )
+                Text(
+                  text = connectionLabel,
+                  fontFamily = SibilAiSansFamily,
+                  fontWeight = FontWeight.SemiBold,
+                  fontSize = 11.5.sp,
+                  color = palette.textPrimary
+                )
+              }
+            }
+
+            OutlinedTextField(
+              value = customKeyDraft,
+              onValueChange = { customKeyDraft = it },
+              label = { Text("Gemini API Key", fontFamily = SibilAiSansFamily) },
+              placeholder = { Text("AIzaSy...", fontFamily = SibilAiSansFamily) },
+              textStyle = TextStyle(fontFamily = SibilAiSansFamily, fontSize = 14.5.sp),
+              singleLine = true,
+              shape = RoundedCornerShape(14.dp),
+              colors = sibilOutlinedTextFieldColors(),
               modifier = Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(if (hasReadyKey) GoogleGreen else Color(0xFFF59E0B))
+                .fillMaxWidth()
+                .testTag("study_ai_custom_key_input")
             )
-            Text(
-              text = connectionLabel,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 11.5.sp,
-              color = palette.textPrimary
-            )
-          }
-        }
 
-        OutlinedTextField(
-          value = customKeyDraft,
-          onValueChange = { customKeyDraft = it },
-          label = { Text("Gemini API Key") },
-          placeholder = { Text("AIzaSy...") },
-          singleLine = true,
-          shape = RoundedCornerShape(14.dp),
-          colors = sibilOutlinedTextFieldColors(),
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("study_ai_custom_key_input")
-        )
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          OutlinedButton(
-            onClick = {
-              val clipText = clipboardManager.getText()?.text
-              if (!clipText.isNullOrBlank()) {
-                val parsed = parseValidGeminiKeyTokens(clipText)
-                customKeyDraft = if (parsed.isNotEmpty()) {
-                  parsed.joinToString(", ")
-                } else {
-                  sanitizeSingleGeminiKeyToken(clipText)
-                }
-              } else {
-                Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              OutlinedButton(
+                onClick = {
+                  val clipText = clipboardManager.getText()?.text
+                  if (!clipText.isNullOrBlank()) {
+                    val parsed = parseValidGeminiKeyTokens(clipText)
+                    customKeyDraft = if (parsed.isNotEmpty()) {
+                      parsed.joinToString(", ")
+                    } else {
+                      sanitizeSingleGeminiKeyToken(clipText)
+                    }
+                  } else {
+                    Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                  }
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .heightIn(min = 44.dp)
+                  .testTag("study_ai_paste_clipboard_button")
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.ContentPaste,
+                  contentDescription = null,
+                  modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                  "Paste from Clipboard",
+                  fontFamily = SibilAiSansFamily,
+                  fontSize = 12.sp,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
               }
-            },
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-              .weight(1f)
-              .heightIn(min = 44.dp)
-              .testTag("study_ai_paste_clipboard_button")
-          ) {
-            Icon(
-              imageVector = Icons.Rounded.ContentPaste,
-              contentDescription = null,
-              modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Paste from Clipboard", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          }
 
-          OutlinedButton(
-            onClick = {
-              GeminiStudyClient.resetDefaultApiKey(context)
-              viewModel.saveGeminiApiKey("")
-              customKeyDraft = DEFAULT_GEMINI_API_KEY
-              keyConfigVersion++
-              Toast.makeText(
-                context,
-                "Reset to built-in Cloud AI key pool",
-                Toast.LENGTH_SHORT
-              ).show()
-            },
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-              .heightIn(min = 44.dp)
-              .testTag("study_ai_reset_default_key_button")
-          ) {
-            Text("Reset Default", fontSize = 12.sp)
-          }
-        }
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.End,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          TextButton(
-            onClick = { isApiSettingsOpen = false },
-            modifier = Modifier.heightIn(min = 48.dp)
-          ) {
-            Text("Cancel", color = palette.textSecondary)
-          }
-          Spacer(modifier = Modifier.width(8.dp))
-          Button(
-            onClick = {
-              val parsedTokens = parseValidGeminiKeyTokens(customKeyDraft)
-              val sanitized = if (parsedTokens.isNotEmpty()) {
-                parsedTokens.joinToString(",")
-              } else {
-                sanitizeSingleGeminiKeyToken(customKeyDraft)
+              OutlinedButton(
+                onClick = {
+                  GeminiStudyClient.resetDefaultApiKey(context)
+                  viewModel.saveGeminiApiKey("")
+                  customKeyDraft = DEFAULT_GEMINI_API_KEY
+                  keyConfigVersion++
+                  Toast.makeText(
+                    context,
+                    "Reset to built-in Cloud AI key pool",
+                    Toast.LENGTH_SHORT
+                  ).show()
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                  .heightIn(min = 44.dp)
+                  .testTag("study_ai_reset_default_key_button")
+              ) {
+                Text("Reset Default", fontFamily = SibilAiSansFamily, fontSize = 12.sp)
               }
-              GeminiStudyClient.saveCustomApiKey(context, sanitized)
-              viewModel.saveGeminiApiKey(sanitized)
-              customKeyDraft = sanitized.ifBlank { DEFAULT_GEMINI_API_KEY }
-              keyConfigVersion++
-              isApiSettingsOpen = false
-              Toast.makeText(
-                context,
-                if (sanitized.isNotBlank()) "Gemini API key saved" else "Using built-in Cloud AI key pool",
-                Toast.LENGTH_SHORT
-              ).show()
-            },
-            colors = ButtonDefaults.buttonColors(
-              containerColor = GoogleBlue,
-              contentColor = Color.White
-            ),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-              .heightIn(min = 48.dp)
-              .testTag("study_ai_save_key_button")
-          ) {
-            Text("Save Key", fontWeight = FontWeight.Bold)
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.End,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              TextButton(
+                onClick = { isApiSettingsOpen = false },
+                modifier = Modifier.heightIn(min = 48.dp)
+              ) {
+                Text("Cancel", fontFamily = SibilAiSansFamily, color = palette.textSecondary)
+              }
+              Spacer(modifier = Modifier.width(8.dp))
+              Button(
+                onClick = {
+                  val parsedTokens = parseValidGeminiKeyTokens(customKeyDraft)
+                  val sanitized = if (parsedTokens.isNotEmpty()) {
+                    parsedTokens.joinToString(",")
+                  } else {
+                    sanitizeSingleGeminiKeyToken(customKeyDraft)
+                  }
+                  GeminiStudyClient.saveCustomApiKey(context, sanitized)
+                  viewModel.saveGeminiApiKey(sanitized)
+                  customKeyDraft = sanitized.ifBlank { DEFAULT_GEMINI_API_KEY }
+                  keyConfigVersion++
+                  isApiSettingsOpen = false
+                  Toast.makeText(
+                    context,
+                    if (sanitized.isNotBlank()) "Gemini API key saved" else "Using built-in Cloud AI key pool",
+                    Toast.LENGTH_SHORT
+                  ).show()
+                },
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = GoogleBlue,
+                  contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                  .heightIn(min = 48.dp)
+                  .testTag("study_ai_save_key_button")
+              ) {
+                Text("Save Key", fontFamily = SibilAiSansFamily, fontWeight = FontWeight.Bold)
+              }
+            }
           }
         }
       }
