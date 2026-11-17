@@ -97,15 +97,15 @@ class SibilEntitlementsTest {
     assertEquals(10, SibilTier.FREE.maxFlashcardDecks)
 
     assertEquals(1, SibilTier.TIER_49.level)
-    assertEquals("₱49", SibilTier.TIER_49.badge)
+    assertEquals("₱69", SibilTier.TIER_49.badge)
     assertEquals("Plus Plan", SibilTier.TIER_49.title)
-    assertEquals("₱49 One-Time", SibilTier.TIER_49.price)
+    assertEquals("₱69 One-Time", SibilTier.TIER_49.price)
     assertEquals(25, SibilTier.TIER_49.maxFlashcardDecks)
 
     assertEquals(2, SibilTier.TIER_99.level)
-    assertEquals("₱99 PRO", SibilTier.TIER_99.badge)
+    assertEquals("₱109 PRO", SibilTier.TIER_99.badge)
     assertEquals("Pro Unlimited", SibilTier.TIER_99.title)
-    assertEquals("₱99 One-Time", SibilTier.TIER_99.price)
+    assertEquals("₱109 One-Time", SibilTier.TIER_99.price)
     assertEquals(Int.MAX_VALUE, SibilTier.TIER_99.maxFlashcardDecks)
   }
 
@@ -198,7 +198,7 @@ class SibilEntitlementsTest {
     // 4. Re-redeeming same user's ₱49 voucher restores without downgrading from ₱99
     val restoreResult = SibilEntitlementManager.redeemVoucherCode(context, "SIBIL49-AAAA")
     assertTrue(restoreResult is VoucherResult.Success)
-    assertEquals("Your ₱49 One-Time access has been restored!", (restoreResult as VoucherResult.Success).message)
+    assertEquals("Your ₱69 One-Time access has been restored!", (restoreResult as VoucherResult.Success).message)
     assertEquals(SibilTier.TIER_99, (restoreResult as VoucherResult.Success).tier)
     assertEquals("TIER_99", fakeGateway.usersEntitlement["user-ce-001"]?.get("tier"))
   }

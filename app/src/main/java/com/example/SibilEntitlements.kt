@@ -94,29 +94,29 @@ enum class SibilTier(
   ),
   TIER_49(
     level = 1,
-    badge = "₱49",
+    badge = "₱69",
     title = "Plus Plan",
-    price = "₱49 One-Time",
+    price = "₱69 One-Time",
     maxFlashcardDecks = 25
   ),
   TIER_99(
     level = 2,
-    badge = "₱99 PRO",
+    badge = "₱109 PRO",
     title = "Pro Unlimited",
-    price = "₱99 One-Time",
+    price = "₱109 One-Time",
     maxFlashcardDecks = Int.MAX_VALUE
   );
 
   fun compactLockLabel(): String = when (this) {
     FREE -> "FREE"
-    TIER_49 -> "₱49"
-    TIER_99 -> "₱99"
+    TIER_49 -> "₱69"
+    TIER_99 -> "₱109"
   }
 
   fun currentPlanPillLabel(): String = when (this) {
     FREE -> "Current: Free Version"
-    TIER_49 -> "Current: ₱49 Plus"
-    TIER_99 -> "Current: ₱99 Pro"
+    TIER_49 -> "Current: ₱69 Plus"
+    TIER_99 -> "Current: ₱109 Pro"
   }
 
   companion object {
@@ -545,7 +545,7 @@ private val SIBIL_TIER_SPECS = listOf(
   TierComparisonSpec(
     tier = SibilTier.TIER_99,
     features = listOf(
-      "Everything in ₱49 Plus Plan",
+      "Everything in ₱69 Plus Plan",
       "Unlimited Smart Flashcard Decks",
       "Estimate (Max Fajardo BOQ & Take-Off)",
       "Sibil AI (Gemini + Google Search Grounding)"
@@ -555,7 +555,7 @@ private val SIBIL_TIER_SPECS = listOf(
 )
 
 /**
- * Frosted Lock Pill shown on gated tool cards (`₱49` or `₱99`) and Holographic Sibil AI button.
+ * Frosted Lock Pill shown on gated tool cards (`₱69` or `₱109`) and Holographic Sibil AI button.
  */
 @Composable
 fun SibilTierLockPill(
@@ -564,7 +564,7 @@ fun SibilTierLockPill(
   modifier: Modifier = Modifier,
   compact: Boolean = false
 ) {
-  val accent = if (label.contains("99")) {
+  val accent = if (label.contains("109") || label.contains("99")) {
     if (isDarkMode) Color(0xFFA78BFA) else Color(0xFF4F46E5)
   } else {
     if (isDarkMode) Color(0xFF38BDF8) else Color(0xFF0284C7)
@@ -613,7 +613,7 @@ fun SibilTierLockPill(
  * Upgrade & Voucher Redemption Modal (`SibilUpgradeSheet`):
  * - Header: "Unlock Sibil CE" + current plan pill.
  * - Voucher Redemption Box at top priority with GCash / Maya 3-step guide.
- * - 3 Tier Comparison Cards (`Free ₱0`, `₱49 One-Time`, `₱99 One-Time`).
+ * - 3 Tier Comparison Cards (`Free ₱0`, `₱69 One-Time`, `₱109 One-Time`).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -981,7 +981,7 @@ fun SibilUpgradeSheet(
           }
 
           Text(
-            text = "1. Pay ₱49 or ₱99 one-time via GCash / Maya  →  2. Receive your Sibil Voucher Code  →  3. Redeem above to unlock forever.",
+            text = "1. Pay ₱69 or ₱109 one-time via GCash / Maya  →  2. Receive your Sibil Voucher Code  →  3. Redeem above to unlock forever.",
             style = MaterialTheme.typography.bodySmall.copy(
               fontFamily = AppleSansFamily,
               fontSize = 11.5.sp,
@@ -993,7 +993,7 @@ fun SibilUpgradeSheet(
         }
       }
 
-      // 3. Three Tier Comparison Cards (Free ₱0, ₱49 One-Time, ₱99 One-Time)
+      // 3. Three Tier Comparison Cards (Free ₱0, ₱69 One-Time, ₱109 One-Time)
       SIBIL_TIER_SPECS.forEach { spec ->
         val isActive = activeTier == spec.tier
         val isHighlighted = highlightedTier == spec.tier && !isActive

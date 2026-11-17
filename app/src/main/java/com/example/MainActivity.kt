@@ -14361,7 +14361,7 @@ fun ExtrasScreen(
 
     HolographicGeminiButton(
       isDarkMode = viewModel.isDarkMode,
-      lockBadgeLabel = if (activeTier.level < SibilTier.TIER_99.level) "₱99" else null,
+      lockBadgeLabel = if (activeTier.level < SibilTier.TIER_99.level) "₱109" else null,
       onClick = {
         playCardHapticSound(context, localView)
         if (activeTier.level >= SibilTier.TIER_99.level) {
@@ -34235,8 +34235,8 @@ private fun ProfileAndSettingsDialog(
                   ) {
                     val demoOptions = listOf(
                       SibilTier.FREE to "Free",
-                      SibilTier.TIER_49 to "₱49",
-                      SibilTier.TIER_99 to "₱99"
+                      SibilTier.TIER_49 to "₱69",
+                      SibilTier.TIER_99 to "₱109"
                     )
                     demoOptions.forEach { (demoTier, pillLabel) ->
                       val isSelected = activeTier == demoTier
